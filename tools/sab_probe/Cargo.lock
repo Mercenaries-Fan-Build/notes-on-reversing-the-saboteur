@@ -34,6 +34,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mercs2_formats"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e70d15241a28884b51a257084bc0d9f5cd86d88f1a9812881013430c66235d99"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -44,10 +53,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sab_formats"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "mercs2_formats",
+]
+
+[[package]]
 name = "sab_probe"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "sab_formats",
 ]
 
 [[package]]

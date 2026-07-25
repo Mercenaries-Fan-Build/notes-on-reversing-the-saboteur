@@ -4,7 +4,8 @@ Mission names, objectives, tooltips, fail messages, shop and object display name
 cinematic subtitle live in one file per language. Changing them — or **adding entirely new strings
 for your own mod** — needs one tool and no repacking.
 
-**Tool:** `sab_gametext` (or the **GameText** page in `sab_workshop`)
+**Tool:** the **GameText** page in `sab_workshop`, or the CLI (`sab_probe gametext` to inspect,
+`sab_gametext` to write)
 **Time:** seconds. **Reversible:** restore the backup.
 
 ---
@@ -30,11 +31,14 @@ it writes is the container the engine expects.
 GAME="C:/GOG Games/The Saboteur"
 DLG="$GAME/Cinematics/Dialog/English/GameText.dlg"
 
-sab_gametext info $DLG                      # header + UI/VO counts
-sab_gametext list $DLG --ui --limit 40      # browse UI strings
-sab_gametext get  $DLG --id A1M0_Text.TASK_RaceJavier
+sab_probe gametext info $DLG                      # header + UI/VO/DNEC counts
+sab_probe gametext list $DLG --ui --limit 40      # browse UI strings (--vo / --dnec too)
+sab_probe gametext get  $DLG --id A1M0_Text.TASK_RaceJavier
 # 0xafc7fd9c  "Race Javier"
 ```
+
+*(Read-only inspection is `sab_probe gametext …`; the write commands below are the `sab_gametext`
+authoring bin. Both drive the one parser in `sab_formats::gametext`.)*
 
 ## 2. Change it
 
@@ -68,7 +72,7 @@ for modders.
 You can check the hash a name will produce without touching the file:
 
 ```sh
-sab_gametext hash KatMod_Text.Obj1
+sab_probe gametext hash KatMod_Text.Obj1
 ```
 
 ## 4. Install
@@ -86,8 +90,8 @@ file, so you edit it in place. **Keep the `.bak`**; that is your uninstall.
 ## Verify
 
 ```sh
-sab_gametext roundtrip out2.dlg    # parse -> re-emit -> assert byte-identical
-sab_gametext get       out2.dlg --id KatMod_Text.Obj1
+sab_probe gametext roundtrip out2.dlg    # parse -> re-emit -> assert byte-identical
+sab_probe gametext get       out2.dlg --id KatMod_Text.Obj1
 ```
 
 `roundtrip` proves the container you produced is self-consistent before the game sees it.

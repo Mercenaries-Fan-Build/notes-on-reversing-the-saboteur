@@ -301,6 +301,14 @@ enum RowRef {
     Dnec(usize, usize),
 }
 
+/// A rendered row in the grouped Strings nav: a collapsible section header (index into the group
+/// list) or one record under an expanded section.
+#[derive(Clone, Copy)]
+enum NavRow {
+    Section(usize),
+    Entry(RowRef),
+}
+
 #[derive(Default)]
 struct StringsState {
     lang: usize,
@@ -314,6 +322,13 @@ struct StringsState {
     edit_buf: String,
     new_id: String,
     new_text: String,
+    /// Which speaker/UI sections are expanded in the grouped nav.
+    expanded: std::collections::HashSet<String>,
+    /// Cached grouping: `(section name, its rows)` sorted by size. Rebuilt only when the inputs
+    /// below change — grouping 12k records (a `speaker()` parse each) every frame would be wasteful.
+    groups: Vec<(String, Vec<RowRef>)>,
+    /// The `(lang, search, filters, edit-count)` the cache was built for; `None` forces a rebuild.
+    groups_key: Option<String>,
 }
 
 /// One line of the template list: a type heading, a template, or the "narrowed" footer.
@@ -396,11 +411,20 @@ pub struct Editor {
     icon_load: Load<Vec<IconRec>>,
     tx: std::sync::mpsc::Sender<EdMsg>,
     rx: std::sync::mpsc::Receiver<EdMsg>,
+
+    /// The Wwise sound pack for one language, cached (opened lazily on first Play). VO/subtitle
+    /// audio resolution; see `sab_formats::wwise`.
+    sound: Option<(usize, sab_formats::wwise::SoundPack)>,
+    /// Status/error shown next to the Play button.
+    audio_note: String,
+    /// Status/error for file exports (textures, meshes).
+    io_note: String,
 }
 
 impl Editor {
     /// `lang`, `slot` and `mod_name` come from the user's persisted settings — the Strings page opens
-    /// on the configured language rather than always English, and publish targets the chosen DLC slot.
+    /// on the configured language, and publish targets the chosen DLC slot. (The vgmstream path for
+    /// voice playback is read live from settings at Play time, not cached here.)
     pub fn new(game_dir: &str, lang: usize, slot: &str, mod_name: &str) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut e = Editor {
@@ -427,6 +451,9 @@ impl Editor {
             icon_load: Load::Idle,
             tx,
             rx,
+            sound: None,
+            audio_note: String::new(),
+            io_note: String::new(),
         };
         // Whatever was staged last session. Loaded before the assets are even asked for, so the
         // first frame that has text in it already has the edits applied (see `pump`).
@@ -1348,99 +1375,171 @@ impl Editor {
             })
             .collect();
 
-        // The row list mixes base records and DNEC subtitle records; RowRef resolves each in O(1).
-        // `kind` is the badge/filter class: "ui", "vo" (base), or "sub" (DNEC overlay).
-        let matches = |r: &sab_formats::gametext::Record, sel: StrSel| -> bool {
-            if self.strings.filter_edited && !edited.contains(&sel) {
-                return false;
+        // ---- group the records into collapsible sections: one per speaker (VO/subs), plus
+        // "UI Text". Rebuilt only when its inputs change — grouping is O(records) with a speaker()
+        // key parse each, so expand/collapse and selection must NOT invalidate it. ----
+        let (fui, fvo, fdnec, fed) = (
+            self.strings.filter_ui,
+            self.strings.filter_vo,
+            self.strings.filter_dnec,
+            self.strings.filter_edited,
+        );
+        let cache_key = format!(
+            "{}|{needle}|{}{}{}{}|{}",
+            self.strings.lang, fui as u8, fvo as u8, fdnec as u8, fed as u8, self.changes.len()
+        );
+        if self.strings.groups_key.as_deref() != Some(cache_key.as_str()) {
+            let keep = |r: &sab_formats::gametext::Record, sel: StrSel| -> bool {
+                let is_ui = r.is_ui();
+                if (is_ui && !fui) || (!is_ui && !fvo) {
+                    return false;
+                }
+                if fed && !edited.contains(&sel) {
+                    return false;
+                }
+                needle.is_empty()
+                    || r.text_string().to_ascii_lowercase().contains(&needle)
+                    || format!("{:08x}", r.asset_id).contains(&needle)
+                    || r.key_str().to_ascii_lowercase().contains(&needle)
+            };
+            let section = |r: &sab_formats::gametext::Record| -> String {
+                if r.is_ui() {
+                    "UI Text".to_string()
+                } else {
+                    r.speaker().unwrap_or_else(|| "Other VO".into())
+                }
+            };
+            let mut map: std::collections::HashMap<String, Vec<RowRef>> = Default::default();
+            for (i, r) in gt.records.iter().enumerate() {
+                if keep(r, StrSel { asset_id: r.asset_id, scene: None }) {
+                    map.entry(section(r)).or_default().push(RowRef::Base(i));
+                }
             }
-            if needle.is_empty() {
-                return true;
-            }
-            r.text_string().to_ascii_lowercase().contains(&needle)
-                || format!("{:08x}", r.asset_id).contains(&needle)
-                || r.key_str().to_ascii_lowercase().contains(&needle)
-        };
-
-        let mut rows: Vec<RowRef> = Vec::new();
-        for (i, r) in gt.records.iter().enumerate() {
-            let is_ui = r.is_ui();
-            if (is_ui && !self.strings.filter_ui) || (!is_ui && !self.strings.filter_vo) {
-                continue;
-            }
-            if matches(r, StrSel { asset_id: r.asset_id, scene: None }) {
-                rows.push(RowRef::Base(i));
-            }
-        }
-        if self.strings.filter_dnec {
-            for (g, grp) in gt.dnec_groups().iter().enumerate() {
-                for (j, r) in grp.records.iter().enumerate() {
-                    if matches(r, StrSel { asset_id: r.asset_id, scene: Some(grp.scene_hash) }) {
-                        rows.push(RowRef::Dnec(g, j));
+            if fdnec {
+                for (g, grp) in gt.dnec_groups().iter().enumerate() {
+                    for (j, r) in grp.records.iter().enumerate() {
+                        if keep(r, StrSel { asset_id: r.asset_id, scene: Some(grp.scene_hash) }) {
+                            map.entry(section(r)).or_default().push(RowRef::Dnec(g, j));
+                        }
                     }
                 }
             }
+            let mut groups: Vec<(String, Vec<RowRef>)> = map.into_iter().collect();
+            // Biggest sections first (main cast + the UI surface); ties broken by name.
+            groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+            self.strings.groups = groups;
+            self.strings.groups_key = Some(cache_key);
         }
 
+        let searching = !needle.is_empty();
+        let shown: usize = self.strings.groups.iter().map(|g| g.1.len()).sum();
         let total = gt.records.len() + gt.dnec_record_count();
-        ui.label(theme::data_text(format!("{} of {} shown", rows.len(), total), 10.0, theme::FAINT));
+        ui.label(theme::data_text(
+            format!("{shown} in {} groups · {total} total", self.strings.groups.len()),
+            10.0,
+            theme::FAINT,
+        ));
         ui.add_space(3.0);
 
+        // Flatten to a virtualised row list: a header per section, its entries when expanded (or
+        // always, while a search is active).
+        let mut nav: Vec<NavRow> = Vec::new();
+        for (gi, (name, rows)) in self.strings.groups.iter().enumerate() {
+            nav.push(NavRow::Section(gi));
+            if searching || self.strings.expanded.contains(name) {
+                for &rr in rows {
+                    nav.push(NavRow::Entry(rr));
+                }
+            }
+        }
+
         let mut pick: Option<StrSel> = None;
+        let mut toggle: Option<String> = None;
         egui::ScrollArea::vertical().id_source("str_rows").auto_shrink([false, false]).show_rows(
             ui,
             20.0,
-            rows.len(),
+            nav.len(),
             |ui, range| {
                 for k in range {
-                    // Resolve the row to its record + identity in O(1) (inlined rather than a closure,
-                    // which would fight the borrow checker over the returned reference's lifetime).
-                    let (r, rsel, kind) = match rows[k] {
-                        RowRef::Base(i) => {
-                            let r = &gt.records[i];
-                            (r, StrSel { asset_id: r.asset_id, scene: None }, if r.is_ui() { "ui" } else { "vo" })
+                    match nav[k] {
+                        NavRow::Section(gi) => {
+                            let (name, rows) = &self.strings.groups[gi];
+                            let open = searching || self.strings.expanded.contains(name);
+                            // The WHOLE row is the click target (caret + name + empty space), with a
+                            // pointing-hand cursor — not just the name label. Interact with an
+                            // explicit unique id per section, else every row clashes on one id.
+                            let inner = ui.horizontal(|ui| {
+                                ui.set_min_width(ui.available_width());
+                                // caret, painter-drawn so it never depends on a font glyph
+                                let (tri, _) = ui.allocate_exact_size(egui::vec2(11.0, 12.0), egui::Sense::hover());
+                                let c = tri.center();
+                                let pts = if open {
+                                    vec![egui::pos2(c.x - 3.5, c.y - 2.0), egui::pos2(c.x + 3.5, c.y - 2.0), egui::pos2(c.x, c.y + 3.0)]
+                                } else {
+                                    vec![egui::pos2(c.x - 2.0, c.y - 3.5), egui::pos2(c.x - 2.0, c.y + 3.5), egui::pos2(c.x + 3.0, c.y)]
+                                };
+                                ui.painter().add(egui::Shape::convex_polygon(pts, theme::DIM, egui::Stroke::NONE));
+                                ui.label(theme::disp_text(name.as_str(), 12.0, theme::TX));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(theme::data_text(rows.len().to_string(), 10.0, theme::FAINT));
+                                });
+                            });
+                            let resp = ui
+                                .interact(inner.response.rect, ui.id().with(("sec_row", name.as_str())), egui::Sense::click())
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                toggle = Some(name.clone());
+                            }
                         }
-                        RowRef::Dnec(g, j) => {
-                            let grp = &gt.dnec_groups()[g];
-                            let r = &grp.records[j];
-                            (r, StrSel { asset_id: r.asset_id, scene: Some(grp.scene_hash) }, "sub")
+                        NavRow::Entry(rr) => {
+                            let (r, rsel, kind) = match rr {
+                                RowRef::Base(i) => {
+                                    let r = &gt.records[i];
+                                    (r, StrSel { asset_id: r.asset_id, scene: None }, if r.is_ui() { "ui" } else { "vo" })
+                                }
+                                RowRef::Dnec(g, j) => {
+                                    let grp = &gt.dnec_groups()[g];
+                                    let r = &grp.records[j];
+                                    (r, StrSel { asset_id: r.asset_id, scene: Some(grp.scene_hash) }, "sub")
+                                }
+                            };
+                            let sel = self.strings.selected == Some(rsel);
+                            let is_edited = edited.contains(&rsel);
+                            let inner = ui.horizontal(|ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.add_space(12.0);
+                                let (d, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+                                ui.painter().rect_filled(d, egui::Rounding::ZERO, if is_edited { theme::EMBER } else { theme::G3 });
+                                let fg = if sel { theme::RED } else if is_edited { theme::TX } else { theme::DIM };
+                                // combat/ambient barks carry no subtitle text; fall back to the key
+                                // so the row isn't blank.
+                                let text = r.text_string();
+                                let label = if text.is_empty() { trunc(&r.key_str(), 36) } else { trunc(&text, 36) };
+                                ui.label(theme::data_text(label, 11.0, fg));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(theme::disp_text(kind, 9.0, theme::FAINT));
+                                });
+                            });
+                            let resp = ui
+                                .interact(
+                                    inner.response.rect,
+                                    ui.id().with(("str_row", rsel.asset_id, rsel.scene)),
+                                    egui::Sense::click(),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if resp.clicked() {
+                                pick = Some(rsel);
+                            }
                         }
-                    };
-                    let sel = self.strings.selected == Some(rsel);
-                    let is_edited = edited.contains(&rsel);
-                    ui.horizontal(|ui| {
-                        let (d, _) =
-                            ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
-                        ui.painter().rect_filled(
-                            d,
-                            egui::Rounding::ZERO,
-                            if is_edited { theme::EMBER } else { theme::G3 },
-                        );
-                        let fg = if sel {
-                            theme::RED
-                        } else if is_edited {
-                            theme::TX
-                        } else {
-                            theme::DIM
-                        };
-                        // The TEXT is the identifier a modder actually has, so it leads.
-                        let label = trunc(&r.text_string(), 40);
-                        if ui
-                            .add(
-                                egui::Label::new(theme::data_text(label, 11.0, fg))
-                                    .sense(egui::Sense::click()),
-                            )
-                            .clicked()
-                        {
-                            pick = Some(rsel);
-                        }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(theme::disp_text(kind, 9.0, theme::FAINT));
-                        });
-                    });
+                    }
                 }
             },
         );
+        if let Some(name) = toggle {
+            if !self.strings.expanded.remove(&name) {
+                self.strings.expanded.insert(name);
+            }
+        }
         if let Some(rsel) = pick {
             self.strings.selected = Some(rsel);
             if let Some(r) = gt.find_any(rsel.asset_id, rsel.scene) {
@@ -1470,6 +1569,8 @@ impl Editor {
         let Load::Ready(gt) = &loaded else { self.str_load = loaded; return; };
         
         let sel = self.strings.selected;
+        let mut play_key: Option<String> = None;
+        let mut export_key: Option<String> = None;
 
         if let Some((rsel, r)) = sel.and_then(|s| gt.find_any(s.asset_id, s.scene).map(|r| (s, r))) {
             let orig = self.original_text(rsel).unwrap_or_else(|| r.text_string());
@@ -1567,6 +1668,42 @@ impl Editor {
                     }
                 });
             });
+
+            // Voice playback — VO lines and cinematic subtitles carry a Wwise voice; UI strings do not.
+            // Understated (COLD utility hue), not the red STAMP reserved for the primary Stage action.
+            if !r.is_ui() {
+                ui.add_space(12.0);
+                theme::eyebrow(ui, "Voice");
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let play = ui
+                        .add(
+                            egui::Button::new(theme::disp_text(
+                                format!("{}  Play line", theme::sym::PLAY),
+                                11.0,
+                                theme::COLD,
+                            ))
+                            .fill(theme::COLD_SOFT)
+                            .stroke(egui::Stroke::new(1.0, theme::COLD_DK))
+                            .rounding(egui::Rounding::ZERO),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if play.clicked() {
+                        play_key = Some(r.key_str());
+                    }
+                    if ui
+                        .add(egui::Button::new(theme::disp_text("Export…", 11.0, theme::DIM)).rounding(egui::Rounding::ZERO))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        export_key = Some(r.key_str());
+                    }
+                    if !self.audio_note.is_empty() {
+                        ui.add_space(10.0);
+                        ui.label(theme::data_text(&self.audio_note, 10.5, theme::FAINT));
+                    }
+                });
+            }
         } else {
             self.empty_state(
                 ui,
@@ -1626,13 +1763,22 @@ impl Editor {
 
         
         self.str_load = loaded; // hand the model back
+        // Done after handing the model back so these can borrow `self` freely.
+        if let Some(k) = play_key {
+            self.play_line(&k);
+        }
+        if let Some(k) = export_key {
+            self.export_line(&k);
+        }
     }
 
     fn strings_context(&mut self, ui: &mut egui::Ui) {
-        // Only count the selection as a real string if it still resolves in the loaded model.
-        let sel = self.strings.selected.filter(|s| {
-            self.str_load.ready().is_some_and(|g| g.find_any(s.asset_id, s.scene).is_some())
+        // Resolve the selection to (identity, on-disk key) once. `key` is owned so nothing keeps
+        // borrowing the loaded model; it drives the Voice card below.
+        let sel_rec: Option<(StrSel, String)> = self.strings.selected.and_then(|s| {
+            self.str_load.ready().and_then(|g| g.find_any(s.asset_id, s.scene)).map(|r| (s, r.key_str()))
         });
+        let sel = sel_rec.as_ref().map(|(s, _)| *s);
         theme::card(ui, "Coverage", None, |ui| {
             match sel {
                 None => {
@@ -1670,6 +1816,25 @@ impl Editor {
                 }
             }
         });
+
+        // Voice: only VO lines and cinematic subtitles carry audio (a non-empty vo key). Gives the
+        // rail per-line content — speaker, Wwise event, and the resolved .wem once a pack is loaded.
+        if let Some((_, key)) = sel_rec.as_ref().filter(|(_, k)| !k.is_empty()) {
+            theme::card(ui, "Voice", None, |ui| {
+                if let Some(spk) = sab_formats::gametext::speaker(key) {
+                    ui.label(theme::data_text(format!("speaker · {spk}"), 11.0, theme::TX));
+                }
+                ui.label(theme::data_text(format!("event · Play_{}", trunc(key, 32)), 10.0, theme::FAINT));
+                match self.sound.as_ref().filter(|(l, _)| *l == self.strings.lang) {
+                    Some((_, pack)) => match pack.wem_for_key(key) {
+                        Some(w) => ui.label(theme::data_text(format!("audio · 0x{w:08x}.wem"), 10.5, theme::COLD)),
+                        None => ui.label(theme::data_text("no audio resolved for this line", 10.0, theme::FAINT)),
+                    },
+                    None => ui.label(theme::data_text("press Play line to load the voice pack", 10.0, theme::FAINT)),
+                };
+            });
+        }
+
         if let Some(id) = sel.map(|s| s.asset_id) {
             let refs = self.xref.get(&id).cloned().unwrap_or_default();
             theme::card(ui, "Named by", Some(&refs.len().to_string()), |ui| {
@@ -1688,6 +1853,137 @@ impl Editor {
                 }
             });
         }
+    }
+
+    /// The `vgmstream-cli` to use: the user's configured path if present, else a `vgmstream-cli` on
+    /// PATH (autodiscovery). Read LIVE from settings so a path chosen in Settings this session takes
+    /// effect immediately — no restart, no cached copy. No hard-coded install locations.
+    fn vgmstream_exe(&self) -> Option<std::path::PathBuf> {
+        if let Some(p) = crate::settings::Settings::load().vgmstream() {
+            return Some(std::path::PathBuf::from(p));
+        }
+        if std::process::Command::new("vgmstream-cli")
+            .arg("-h")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+        {
+            return Some("vgmstream-cli".into());
+        }
+        None
+    }
+
+    /// The Wwise sound-pack path for a language — only EN/FR/DE/IT ship localized VO.
+    fn sound_pck(&self, lang: usize) -> Option<String> {
+        let name = match LANGS.get(lang).map(|l| l.0) {
+            Some("EN") => "English(US)",
+            Some("FR") => "French(Canada)",
+            Some("DE") => "German",
+            Some("IT") => "Italian",
+            _ => return None,
+        };
+        Some(format!("{}/Sound/{name}.pck", self.md.game_dir))
+    }
+
+    /// Shared prep for Play/Export: open the current language's sound pack (cached), resolve the key
+    /// to a `.wem`, extract its bytes, and locate `vgmstream`. Sets `audio_note` and returns `None`
+    /// on any failure so the caller can just `?`-style bail.
+    fn prepare_voice(&mut self, key: &str) -> Option<(std::path::PathBuf, u32, Vec<u8>)> {
+        let lang = self.strings.lang;
+        let Some(pck) = self.sound_pck(lang) else {
+            self.audio_note = format!("no localized VO for {}", LANGS[lang].1);
+            return None;
+        };
+        if self.sound.as_ref().map(|(l, _)| *l) != Some(lang) {
+            match sab_formats::wwise::SoundPack::open(&pck) {
+                Ok(p) => self.sound = Some((lang, p)),
+                Err(e) => {
+                    self.audio_note = format!("open sound pack: {e}");
+                    return None;
+                }
+            }
+        }
+        let pack = &self.sound.as_ref().unwrap().1;
+        let Some(wem) = pack.wem_for_key(key) else {
+            self.audio_note = "no audio resolved for this line".into();
+            return None;
+        };
+        let Some(bytes) = pack.wem_bytes(wem) else {
+            self.audio_note = format!("wem {wem:08x} missing from pack");
+            return None;
+        };
+        let Some(vgm) = self.vgmstream_exe() else {
+            self.audio_note = "set vgmstream-cli in Settings → Voice audio (or put it on PATH)".into();
+            return None;
+        };
+        Some((vgm, wem, bytes))
+    }
+
+    /// Resolve a VO/subtitle line, decode with vgmstream, and play it. The slow decode + playback run
+    /// on a background thread so the UI never blocks.
+    fn play_line(&mut self, key: &str) {
+        let Some((vgm, wem, bytes)) = self.prepare_voice(key) else { return };
+        let dir = std::env::temp_dir();
+        let wem_path = dir.join(format!("sab_vo_{wem:08x}.wem"));
+        let wav_path = dir.join(format!("sab_vo_{wem:08x}.wav"));
+        if let Err(e) = std::fs::write(&wem_path, &bytes) {
+            self.audio_note = format!("temp write: {e}");
+            return;
+        }
+        self.audio_note = format!("playing 0x{wem:08x}");
+        std::thread::spawn(move || {
+            let decoded = std::process::Command::new(&vgm)
+                .arg("-o")
+                .arg(&wav_path)
+                .arg(&wem_path)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if decoded {
+                // PowerShell's SoundPlayer plays a PCM WAV with no extra dependencies.
+                let _ = std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command"])
+                    .arg(format!("(New-Object Media.SoundPlayer '{}').PlaySync()", wav_path.display()))
+                    .status();
+            }
+            let _ = std::fs::remove_file(&wem_path);
+            let _ = std::fs::remove_file(&wav_path);
+        });
+    }
+
+    /// Resolve a VO/subtitle line and export it as a `.wav` to a user-chosen path. Runs
+    /// synchronously (the user asked for a file and a native Save dialog is already blocking), so the
+    /// outcome can be reported directly.
+    fn export_line(&mut self, key: &str) {
+        let Some((vgm, wem, bytes)) = self.prepare_voice(key) else { return };
+        let default = format!("{}.wav", sanitize_filename(key));
+        let Some(out) = rfd::FileDialog::new()
+            .set_title("Export voice line as WAV")
+            .set_file_name(default)
+            .add_filter("WAV audio", &["wav"])
+            .save_file()
+        else {
+            return;
+        };
+        let wem_path = std::env::temp_dir().join(format!("sab_vo_{wem:08x}.wem"));
+        if let Err(e) = std::fs::write(&wem_path, &bytes) {
+            self.audio_note = format!("temp write: {e}");
+            return;
+        }
+        let ok = std::process::Command::new(&vgm)
+            .arg("-o")
+            .arg(&out)
+            .arg(&wem_path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        let _ = std::fs::remove_file(&wem_path);
+        self.audio_note = if ok {
+            format!("exported → {}", out.display())
+        } else {
+            "vgmstream decode failed".into()
+        };
     }
 
     /// The retail text for a string: the `before` of a staged change, else what's in memory.
@@ -2463,6 +2759,73 @@ impl Editor {
                 }
             }
         });
+        // Export the selected texture.
+        if let Some(i) = sel {
+            let mut want: Option<bool> = None; // Some(dds?)
+            theme::card(ui, "Export", None, |ui| {
+                ui.horizontal(|ui| {
+                    let png = ui
+                        .add(egui::Button::new(theme::disp_text("PNG", 11.0, theme::COLD)).fill(theme::COLD_SOFT).stroke(egui::Stroke::new(1.0, theme::COLD_DK)).rounding(egui::Rounding::ZERO))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let dds = ui
+                        .add(egui::Button::new(theme::disp_text("DDS", 11.0, theme::DIM)).rounding(egui::Rounding::ZERO))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if png.clicked() {
+                        want = Some(false);
+                    }
+                    if dds.clicked() {
+                        want = Some(true);
+                    }
+                });
+                if !self.io_note.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(theme::data_text(&self.io_note, 10.0, theme::FAINT));
+                }
+            });
+            if let Some(dds) = want {
+                self.export_texture(i, dds);
+            }
+        }
+    }
+
+    /// Decode the selected texture from the palettes pack and export it as PNG or DDS to a chosen
+    /// path. Synchronous (a native Save dialog is already blocking); sets `io_note`.
+    fn export_texture(&mut self, i: usize, dds: bool) {
+        let Some((name, _hash, ei, off, len)) = self.icon_recs().get(i).cloned() else { return };
+        let decoded = (|| -> Result<dtex::CpuTexture, String> {
+            let mp = Megapack::open(&self.md.palettes())?;
+            let e = mp.entries().get(ei).ok_or("texture record no longer present")?;
+            let sub = mp.slice(e);
+            if off + len > sub.len() {
+                return Err("texture record out of range".into());
+            }
+            dtex::decode(&sub[off..off + len])
+        })();
+        let tex = match decoded {
+            Ok(t) => t,
+            Err(e) => {
+                self.io_note = format!("decode: {e}");
+                return;
+            }
+        };
+        let ext = if dds { "dds" } else { "png" };
+        let Some(out) = rfd::FileDialog::new()
+            .set_title("Export texture")
+            .set_file_name(format!("{}.{ext}", sanitize_filename(&name)))
+            .add_filter(&ext.to_uppercase(), &[ext])
+            .save_file()
+        else {
+            return;
+        };
+        let res = if dds {
+            write_dds(&out, tex.width, tex.height, &tex.rgba)
+        } else {
+            write_png(&out, tex.width, tex.height, &tex.rgba)
+        };
+        self.io_note = match res {
+            Ok(()) => format!("exported → {}", out.display()),
+            Err(e) => e,
+        };
     }
 
     /// The texture for a record, or `None` while the worker is still on it. Never blocks: an
@@ -2552,6 +2915,58 @@ fn trunc(s: &str, n: usize) -> String {
         None => s.to_string(),
     }
 }
+
+/// Make a string safe as a filename stem (VO keys already are; this guards odd characters).
+fn sanitize_filename(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() { "export".into() } else { cleaned }
+}
+
+/// Write a decoded texture as an 8-bit RGBA PNG.
+fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut wr = enc.write_header().map_err(|e| e.to_string())?;
+    wr.write_image_data(rgba).map_err(|e| e.to_string())
+}
+
+/// Write a decoded texture as an **uncompressed 32-bit DDS** (`A8R8G8B8`/BGRA) — any tool reads it,
+/// and it re-imports cleanly. Not byte-faithful to the original DXT compression (use `sab_dtex` for
+/// that); this is a viewable/editable export.
+fn write_dds(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
+    let mut out = Vec::with_capacity(128 + rgba.len());
+    out.extend_from_slice(b"DDS ");
+    let mut hdr = [0u32; 31]; // 124-byte DDS_HEADER
+    hdr[0] = 124; // dwSize
+    hdr[1] = 0x1 | 0x2 | 0x4 | 0x8 | 0x1000; // CAPS|HEIGHT|WIDTH|PITCH|PIXELFORMAT
+    hdr[2] = h; // dwHeight
+    hdr[3] = w; // dwWidth
+    hdr[4] = w * 4; // dwPitchOrLinearSize
+    // ddspf at u32 index 18 (byte offset 72 within the 124-byte header)
+    hdr[18] = 32; // pfSize
+    hdr[19] = 0x1 | 0x40; // ALPHAPIXELS | RGB
+    hdr[20] = 0; // fourCC (0 = uncompressed)
+    hdr[21] = 32; // bits per pixel
+    hdr[22] = 0x00ff_0000; // R mask
+    hdr[23] = 0x0000_ff00; // G mask
+    hdr[24] = 0x0000_00ff; // B mask
+    hdr[25] = 0xff00_0000; // A mask
+    hdr[26] = 0x1000; // dwCaps = TEXTURE
+    for v in hdr {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    // A8R8G8B8 is BGRA in memory.
+    for px in rgba.chunks_exact(4) {
+        out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())
+}
+
 
 /// The most plausible single-line form of a 4-byte value.
 fn readable(v: u32) -> String {
@@ -2795,6 +3210,34 @@ fn parse_u32_any(t: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_export_round_trips() {
+        let (w, h) = (2u32, 2u32);
+        let rgba: Vec<u8> = (0..w * h * 4).map(|i| i as u8).collect();
+        let p = std::env::temp_dir().join("sab_png_test.png");
+        write_png(&p, w, h, &rgba).expect("write");
+        let dec = png::Decoder::new(std::fs::File::open(&p).unwrap());
+        let mut reader = dec.read_info().unwrap();
+        let mut buf = vec![0u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (w, h));
+        assert_eq!(&buf[..info.buffer_size()], &rgba[..]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn dds_export_header() {
+        let p = std::env::temp_dir().join("sab_dds_test.dds");
+        write_dds(&p, 4, 2, &vec![0xAAu8; 4 * 2 * 4]).expect("write");
+        let b = std::fs::read(&p).unwrap();
+        assert_eq!(&b[0..4], b"DDS ");
+        assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap()), 124); // dwSize
+        assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()), 2); // height
+        assert_eq!(u32::from_le_bytes(b[16..20].try_into().unwrap()), 4); // width
+        assert_eq!(b.len(), 128 + 4 * 2 * 4); // header + BGRA pixels
+        let _ = std::fs::remove_file(&p);
+    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("sab_workshop_dlc_{name}"));

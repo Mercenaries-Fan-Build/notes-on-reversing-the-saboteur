@@ -127,7 +127,17 @@ impl Mod {
 /// edit lives here rather than in the loaded model, so anything that lands has to be re-applied.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum Op {
-    SetString { lang: usize, asset_id: u32, text: String },
+    /// Overwrite an existing string's text. `scene` is `None` for a base record and `Some(sceneHash)`
+    /// for a DNEC cinematic subtitle (a DNEC asset_id can collide with a base one, so it disambiguates
+    /// the lookup). Old documents predate `scene` and deserialize it as `None` — i.e. a base record —
+    /// which is what they always were, so no migration is needed.
+    SetString {
+        lang: usize,
+        asset_id: u32,
+        #[serde(default)]
+        scene: Option<u32>,
+        text: String,
+    },
     AddString { lang: usize, dotted: String, text: String },
     SetPair { entry: usize, pair: usize, bytes: Vec<u8> },
     /// Reserve a texture NAME so template properties can point at its hash before the DTEX exists.
@@ -274,14 +284,33 @@ enum EdMsg {
     Thumb(u32, usize, usize, Vec<u8>),
 }
 
+/// Identity of a string across the base records AND the DNEC subtitle sub-tables. `scene == None` is a
+/// base record (keyed by asset_id); `Some(hash)` is a record inside that DNEC scene group. Used for
+/// selection and for keying staged edits, because a DNEC asset_id can collide with a base one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct StrSel {
+    asset_id: u32,
+    scene: Option<u32>,
+}
+
+/// A row in the strings list, resolvable to a record in O(1). `Base` indexes `gt.records`; `Dnec`
+/// indexes `gt.dnec_groups()[g].records[r]`.
+#[derive(Clone, Copy)]
+enum RowRef {
+    Base(usize),
+    Dnec(usize, usize),
+}
+
 #[derive(Default)]
 struct StringsState {
     lang: usize,
     search: String,
     filter_ui: bool,
     filter_vo: bool,
+    /// Show the DNEC cinematic subtitles (the per-scene VO overlay records).
+    filter_dnec: bool,
     filter_edited: bool,
-    selected: Option<usize>,
+    selected: Option<StrSel>,
     edit_buf: String,
     new_id: String,
     new_text: String,
@@ -839,9 +868,9 @@ impl Editor {
     /// Undo a change's effect on the in-memory model (the changelist entry itself is already gone).
     fn unapply(&mut self, c: &Change) {
         match &c.op {
-            Op::SetString { asset_id, .. } => {
+            Op::SetString { asset_id, scene, .. } => {
                 if let Some(gt) = self.str_load.ready_mut() {
-                    if let Some(r) = gt.find_mut(*asset_id) {
+                    if let Some(r) = gt.find_any_mut(*asset_id, *scene) {
                         r.set_text(&c.before);
                     }
                 }
@@ -895,8 +924,8 @@ impl Editor {
         let Some(gt) = self.str_load.ready_mut() else { return };
         for c in &self.changes {
             match &c.op {
-                Op::SetString { lang: l, asset_id, text } if *l == lang => {
-                    if let Some(r) = gt.find_mut(*asset_id) {
+                Op::SetString { lang: l, asset_id, scene, text } if *l == lang => {
+                    if let Some(r) = gt.find_any_mut(*asset_id, *scene) {
                         r.set_text(text);
                     }
                 }
@@ -962,12 +991,12 @@ impl Editor {
         // Additions keep going to the mod's slot, where they work and where uninstalling is deleting a
         // folder.
         for lang in 0..LANGS.len() {
-            let mut sets: Vec<(u32, &str)> = Vec::new();
+            let mut sets: Vec<(u32, Option<u32>, &str)> = Vec::new();
             let mut adds: Vec<(&str, &str)> = Vec::new();
             for c in &self.changes {
                 match &c.op {
-                    Op::SetString { lang: l, asset_id, text } if *l == lang => {
-                        sets.push((*asset_id, text))
+                    Op::SetString { lang: l, asset_id, scene, text } if *l == lang => {
+                        sets.push((*asset_id, *scene, text))
                     }
                     Op::AddString { lang: l, dotted, text } if *l == lang => {
                         adds.push((dotted, text))
@@ -1006,8 +1035,8 @@ impl Editor {
 
             if !sets.is_empty() {
                 let mut gt = GameText::parse(&bytes).map_err(|_| format!("cannot parse {src}"))?;
-                for (id, text) in &sets {
-                    if let Some(r) = gt.find_mut(*id) {
+                for (id, scene, text) in &sets {
+                    if let Some(r) = gt.find_any_mut(*id, *scene) {
                         r.set_text(text);
                     }
                 }
@@ -1284,6 +1313,11 @@ impl Editor {
             if theme::pill(ui, "vo", self.strings.filter_vo).clicked() {
                 self.strings.filter_vo = !self.strings.filter_vo;
             }
+            // The DNEC per-scene cinematic subtitles — off by default so the page opens on the base
+            // records, on to surface the ~1300 overlay VO lines.
+            if theme::pill(ui, "subs", self.strings.filter_dnec).clicked() {
+                self.strings.filter_dnec = !self.strings.filter_dnec;
+            }
             if theme::pill(ui, "edited", self.strings.filter_edited).clicked() {
                 self.strings.filter_edited = !self.strings.filter_edited;
             }
@@ -1303,58 +1337,77 @@ impl Editor {
 
         
         let needle = self.strings.search.to_ascii_lowercase();
-        let edited: std::collections::HashSet<u32> = self
+        let edited: std::collections::HashSet<StrSel> = self
             .changes
             .iter()
             .filter_map(|c| match &c.op {
-                Op::SetString { asset_id, lang, .. } if *lang == self.strings.lang => Some(*asset_id),
+                Op::SetString { asset_id, scene, lang, .. } if *lang == self.strings.lang => {
+                    Some(StrSel { asset_id: *asset_id, scene: *scene })
+                }
                 _ => None,
             })
             .collect();
 
-        let rows: Vec<usize> = gt
-            .records
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| {
-                let is_ui = r.is_ui();
-                if is_ui && !self.strings.filter_ui {
-                    return false;
-                }
-                if !is_ui && !self.strings.filter_vo {
-                    return false;
-                }
-                if self.strings.filter_edited && !edited.contains(&r.asset_id) {
-                    return false;
-                }
-                if needle.is_empty() {
-                    return true;
-                }
-                r.text_string().to_ascii_lowercase().contains(&needle)
-                    || format!("{:08x}", r.asset_id).contains(&needle)
-                    || r.key_str().to_ascii_lowercase().contains(&needle)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        // The row list mixes base records and DNEC subtitle records; RowRef resolves each in O(1).
+        // `kind` is the badge/filter class: "ui", "vo" (base), or "sub" (DNEC overlay).
+        let matches = |r: &sab_formats::gametext::Record, sel: StrSel| -> bool {
+            if self.strings.filter_edited && !edited.contains(&sel) {
+                return false;
+            }
+            if needle.is_empty() {
+                return true;
+            }
+            r.text_string().to_ascii_lowercase().contains(&needle)
+                || format!("{:08x}", r.asset_id).contains(&needle)
+                || r.key_str().to_ascii_lowercase().contains(&needle)
+        };
 
-        ui.label(theme::data_text(
-            format!("{} of {} shown", rows.len(), gt.records.len()),
-            10.0,
-            theme::FAINT,
-        ));
+        let mut rows: Vec<RowRef> = Vec::new();
+        for (i, r) in gt.records.iter().enumerate() {
+            let is_ui = r.is_ui();
+            if (is_ui && !self.strings.filter_ui) || (!is_ui && !self.strings.filter_vo) {
+                continue;
+            }
+            if matches(r, StrSel { asset_id: r.asset_id, scene: None }) {
+                rows.push(RowRef::Base(i));
+            }
+        }
+        if self.strings.filter_dnec {
+            for (g, grp) in gt.dnec_groups().iter().enumerate() {
+                for (j, r) in grp.records.iter().enumerate() {
+                    if matches(r, StrSel { asset_id: r.asset_id, scene: Some(grp.scene_hash) }) {
+                        rows.push(RowRef::Dnec(g, j));
+                    }
+                }
+            }
+        }
+
+        let total = gt.records.len() + gt.dnec_record_count();
+        ui.label(theme::data_text(format!("{} of {} shown", rows.len(), total), 10.0, theme::FAINT));
         ui.add_space(3.0);
 
-        let mut pick: Option<usize> = None;
+        let mut pick: Option<StrSel> = None;
         egui::ScrollArea::vertical().id_source("str_rows").auto_shrink([false, false]).show_rows(
             ui,
             20.0,
             rows.len(),
             |ui, range| {
                 for k in range {
-                    let i = rows[k];
-                    let r = &gt.records[i];
-                    let sel = self.strings.selected == Some(i);
-                    let is_edited = edited.contains(&r.asset_id);
+                    // Resolve the row to its record + identity in O(1) (inlined rather than a closure,
+                    // which would fight the borrow checker over the returned reference's lifetime).
+                    let (r, rsel, kind) = match rows[k] {
+                        RowRef::Base(i) => {
+                            let r = &gt.records[i];
+                            (r, StrSel { asset_id: r.asset_id, scene: None }, if r.is_ui() { "ui" } else { "vo" })
+                        }
+                        RowRef::Dnec(g, j) => {
+                            let grp = &gt.dnec_groups()[g];
+                            let r = &grp.records[j];
+                            (r, StrSel { asset_id: r.asset_id, scene: Some(grp.scene_hash) }, "sub")
+                        }
+                    };
+                    let sel = self.strings.selected == Some(rsel);
+                    let is_edited = edited.contains(&rsel);
                     ui.horizontal(|ui| {
                         let (d, _) =
                             ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
@@ -1379,22 +1432,20 @@ impl Editor {
                             )
                             .clicked()
                         {
-                            pick = Some(i);
+                            pick = Some(rsel);
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(theme::disp_text(
-                                if r.is_ui() { "ui" } else { "vo" },
-                                9.0,
-                                theme::FAINT,
-                            ));
+                            ui.label(theme::disp_text(kind, 9.0, theme::FAINT));
                         });
                     });
                 }
             },
         );
-        if let Some(i) = pick {
-            self.strings.selected = Some(i);
-            self.strings.edit_buf = gt.records[i].text_string();
+        if let Some(rsel) = pick {
+            self.strings.selected = Some(rsel);
+            if let Some(r) = gt.find_any(rsel.asset_id, rsel.scene) {
+                self.strings.edit_buf = r.text_string();
+            }
         }
         self.str_load = loaded; // hand the model back
     }
@@ -1420,17 +1471,21 @@ impl Editor {
         
         let sel = self.strings.selected;
 
-        if let Some(i) = sel.and_then(|i| if i < gt.records.len() { Some(i) } else { None }) {
-            let r = &gt.records[i];
-            let orig = self.original_text(r.asset_id).unwrap_or_else(|| r.text_string());
+        if let Some((rsel, r)) = sel.and_then(|s| gt.find_any(s.asset_id, s.scene).map(|r| (s, r))) {
+            let orig = self.original_text(rsel).unwrap_or_else(|| r.text_string());
             let is_ui = r.is_ui();
+            // The changelist key: a DNEC subtitle's asset_id can collide with a base one, so the scene
+            // is part of the identity for staging and revert.
+            let target = match rsel.scene {
+                Some(sc) => format!("{} · 0x{:08X} @{:08X}", LANGS[self.strings.lang].0, rsel.asset_id, sc),
+                None => format!("{} · 0x{:08X}", LANGS[self.strings.lang].0, rsel.asset_id),
+            };
 
             ui.label(theme::data_text(
-                format!(
-                    "0x{:08X} · {}",
-                    r.asset_id,
-                    if is_ui { "UI string" } else { "VO subtitle" }
-                ),
+                match rsel.scene {
+                    Some(sc) => format!("0x{:08X} · subtitle · scene 0x{:08X}", r.asset_id, sc),
+                    None => format!("0x{:08X} · {}", r.asset_id, if is_ui { "UI string" } else { "VO subtitle" }),
+                },
                 9.5,
                 theme::RED_DK,
             ));
@@ -1488,12 +1543,16 @@ impl Editor {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if theme::primary_button(ui, "Stage", changed).clicked() {
                         let after = self.strings.edit_buf.clone();
-                        let id = r.asset_id;
                         self.stage(
-                            format!("{} · 0x{:08X}", LANGS[self.strings.lang].0, id),
+                            target.clone(),
                             orig.clone(),
                             after.clone(),
-                            Op::SetString { lang: self.strings.lang, asset_id: id, text: after },
+                            Op::SetString {
+                                lang: self.strings.lang,
+                                asset_id: rsel.asset_id,
+                                scene: rsel.scene,
+                                text: after,
+                            },
                         );
                     }
                     if ui
@@ -1501,8 +1560,7 @@ impl Editor {
                         .clicked()
                     {
                         self.strings.edit_buf = orig.clone();
-                        let key = format!("{} · 0x{:08X}", LANGS[self.strings.lang].0, r.asset_id);
-                        if let Some(p) = self.changes.iter().position(|c| c.target == key) {
+                        if let Some(p) = self.changes.iter().position(|c| c.target == target) {
                             let c = self.changes.remove(p);
                             self.unapply(&c);
                         }
@@ -1571,24 +1629,23 @@ impl Editor {
     }
 
     fn strings_context(&mut self, ui: &mut egui::Ui) {
-        let id = self
-            .strings
-            .selected
-            .and_then(|i| self.str_load.ready().and_then(|g| g.records.get(i)))
-            .map(|r| r.asset_id);
+        // Only count the selection as a real string if it still resolves in the loaded model.
+        let sel = self.strings.selected.filter(|s| {
+            self.str_load.ready().is_some_and(|g| g.find_any(s.asset_id, s.scene).is_some())
+        });
         theme::card(ui, "Coverage", None, |ui| {
-            match id {
+            match sel {
                 None => {
                     ui.label(theme::data_text("No string selected.", 10.5, theme::FAINT));
                 }
-                Some(id) => {
+                Some(sel) => {
                     let done: Vec<&str> = LANGS
                         .iter()
                         .enumerate()
                         .filter(|(i, _)| {
                             self.changes.iter().any(|c| {
-                                matches!(&c.op, Op::SetString { lang, asset_id, .. }
-                                    if *lang == *i && *asset_id == id)
+                                matches!(&c.op, Op::SetString { lang, asset_id, scene, .. }
+                                    if *lang == *i && *asset_id == sel.asset_id && *scene == sel.scene)
                             })
                         })
                         .map(|(_, l)| l.0)
@@ -1613,7 +1670,7 @@ impl Editor {
                 }
             }
         });
-        if let Some(id) = id {
+        if let Some(id) = sel.map(|s| s.asset_id) {
             let refs = self.xref.get(&id).cloned().unwrap_or_default();
             theme::card(ui, "Named by", Some(&refs.len().to_string()), |ui| {
                 if refs.is_empty() {
@@ -1633,15 +1690,15 @@ impl Editor {
         }
     }
 
-    /// The retail text for an id: the `before` of a staged change, else what's in memory.
-    fn original_text(&self, asset_id: u32) -> Option<String> {
+    /// The retail text for a string: the `before` of a staged change, else what's in memory.
+    fn original_text(&self, sel: StrSel) -> Option<String> {
         if let Some(c) = self.changes.iter().find(|c| {
-            matches!(&c.op, Op::SetString { asset_id: a, lang, .. }
-                if *a == asset_id && *lang == self.strings.lang)
+            matches!(&c.op, Op::SetString { asset_id: a, scene, lang, .. }
+                if *a == sel.asset_id && *scene == sel.scene && *lang == self.strings.lang)
         }) {
             return Some(c.before.clone());
         }
-        self.str_load.ready().and_then(|g| g.find(asset_id)).map(|r| r.text_string())
+        self.str_load.ready().and_then(|g| g.find_any(sel.asset_id, sel.scene)).map(|r| r.text_string())
     }
 
     // ============================================================== OBJECTS
@@ -2891,7 +2948,7 @@ mod tests {
             target: format!("EN 0x{id:08X}"),
             before: "before".into(),
             after: "after".into(),
-            op: Op::SetString { lang: 0, asset_id: id, text: "PATCHED BY TEST".into() },
+            op: Op::SetString { lang: 0, asset_id: id, scene: None, text: "PATCHED BY TEST".into() },
         });
         let note = ed.publish_inner().expect("publish");
 
@@ -2921,6 +2978,46 @@ mod tests {
         ed.unpublish();
         assert_eq!(std::fs::read(&base).unwrap(), retail);
         assert!(!bak.exists(), "the backup is consumed by the restore");
+    }
+
+    /// A DNEC cinematic subtitle edit is a `SetString` with a `scene`; it patches the base file (same
+    /// as a base-record edit — the DNEC records live in the base `GameText.dlg`), and the target must
+    /// resolve through the scene, not by asset_id alone.
+    #[test]
+    fn editing_a_subtitle_patches_the_base_dnec_section() {
+        let Some((root, game)) = staged_install("setsub") else { return };
+        let mut ed = Editor::new(&game, 0, "02", "Test mod");
+        ed.changes.clear();
+
+        let base = root.join("Cinematics/Dialog/English/GameText.dlg");
+        let retail = std::fs::read(&base).expect("read");
+        let gt = GameText::parse(&retail).expect("parse");
+        let grp = gt.dnec_groups().first().expect("a DNEC scene group");
+        let (scene, sub_id, was) = {
+            let r = &grp.records[0];
+            (grp.scene_hash, r.asset_id, r.text_string())
+        };
+
+        ed.changes.push(Change {
+            target: format!("EN 0x{sub_id:08X} @{scene:08X}"),
+            before: was.clone(),
+            after: "SUBTITLE PATCHED".into(),
+            op: Op::SetString { lang: 0, asset_id: sub_id, scene: Some(scene), text: "SUBTITLE PATCHED".into() },
+        });
+        ed.publish_inner().expect("publish");
+
+        // The base file's DNEC record now carries the new text; the base section is otherwise intact.
+        let patched = GameText::parse(&std::fs::read(&base).unwrap()).expect("reparse");
+        assert_eq!(
+            patched.find_any(sub_id, Some(scene)).map(|r| r.text_string()),
+            Some("SUBTITLE PATCHED".to_string())
+        );
+        assert_eq!(patched.records.len(), gt.records.len(), "base record count unchanged");
+        assert!(!root.join("DLC/02").exists(), "a subtitle edit is a base edit, not a slot add");
+
+        // Unpublish restores retail byte-for-byte (proves the DNEC rebuild is exact).
+        ed.unpublish();
+        assert_eq!(std::fs::read(&base).unwrap(), retail);
     }
 
     /// A NEW id is the one string change a DLC slot can carry, so it goes there — and only then does
@@ -2964,7 +3061,7 @@ mod tests {
                 target: "EN 0x11111111".into(),
                 before: "CHECKPOINT".into(),
                 after: "MODDED CHECKPOINT".into(),
-                op: Op::SetString { lang: 0, asset_id: 0x1111_1111, text: "MODDED CHECKPOINT".into() },
+                op: Op::SetString { lang: 0, asset_id: 0x1111_1111, scene: None, text: "MODDED CHECKPOINT".into() },
             },
             Change {
                 target: "EN MyMod_Text.MyKey".into(),
@@ -3034,7 +3131,7 @@ mod tests {
             target: format!("EN 0x{id:08X}"),
             before: was.clone(),
             after: "REAPPLIED".into(),
-            op: Op::SetString { lang: 0, asset_id: id, text: "REAPPLIED".into() },
+            op: Op::SetString { lang: 0, asset_id: id, scene: None, text: "REAPPLIED".into() },
         });
 
         // Exactly what `pump` sees when a load lands: a pristine parse of the source.
@@ -3045,7 +3142,7 @@ mod tests {
             Some("REAPPLIED".into())
         );
         // ...but the changelist still knows what retail said, so the diff stays honest.
-        assert_eq!(ed.original_text(id), Some(was));
+        assert_eq!(ed.original_text(StrSel { asset_id: id, scene: None }), Some(was));
 
         // A change staged for another language must not bleed into this one.
         ed.str_load = Load::Ready(GameText::parse(&retail).expect("parse"));

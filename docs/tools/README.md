@@ -18,7 +18,8 @@ Every tool prints its usage when run with no arguments.
 |---|---|---|
 | Look at a character, its rig, and play its animations | `sab_workshop` | — |
 | Replace a texture or add a custom icon | `sab_pack` → `sab_dtex` → `sab_gametemplates` | [replace-a-texture](workflows/replace-a-texture.md) |
-| Change UI text, a mission name, or a subtitle | `sab_gametext` | [add-ui-text](workflows/add-ui-text.md) |
+| Change UI text, a mission name, or a subtitle | `sab_workshop` / `sab_gametext` (bin) | [add-ui-text](workflows/add-ui-text.md) |
+| Add an NPC or vehicle to a mission | `EditNodes.pack` — inspect with `sab_probe editnodes` | — |
 | Retune an object — car speed, weapon damage, a light | `sab_gametemplates` | — |
 | Put a new character in the game | `sab_mesh` + `sab_skeleton` + `sab_pack` | [port-a-character](workflows/port-a-character.md) |
 | Export an animation to glTF | `sab_havok65` (+ `sab_animmeta`) | — |
@@ -35,7 +36,7 @@ Every tool prints its usage when run with no arguments.
 | [`sab_workshop`](../../tools/sab_workshop/README.md) | **The GUI.** Character/animation viewer (textured, GPU-skinned, orbit camera) plus mod-editor pages for Templates, GameText and Icons. Start here. |
 | [`sab_pack`](../../tools/sab_pack/README.md) | Read and **write** `.megapack` archives. Builds the patch-override packs that mods ship as. |
 | [`sab_dtex`](../../tools/sab_dtex/README.md) | DTEX ⇄ DDS textures, with byte-faithful repack. |
-| [`sab_gametext`](../../tools/sab_gametext/README.md) | `GameText.dlg` — every UI string and VO subtitle. Read, edit, and add new ids. |
+| `sab_gametext` (a `sab_formats` bin) | `GameText.dlg` authoring — set/add UI strings and DNEC subtitles. Inspect read-only with `sab_probe gametext`. |
 | [`sab_gametemplates`](../../tools/sab_gametemplates/README.md) | `GameTemplates.wsd` (AULB) — the object-definition layer: cars, weapons, props, lights. |
 | [`sab_sbla`](../../tools/sab_sbla/README.md) | Splice an asset into a multi-asset `ALBS` sub-pack and fix the directory chain. |
 | [`sab_validator`](../../tools/sab_validator/README.md) | Parses a mod the way the engine's mount path does and reports what would fail. **Run this before you launch.** |

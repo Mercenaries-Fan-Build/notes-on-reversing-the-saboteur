@@ -50,15 +50,17 @@ docs/
     lua_scripts.md            ★ .luap packs — flat, uncompressed, the cheapest way in
     archive_and_models.md     MP00 megapack → SBLA → MSHA → flat MESH; patch-megapack override
     megapack_write.md · sbla_subpack.md · mesh_geometry.md · skeleton.md
-    dtex_texture.md · gametext.md · gametemplates.md · map6.md
+    dtex_texture.md · gametext.md · gametemplates.md · editnodes.md · map6.md
     audio_1kcp.md             the 1KCP Wwise package + extraction pipeline
     animation_havok65.md      AP0L pack, Havok 6.5 — the community anim-decode gap, cracked
 tools/                        the modding toolset — each crate's README is its manual
   sab_workshop/               the GUI: character/anim viewer + Templates/GameText/Icons editor
-  sab_pack/ sab_dtex/ sab_sbla/ sab_gametext/ sab_gametemplates/   read + write the game's formats
+  sab_pack/ sab_dtex/ sab_sbla/ sab_gametemplates/                 read + write the game's formats
   sab_mesh/ sab_skeleton/ sab_havok65/ sab_animmeta/               asset extraction → glTF
+  sab_probe/                  read-only interrogation (incl. gametext + editnodes inspection)
   sab_validator/              parses a mod the way the engine's mount path does
-  sab_formats/                the shared codec library the others build on
+  sab_formats/                the shared codec library the others build on (gametext, editnodes,
+                              dtex, mesh, sbla, …; ships the `sab_gametext` authoring bin)
   sab_probe/ sab_map6/ sab_asi/                                    inspection + live engine reads
   saboteur_audio/             Rust: 1KCP → .wem carve → vgmstream → WAV (all VO extracted)
   ghidra/DecompileSaboteur.java   headless full-binary decompile export

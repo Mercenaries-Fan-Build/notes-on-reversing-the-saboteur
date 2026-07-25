@@ -2,11 +2,16 @@
 name = "sab_gametext"
 version = "0.1.0"
 edition = "2021"
-description = "Reader/writer for The Saboteur (2009) GameText.dlg (TXTD records) localized-text container"
+description = "CLI for The Saboteur (2009) GameText.dlg (TXTD records) localized-text container"
 
 [[bin]]
 name = "sab_gametext"
 path = "src/main.rs"
+
+[dependencies]
+# The GameText.dlg parser/writer lives in the shared library so the Workshop, validator and this CLI
+# all use one implementation. This crate is a thin command-line front-end over sab_formats::gametext.
+sab_formats = { path = "../sab_formats" }
 
 [profile.release]
 opt-level = 3

@@ -55,9 +55,89 @@ impl Record {
     pub fn set_text(&mut self, s: &str) {
         self.text = encode_text(s);
     }
+    /// The speaking character/voice for this record's VO key, canonicalized for grouping; `None`
+    /// for UI text. See [`speaker`].
+    pub fn speaker(&self) -> Option<String> {
+        speaker(&self.key_str())
+    }
     fn size(&self) -> usize {
         4 + 4 + 2 + self.key.len() + 2 + self.text.len() * 2
     }
+}
+
+// ------------------------------------------------------------------ speaker (from the VO key)
+//
+// VO/subtitle keys encode who is speaking, under two naming grammars observed across all six retail
+// files (8459 keyed records, 100% coverage):
+//   * scripted dialogue  `vo_<cat>_<scene…>_<Speaker>_<idx>`  — speaker is the token BEFORE the
+//     trailing line index (`vo_mis_A1M0_..._Javier_01`); `vo_gen_Death_<Speaker>` has no index so the
+//     speaker is the last token.
+//   * combat/ambient barks `<Speaker>_<CAT>_<action>`         — speaker is the FIRST token
+//     (`Adler_Spo_CarCrash`, `MNS1_mis_…`). A leading `Play_` wrapper is stripped first.
+// This is a naming CONVENTION, not a byte-format fact — a mislabel is cosmetic, never a parse error.
+
+/// Does `s` look like a trailing line index — `^[A-Za-z]{0,6}\d+[A-Za-z]?$` (e.g. `01`, `Hury01`,
+/// `11c`)? Used to find the speaker token in the scripted-dialogue grammar.
+fn is_line_index(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && b[i].is_ascii_alphabetic() && i < 6 {
+        i += 1;
+    }
+    let digit_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digit_start {
+        return false; // no digits
+    }
+    if i < b.len() && b[i].is_ascii_alphabetic() {
+        i += 1; // one optional trailing letter
+    }
+    i == b.len()
+}
+
+/// Canonicalize a raw speaker token for grouping: collapse a numbered archetype voice to its base
+/// (`MNS1..6` → `MNS`, `drsgrl1` → `drsgrl`) then merge known spelling/typo variants.
+fn canon_speaker(raw: &str) -> String {
+    let base = raw.trim_end_matches(|c: char| c.is_ascii_digit());
+    let base = if base.is_empty() { raw } else { base };
+    match base.to_ascii_lowercase().as_str() {
+        "annoucer" | "announcer" => "Announcer".into(),
+        "juless" | "jules" => "Jules".into(),
+        "minto" | "mingo" => "Mingo".into(),
+        "lecrochet" | "lecrochete" | "crochet" => "LeCrochet".into(),
+        "dorisgirl" | "dorrisgirl" | "dorisgirls" | "drsgrl" => "Doris's Girls".into(),
+        "prost" => "Prostitute".into(),
+        _ => base.to_string(),
+    }
+}
+
+/// The speaking character/voice for a VO or subtitle key, canonicalized for grouping (named cast
+/// kept individual; numbered archetype voices collapsed; typo variants merged). `None` for UI text
+/// (empty key) or a key with no recoverable speaker.
+pub fn speaker(key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+    let k = key.strip_prefix("Play_").unwrap_or(key);
+    let toks: Vec<&str> = k.split('_').collect();
+    let raw = if toks.first() == Some(&"vo") {
+        let t = &toks[1..];
+        if t.len() < 2 {
+            return None;
+        }
+        if is_line_index(t[t.len() - 1]) {
+            t[t.len() - 2]
+        } else {
+            t[t.len() - 1]
+        }
+    } else if toks.len() >= 2 {
+        toks[0]
+    } else {
+        return None;
+    };
+    Some(canon_speaker(raw))
 }
 
 /// Encode a string to the on-disk UTF-16LE form (code units + NUL terminator; `str_len` counts it).
@@ -363,6 +443,24 @@ mod tests {
             records: vec![base],
             tail: Tail::Dnec(vec![SubTable { scene_hash: 0xABCD_0001, records: vec![vo] }]),
         }
+    }
+
+    #[test]
+    fn speaker_from_key() {
+        // scripted dialogue: speaker before the trailing index
+        assert_eq!(speaker("vo_mis_A1M0_Race_To_Saar_End_Lose_Javier_01").as_deref(), Some("Javier"));
+        assert_eq!(speaker("vo_cin_404_CinB_CataOut_Sean_Hury01").as_deref(), Some("Sean"));
+        // no-index death barks: speaker is the last token
+        assert_eq!(speaker("vo_gen_Death_Bishop").as_deref(), Some("Bishop"));
+        // combat/ambient barks: speaker is the first token
+        assert_eq!(speaker("Adler_Spo_CarCrash").as_deref(), Some("Adler"));
+        assert_eq!(speaker("Play_vo_mis_A1M4_OverhearTorture_Victim_01").as_deref(), Some("Victim"));
+        // archetype collapse + typo merge
+        assert_eq!(speaker("MNS4_mis_grntgen_high_02").as_deref(), Some("MNS"));
+        assert_eq!(speaker("vo_x_scene_Annoucer_03").as_deref(), Some("Announcer"));
+        assert_eq!(speaker("drsgrl1_mis_grntgen_high_01").as_deref(), Some("Doris's Girls"));
+        // UI text has no speaker
+        assert_eq!(speaker(""), None);
     }
 
     #[test]

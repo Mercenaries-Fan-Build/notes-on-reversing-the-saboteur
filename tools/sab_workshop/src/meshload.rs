@@ -1175,3 +1175,259 @@ pub fn assemble(buf: &[u8], parts: &[MeshEntry]) -> Result<LoadedMesh, String> {
     }
     Ok(LoadedMesh { name, mesh: out, bones, prim_parent_bone, bone_hashes: hashes, stored_ibm: truth, part_ranges })
 }
+
+// ---------------------------------------------------------------------------
+// glTF (.glb) export — skinned bind-pose mesh + skeleton. Ported from sab_mesh's proven writer
+// (same structure): JOINTS_0 carry global bone indices, skin.joints is the identity list [0..N), so
+// nodeWorld[b] * inverseBindMatrices[b] = identity at bind pose. The one convention that matters:
+// Bone::inv_bind is stored ROW-MAJOR here and glTF matrices are COLUMN-MAJOR, so each inverse-bind
+// is transposed on the way out.
+// ---------------------------------------------------------------------------
+
+/// Row-major 4x4 (flat) to column-major flat — a transpose of the 16-float layout.
+fn to_colmajor(m: &[f32; 16]) -> [f32; 16] {
+    [
+        m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], m[3], m[7],
+        m[11], m[15],
+    ]
+}
+
+/// Serialize an assembled character as a standalone skinned bind-pose `.glb` (glTF 2.0 binary):
+/// mesh + skeleton + skin. Untextured. One primitive over the full merged index buffer.
+pub fn write_glb(lm: &LoadedMesh) -> Vec<u8> {
+    let g = &lm.mesh;
+    let nv = g.positions.len();
+    let ni = g.indices.len();
+    let nb = lm.bones.len();
+    let has_skin = nb > 0 && g.joints.len() == nv && g.weights.len() == nv;
+
+    let mut bin: Vec<u8> = Vec::new();
+    let align = |b: &mut Vec<u8>| while b.len() % 4 != 0 { b.push(0) };
+
+    let pos_off = bin.len();
+    let (mut pmin, mut pmax) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in &g.positions {
+        for k in 0..3 {
+            pmin[k] = pmin[k].min(p[k]);
+            pmax[k] = pmax[k].max(p[k]);
+            bin.extend_from_slice(&p[k].to_le_bytes());
+        }
+    }
+    align(&mut bin);
+    let nrm_off = bin.len();
+    for n in &g.normals {
+        for k in 0..3 {
+            bin.extend_from_slice(&n[k].to_le_bytes());
+        }
+    }
+    align(&mut bin);
+    let uv_off = bin.len();
+    for u in &g.uvs {
+        for k in 0..2 {
+            bin.extend_from_slice(&u[k].to_le_bytes());
+        }
+    }
+    align(&mut bin);
+    let jnt_off = bin.len();
+    for j in &g.joints {
+        for k in 0..4 {
+            bin.extend_from_slice(&j[k].to_le_bytes());
+        }
+    }
+    align(&mut bin);
+    let wgt_off = bin.len();
+    for w in &g.weights {
+        for k in 0..4 {
+            bin.extend_from_slice(&w[k].to_le_bytes());
+        }
+    }
+    align(&mut bin);
+    let idx_off = bin.len();
+    for &i in &g.indices {
+        bin.extend_from_slice(&i.to_le_bytes());
+    }
+    align(&mut bin);
+    let ibm_off = bin.len();
+    const IDENT: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+    for b in &lm.bones {
+        for c in to_colmajor(&b.inv_bind.unwrap_or(IDENT)) {
+            bin.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    align(&mut bin);
+
+    let f = |x: f32| if x == 0.0 { "0".to_string() } else { format!("{x}") };
+    let mut bv = String::new();
+    let push_bv = |s: &mut String, off: usize, len: usize, target: Option<u32>| {
+        if !s.is_empty() {
+            s.push(',');
+        }
+        s.push_str(&format!("{{\"buffer\":0,\"byteOffset\":{off},\"byteLength\":{len}"));
+        if let Some(t) = target {
+            s.push_str(&format!(",\"target\":{t}"));
+        }
+        s.push('}');
+    };
+    push_bv(&mut bv, pos_off, nv * 12, Some(34962));
+    push_bv(&mut bv, nrm_off, nv * 12, Some(34962));
+    push_bv(&mut bv, uv_off, nv * 8, Some(34962));
+    push_bv(&mut bv, jnt_off, nv * 8, Some(34962));
+    push_bv(&mut bv, wgt_off, nv * 16, Some(34962));
+    push_bv(&mut bv, idx_off, ni * 4, Some(34963));
+    push_bv(&mut bv, ibm_off, nb * 64, None);
+
+    let mut acc = format!(
+        "{{\"bufferView\":0,\"componentType\":5126,\"count\":{nv},\"type\":\"VEC3\",\"min\":[{},{},{}],\"max\":[{},{},{}]}}",
+        f(pmin[0]), f(pmin[1]), f(pmin[2]), f(pmax[0]), f(pmax[1]), f(pmax[2])
+    );
+    acc.push_str(&format!(",{{\"bufferView\":1,\"componentType\":5126,\"count\":{nv},\"type\":\"VEC3\"}}"));
+    acc.push_str(&format!(",{{\"bufferView\":2,\"componentType\":5126,\"count\":{nv},\"type\":\"VEC2\"}}"));
+    acc.push_str(&format!(",{{\"bufferView\":3,\"componentType\":5123,\"count\":{nv},\"type\":\"VEC4\"}}"));
+    acc.push_str(&format!(",{{\"bufferView\":4,\"componentType\":5126,\"count\":{nv},\"type\":\"VEC4\"}}"));
+    acc.push_str(&format!(",{{\"bufferView\":5,\"componentType\":5125,\"count\":{ni},\"type\":\"SCALAR\"}}"));
+    acc.push_str(&format!(",{{\"bufferView\":6,\"componentType\":5126,\"count\":{nb},\"type\":\"MAT4\"}}"));
+
+    let attrs = if has_skin {
+        "\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"JOINTS_0\":3,\"WEIGHTS_0\":4"
+    } else {
+        "\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2"
+    };
+    let prim_json = format!("{{\"attributes\":{{{attrs}}},\"indices\":5}}");
+
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nb];
+    let mut roots: Vec<usize> = Vec::new();
+    for (b, bone) in lm.bones.iter().enumerate() {
+        if bone.parent < 0 {
+            roots.push(b);
+        } else {
+            children[bone.parent as usize].push(b);
+        }
+    }
+    let mut nodes = String::new();
+    for (b, bone) in lm.bones.iter().enumerate() {
+        if b > 0 {
+            nodes.push(',');
+        }
+        nodes.push_str(&format!(
+            "{{\"translation\":[{},{},{}],\"rotation\":[{},{},{},{}],\"scale\":[{},{},{}]",
+            f(bone.t[0]), f(bone.t[1]), f(bone.t[2]),
+            f(bone.r[0]), f(bone.r[1]), f(bone.r[2]), f(bone.r[3]),
+            f(bone.s[0]), f(bone.s[1]), f(bone.s[2])
+        ));
+        if !children[b].is_empty() {
+            let cs: Vec<String> = children[b].iter().map(|c| c.to_string()).collect();
+            nodes.push_str(&format!(",\"children\":[{}]", cs.join(",")));
+        }
+        nodes.push('}');
+    }
+    let mesh_node = nb;
+    if nb > 0 {
+        nodes.push(',');
+    }
+    if has_skin {
+        nodes.push_str(&format!("{{\"name\":\"{}\",\"mesh\":0,\"skin\":0}}", lm.name));
+    } else {
+        nodes.push_str(&format!("{{\"name\":\"{}\",\"mesh\":0}}", lm.name));
+    }
+
+    let joints_list: Vec<String> = (0..nb).map(|b| b.to_string()).collect();
+    let skins = if has_skin {
+        format!(
+            ",\"skins\":[{{\"inverseBindMatrices\":6,\"skeleton\":{},\"joints\":[{}]}}]",
+            roots.first().copied().unwrap_or(0),
+            joints_list.join(",")
+        )
+    } else {
+        String::new()
+    };
+    let mut scene_nodes: Vec<String> = roots.iter().map(|r| r.to_string()).collect();
+    scene_nodes.push(mesh_node.to_string());
+
+    let json = format!(
+        "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"sab_workshop\"}},\
+\"scene\":0,\"scenes\":[{{\"nodes\":[{}]}}],\
+\"nodes\":[{}],\
+\"meshes\":[{{\"name\":\"{}\",\"primitives\":[{}]}}]{},\
+\"accessors\":[{}],\
+\"bufferViews\":[{}],\
+\"buffers\":[{{\"byteLength\":{}}}]}}",
+        scene_nodes.join(","), nodes, lm.name, prim_json, skins, acc, bv, bin.len()
+    );
+
+    let mut json_bytes = json.into_bytes();
+    while json_bytes.len() % 4 != 0 {
+        json_bytes.push(b' ');
+    }
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+    let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
+    let mut glb = Vec::with_capacity(total);
+    glb.extend_from_slice(&0x4654_6C67u32.to_le_bytes()); // "glTF"
+    glb.extend_from_slice(&2u32.to_le_bytes());
+    glb.extend_from_slice(&(total as u32).to_le_bytes());
+    glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes()); // "JSON"
+    glb.extend_from_slice(&json_bytes);
+    glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    glb.extend_from_slice(&0x004E_4942u32.to_le_bytes()); // "BIN\0"
+    glb.extend_from_slice(&bin);
+    glb
+}
+
+#[cfg(test)]
+mod glb_tests {
+    use super::*;
+    use crate::formats::{Bone, Smsh};
+
+    fn bone(parent: i32) -> Bone {
+        Bone {
+            parent,
+            name: "b".into(),
+            t: [0.0, 0.0, 0.0],
+            r: [0.0, 0.0, 0.0, 1.0],
+            s: [1.0, 1.0, 1.0],
+            inv_bind: Some([1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]),
+            local_m: None,
+        }
+    }
+
+    #[test]
+    fn glb_container_is_valid() {
+        let lm = LoadedMesh {
+            name: "T".into(),
+            mesh: Smsh {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                uvs: vec![[0.0, 0.0]; 3],
+                joints: vec![[0, 0, 0, 0]; 3],
+                weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+                indices: vec![0, 1, 2],
+                prims: vec![],
+            },
+            bones: vec![bone(-1), bone(0)],
+            prim_parent_bone: vec![],
+            bone_hashes: vec![0, 0],
+            stored_ibm: std::collections::HashMap::new(),
+            part_ranges: vec![],
+        };
+        let glb = write_glb(&lm);
+        // GLB header: magic "glTF", version 2, total length == bytes.
+        assert_eq!(&glb[0..4], b"glTF");
+        assert_eq!(u32::from_le_bytes(glb[4..8].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(glb[8..12].try_into().unwrap()) as usize, glb.len());
+        // JSON chunk header.
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        assert_eq!(&glb[16..20], b"JSON");
+        let json = std::str::from_utf8(&glb[20..20 + json_len]).unwrap();
+        // structure: one mesh, a skin (skinned), 7 base accessors, 7 bufferViews.
+        assert!(json.contains("\"meshes\""));
+        assert!(json.contains("\"skins\""));
+        assert!(json.contains("\"JOINTS_0\":3"));
+        assert!(json.contains("\"count\":3,\"type\":\"VEC3\"")); // positions/normals
+        // BIN chunk follows and is 4-aligned.
+        let bin_off = 20 + json_len;
+        assert_eq!(&glb[bin_off + 4..bin_off + 8], b"BIN\0");
+        assert_eq!(glb.len() % 4, 0);
+    }
+}

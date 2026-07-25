@@ -24,11 +24,13 @@
 //! Each module exposes a pure parser over `&[u8]` plus the structural facts a validator needs.
 
 pub mod dtex;
+pub mod editnodes;
 pub mod gametemplates;
 pub mod gametext;
 pub mod megapack;
 pub mod mesh;
 pub mod sbla;
+pub mod wwise;
 
 /// Saboteur resource-name hash. Identical to `mercs2_formats::hash::pandemic_hash_m2`
 /// (`Saboteur.exe FUN_00dc1e20`). Empty string hashes to 0.

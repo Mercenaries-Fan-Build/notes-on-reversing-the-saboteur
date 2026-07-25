@@ -242,6 +242,8 @@ pub fn run(cfg: Config) {
     let mut nav_search = String::new();
     // Outcome of the last click-to-load, surfaced in the status bar: (message, is_error).
     let mut load_status: Option<(String, bool)> = None;
+    // The parts of the currently-viewed character, for glTF export (re-assembled on demand).
+    let mut current_parts: Vec<meshload::MeshEntry> = Vec::new();
     let mut last_frame = Instant::now();
 
     // mouse
@@ -380,12 +382,13 @@ pub fn run(cfg: Config) {
 
                     // --- UI ---
                     let rig_ok = skel.len() == rig_bones;
+                    let mut export_glb_req = false;
                     gui.run(|ctx| {
                         build_ui(
                             ctx, &catalog, &playable_rows, &mut show_all,
                             &current, &mut playback, &mut pending_load, &mut renderer.show_grid,
                             &mut renderer.show_textures, &mut lock_root, &errors, pack.is_some(), rig_ok,
-                            mesh_stats, &model_name, &load_status, &mut page, &mut thumbs,
+                            mesh_stats, &model_name, &load_status, &mut page, &mut thumbs, &mut export_glb_req,
                             &mut MatsCtx {
                                 submeshes: &submeshes,
                                 assets: &assets,
@@ -416,6 +419,33 @@ pub fn run(cfg: Config) {
                         );
                     });
 
+                    // --- act on an "Export .glb" click (Inspect page): re-assemble the viewed
+                    // character and write a skinned bind-pose glTF to a chosen path ---
+                    if export_glb_req {
+                        match &megapack {
+                            Some(mp) if !current_parts.is_empty() => {
+                                match meshload::assemble(mp.raw(), &current_parts) {
+                                    Ok(lm) => {
+                                        if let Some(out) = rfd::FileDialog::new()
+                                            .set_title("Export model as glTF (.glb)")
+                                            .set_file_name(format!("{model_name}.glb"))
+                                            .add_filter("glTF binary", &["glb"])
+                                            .save_file()
+                                        {
+                                            let glb = meshload::write_glb(&lm);
+                                            load_status = Some(match std::fs::write(&out, &glb) {
+                                                Ok(()) => (format!("exported → {}", out.display()), false),
+                                                Err(e) => (format!("write: {e}"), true),
+                                            });
+                                        }
+                                    }
+                                    Err(e) => load_status = Some((format!("export assemble: {e}"), true)),
+                                }
+                            }
+                            _ => load_status = Some(("open a character from the browser first".into(), true)),
+                        }
+                    }
+
                     // --- act on a right-click "move to group" (persists the override) ---
                     if let Some((ai, cat)) = pending_group.take() {
                         if let Some(a) = browse_assets.get(ai) {
@@ -433,6 +463,7 @@ pub fn run(cfg: Config) {
                         if let (Some(mp), false) = (&megapack, picked.is_empty()) {
                             match meshload::assemble(mp.raw(), &picked) {
                                 Ok(lm) => {
+                                    current_parts = picked.clone(); // for glTF export
                                     let nbones = lm.bones.len();
                                     renderer.set_mesh(&lm.mesh, nbones);
                                     skel = lm.bones;
@@ -1623,6 +1654,14 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                         // different on every machine, which is what Detect is for.
                         .hint_text("the folder holding Global/, France.materials and Saboteur.exe"),
                 );
+                if ui.button("Browse…").clicked() {
+                    if let Some(d) = rfd::FileDialog::new()
+                        .set_title("Select the Saboteur install folder")
+                        .pick_folder()
+                    {
+                        sx.dir_edit = d.to_string_lossy().replace('\\', "/");
+                    }
+                }
                 if ui.button("Detect").clicked() {
                     match crate::settings::detect_install() {
                         Some(d) => {
@@ -1631,7 +1670,7 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                         }
                         None => {
                             sx.note = Some((
-                                "No install found in the usual GOG/Steam locations — paste the path.".into(),
+                                "No install found in the usual GOG/Steam locations — Browse to it.".into(),
                                 true,
                             ));
                         }
@@ -1708,6 +1747,36 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                 theme::FAINT,
             ));
 
+            ui.add_space(12.0);
+            theme::eyebrow(ui, "Voice audio");
+            ui.horizontal(|ui| {
+                ui.label(theme::data_text("vgmstream-cli", 11.0, theme::DIM));
+                ui.add(
+                    egui::TextEdit::singleline(&mut sx.s.vgmstream_path)
+                        .desired_width(320.0)
+                        .hint_text("path to vgmstream-cli.exe"),
+                );
+                if ui.button("Browse…").clicked() {
+                    let mut dlg = rfd::FileDialog::new().set_title("Select vgmstream-cli.exe");
+                    if cfg!(windows) {
+                        dlg = dlg.add_filter("executable", &["exe"]);
+                    }
+                    if let Some(f) = dlg.pick_file() {
+                        sx.s.vgmstream_path = f.to_string_lossy().replace('\\', "/");
+                    }
+                }
+            });
+            {
+                let (msg, col) = if sx.s.vgmstream_path.trim().is_empty() {
+                    ("Optional — lets the Strings page play a line's voice. vgmstream is a separate tool (not bundled); point here or put vgmstream-cli on PATH.", theme::FAINT)
+                } else if sx.s.vgmstream().is_some() {
+                    ("Found — VO playback enabled on the Strings page.", theme::COLD)
+                } else {
+                    ("Not found at that path.", theme::RED)
+                };
+                ui.label(theme::data_text(msg, 10.0, col));
+            }
+
             // ---- apply ----
             ui.add_space(16.0);
             ui.separator();
@@ -1777,6 +1846,7 @@ fn build_ui(
     load_status: &Option<(String, bool)>,
     page: &mut Page,
     thumbs: &mut Thumbs,
+    export_glb: &mut bool,
     mats: &mut MatsCtx,
     nav: &mut NavCtx,
     ed: &mut crate::editor::Editor,
@@ -1893,6 +1963,17 @@ fn build_ui(
                 theme::DIM,
             ));
             ui.separator();
+            // Export the viewed character as a skinned bind-pose glTF (Inspect page, rigged models).
+            if page.editor().is_none() && mesh_stats.2 > 0 {
+                if ui
+                    .add(egui::Button::new(theme::disp_text("Export .glb", 10.0, theme::COLD)).fill(theme::COLD_SOFT).stroke(egui::Stroke::new(1.0, theme::COLD_DK)).rounding(egui::Rounding::ZERO))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    *export_glb = true;
+                }
+                ui.separator();
+            }
             // Each page reports the fact IT is about; the status bar is not a fixed readout.
             ui.label(theme::data_text(
                 match page.editor() {

@@ -54,6 +54,11 @@ pub struct Settings {
     /// Global type-size multiplier (see `gui::theme::type_scale`).
     #[serde(default = "default_scale")]
     pub type_scale: f32,
+    /// Path to a `vgmstream-cli` executable, for decoding Wwise `.wem` voice lines so the Strings
+    /// page can play them. Empty by default (the app then tries `vgmstream-cli` on PATH); it is a
+    /// separate third-party tool, not bundled.
+    #[serde(default)]
+    pub vgmstream_path: String,
 }
 
 impl Default for Settings {
@@ -64,6 +69,7 @@ impl Default for Settings {
             dlc_slot: default_slot(),
             mod_name: default_mod_name(),
             type_scale: default_scale(),
+            vgmstream_path: String::new(),
         }
     }
 }
@@ -133,6 +139,14 @@ impl Settings {
         if self.dlc_slot.trim().is_empty() {
             self.dlc_slot = default_slot();
         }
+        self.vgmstream_path = self.vgmstream_path.trim().replace('\\', "/");
+    }
+
+    /// The configured `vgmstream-cli` path if it is set and present on disk; otherwise `None` (the
+    /// caller may still fall back to a `vgmstream-cli` on PATH).
+    pub fn vgmstream(&self) -> Option<String> {
+        let p = self.vgmstream_path.trim();
+        (!p.is_empty() && std::path::Path::new(p).exists()).then(|| p.to_string())
     }
 
     // ---- derived game paths: the whole point of storing one root ----
@@ -244,6 +258,7 @@ mod tests {
             dlc_slot: "07".into(),
             mod_name: "Resistance Pack".into(),
             type_scale: 1.45,
+            vgmstream_path: "C:/tools/vgmstream/vgmstream-cli.exe".into(),
         };
         written.clamp();
         // save_to must create the intermediate directories, not fail on them.
@@ -254,6 +269,7 @@ mod tests {
         assert_eq!(read.lang, 3);
         assert_eq!(read.dlc_slot, "07");
         assert_eq!(read.mod_name, "Resistance Pack");
+        assert_eq!(read.vgmstream_path, "C:/tools/vgmstream/vgmstream-cli.exe");
         assert!((read.type_scale - 1.45).abs() < 1e-6);
         // A stored install path must NOT be replaced by auto-detection.
         assert_ne!(read.game_dir, detect_install().unwrap_or_default());

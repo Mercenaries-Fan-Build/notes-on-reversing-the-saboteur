@@ -136,7 +136,7 @@ does not** — 1312 extra records per language (EN), keyed by `asset_id` like ev
 A byte-faithful writer reconstructs the whole section: base records, then `DNEC` + `group_count` +
 directory (with **recomputed** absolute offsets), then each sub-table (recomputing `count`/`tsize`).
 Because every offset is derived from the layout, editing a base **or** a DNEC record — changing size by
-any `Δ` — just falls out; there is no separate rebasing step. Verified: `tools/sab_gametext` parses
+any `Δ` — just falls out; there is no separate rebasing step. Verified: `sab_formats::gametext` parses
 the sub-tables into first-class editable records and round-trips all six languages byte-identically.
 
 ### `pandemic_hash`
@@ -149,8 +149,8 @@ FNV-1a/32, basis `0x811C9DC5`, prime `0x01000193`, per-byte `|0x20` case-fold, f
 
 ## Validation
 
-The parser/writer lives in `tools/sab_formats/src/gametext.rs` (shared by the Workshop and validator);
-`tools/sab_gametext` is a thin CLI over it (read / edit / add / write). Run over all six languages:
+The parser/writer lives in `tools/sab_formats/src/gametext.rs` (shared by the Workshop, validator, the
+`sab_probe gametext` inspector, and the `sab_gametext` authoring bin). Run over all six languages:
 
 * **Exact byte consumption** — the base record loop + fully-parsed `DNEC` sub-tables consume every
   byte; cursor == filesize.

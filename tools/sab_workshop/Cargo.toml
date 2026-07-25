@@ -19,6 +19,10 @@ egui = "0.28"
 egui-wgpu = "0.28"
 glam = "0.27"
 bytemuck = { version = "1", features = ["derive"] }
+# Native OS file/folder pickers for the Settings page path fields — no hand-typed paths.
+rfd = "0.14"
+# PNG encode for the "Export texture" button (decoded RGBA -> .png).
+png = "0.17"
 pollster = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

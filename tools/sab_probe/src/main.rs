@@ -958,18 +958,35 @@ fn usage() -> ! {
     eprintln!("  sab_probe names <skeleton.json> -              recover bone names by hashing candidates");
     eprintln!("  sab_probe anim  <anim_bone_map.json> <skeleton.json>");
     eprintln!("                                            does each track drive the bone it claims?");
+    eprintln!("  sab_probe editnodes <info|list|tree> <EditNodes.pack>   dynamic-object DB");
+    eprintln!("  sab_probe gametext  <info|list|get|hash|roundtrip> <GameText.dlg>");
     eprintln!();
     eprintln!("e.g. sab_probe parts \"C:/GOG Games/The Saboteur/Global/Dynamic0.megapack\" CH_AL_SeanDevlin");
     std::process::exit(2)
 }
 
+mod audio;
+mod editnodes;
+mod gametext;
 mod texbind;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // `texbind` has its own sub-dispatch (variable arity).
+    // These have their own sub-dispatch (variable arity).
     if args.len() > 1 && args[1] == "texbind" {
         texbind::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "editnodes" {
+        editnodes::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "gametext" {
+        gametext::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "audio" {
+        audio::run(&args[2..]);
         return;
     }
     if args.len() < 4 {

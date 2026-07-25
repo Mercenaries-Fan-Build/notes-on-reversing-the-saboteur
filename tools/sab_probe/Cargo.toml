@@ -10,6 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 flate2 = "1"
+# Read-only inspection of the text/object formats reuses the one parser library rather than a
+# second copy. sab_probe stays read-only; the authoring side lives in sab_formats' own bin targets.
+sab_formats = { path = "../sab_formats" }
 
 [profile.release]
 opt-level = 3

@@ -18,6 +18,8 @@ sab_probe bones <megapack> <name_substr>   per-bone truth vs chain, and the loca
 sab_probe names <skeleton.json> -          recover bone names by hashing candidates
 sab_probe anim  <anim_bone_map.json> <skeleton.json>
                                            does each track drive the bone it claims?
+sab_probe editnodes <info|list|tree> <EditNodes.pack>   dynamic-object DB (NPCs/vehicles/…)
+sab_probe gametext  <info|list|get|hash|roundtrip> <GameText.dlg>   UI text + VO subtitles
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

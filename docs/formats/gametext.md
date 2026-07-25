@@ -76,8 +76,12 @@ record_count × Record               -- contiguous, no padding
 
 "DNEC" section                       -- per-cinematic-scene VO overlays (see below)
   u32   group_count
-  group_count × { u32 scene_hash; u32 file_offset }
-  ... sub-blobs to EOF
+  group_count × { u32 scene_hash; u32 file_offset }   -- file_offset is ABSOLUTE
+  group_count × SubTable                               -- in directory order (== ascending offset)
+    u32   count                        -- TXTD records in this scene overlay
+    u32   tsize                        -- Σ str_len over this sub-table (code units), == count's Σ
+    count × Record                     -- same TXTD layout as the base records
+    char  magic[4] = "DNEC"            -- 4-byte terminator (NOT a nested directory)
 ```
 
 ### The `asset_id` / lookup key  ★ the load-bearing fact for modding
@@ -118,12 +122,22 @@ After the base records, magic `DNEC` (bytes `44 4E 45 43`) begins a directory:
 `u32 group_count`, then `group_count × { u32 scene_hash, u32 file_offset }`. Each `scene_hash` is the
 hash of a cinematic scene; some match a loose `<hash>.pov` file at the **install root** (not `Global/`,
 which holds only the four `.megapack`s) — e.g. `2721ff0b`, `955a92d4`. Only 6 of the 81 `DNEC` scene
-hashes have a loose `.pov`; the rest are presumably packed;
-each `file_offset` is an **absolute file offset** to a self-contained sub-table
-(`u32 version=5, u32 …, TXTD records`) of that scene's dialogue. For a byte-faithful writer the whole
-`DNEC` section is preserved verbatim; when the base-record section changes size by `Δ`, every
-`file_offset` must be rebased by `Δ` (they are absolute). Editing/adding **UI** strings never touches
-the sub-tables' contents, only their position.
+hashes have a loose `.pov`; the rest are presumably packed. Each `file_offset` is an **absolute file
+offset** to a self-contained sub-table, and the sub-tables are laid out **in directory order (which is
+also ascending offset order)** immediately after the directory, contiguous to EOF.
+
+Each sub-table is `{ u32 count, u32 tsize, count × TXTD record, "DNEC" }` — note there is **no**
+`version` field (an earlier revision of this doc misread the first group's `count==5` as `version=5`),
+and it ends with a 4-byte `DNEC` **terminator**, not a nested directory. `tsize` is `Σ str_len` over
+that sub-table's records (code units incl. NUL), exactly as the base header's `total_string_code_units`
+is for the base records. These sub-tables carry the **per-scene cinematic VO subtitles the base section
+does not** — 1312 extra records per language (EN), keyed by `asset_id` like every other record.
+
+A byte-faithful writer reconstructs the whole section: base records, then `DNEC` + `group_count` +
+directory (with **recomputed** absolute offsets), then each sub-table (recomputing `count`/`tsize`).
+Because every offset is derived from the layout, editing a base **or** a DNEC record — changing size by
+any `Δ` — just falls out; there is no separate rebasing step. Verified: `tools/sab_gametext` parses
+the sub-tables into first-class editable records and round-trips all six languages byte-identically.
 
 ### `pandemic_hash`
 
@@ -135,11 +149,14 @@ FNV-1a/32, basis `0x811C9DC5`, prime `0x01000193`, per-byte `|0x20` case-fold, f
 
 ## Validation
 
-`tools/sab_gametext` (read / edit / add / write) run over all six language files:
+The parser/writer lives in `tools/sab_formats/src/gametext.rs` (shared by the Workshop and validator);
+`tools/sab_gametext` is a thin CLI over it (read / edit / add / write). Run over all six languages:
 
-* **Exact byte consumption** — the record loop + `DNEC` section consume every byte; cursor == filesize.
-* **Round-trip byte-identical** — re-serializing header + records + verbatim `DNEC` tail reproduces the
-  original file exactly (all 6 languages).
+* **Exact byte consumption** — the base record loop + fully-parsed `DNEC` sub-tables consume every
+  byte; cursor == filesize.
+* **Round-trip byte-identical** — re-serializing header + base records + the reconstructed `DNEC`
+  directory and sub-tables reproduces the original file exactly (all 6 languages), with the DNEC
+  section now fully structured (not preserved as an opaque blob).
 * **`total_string_code_units == Σ str_len`** over the base records — exact, all 6 languages.
 * **Semantic** — 627 / 651 Lua-referenced dotted UI IDs hash to a base record `asset_id`; the ~24 misses
   are dynamically-constructed IDs or per-scene overlay strings, not format failures.
@@ -158,4 +175,5 @@ FNV-1a/32, basis `0x811C9DC5`, prime `0x01000193`, per-byte `|0x20` case-fold, f
 | **`asset_id` is the store lookup key for ALL records** (UI and VO) | **CONFIRMED** (disasm `0x0095f5ac`–`0x0095f5b9`: `&entry+0x18` is passed as the tree key and the insert is unconditional, before `key_len` is read; `FUN_009603f0` compares `*param_3`) |
 | VO: `pandemic_hash(key)` → `entry+0x1c` = the **Wwise event id**, not a lookup key | **CONFIRMED** (disasm `0x0095f615`/`0x0095f61d`; `FUN_0095df40` gates on `+0x1c` and passes it to `FUN_0091ae20`); `asset_id != pandemic_hash(key)` 0/7296 |
 | `total_string_code_units == Σ str_len` (base) | **CONFIRMED** (exact, 6 langs) |
-| `DNEC` = per-scene overlay directory of `{scene_hash, abs file_offset}` + sub-tables | **CONFIRMED (framing) / INFERRED (sub-table header fields)** (scene_hash==.pov names; sub-blob starts `05 00 00 00 …`) |
+| `DNEC` = per-scene overlay directory of `{scene_hash, abs file_offset}` + sub-tables | **CONFIRMED** (framing + sub-table layout) |
+| sub-table = `{u32 count, u32 tsize, count × TXTD, "DNEC" term}`, `tsize == Σ str_len`, dir order == physical order | **CONFIRMED** (6 langs: exact byte consumption to EOF, `tsize==Σ str_len`, ascending offsets, byte-identical round-trip with the section fully structured; 1312 sub-records/lang) |

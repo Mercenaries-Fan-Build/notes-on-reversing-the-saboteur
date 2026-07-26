@@ -79,10 +79,40 @@ Other flags:
 | MMB drag         | pan                             |
 | mouse wheel      | zoom                            |
 | Space            | play / pause                    |
+| F10              | export the loaded asset as a bundle |
 | Esc              | quit                            |
 | Navigator (left) | search box + click a clip to play |
 | Inspector (right)| Character stats · **Materials** (per-submesh texture picker) · Clip details |
+| Verb bar (bottom) | **Export bundle** + the destination it writes to |
 | Transport (bottom)| play/pause, loop, speed, time scrubber, grid + textures toggles |
+
+## Export bundles
+
+`Export bundle` (verb bar, `F10`, or right-click an asset in the browser) writes the loaded character
+to `<export dir>/<name>/` — the same lossless shape `mercs2_workshop` settled on, because the reason
+for it is the same: **an editable format can only carry what it understands**, and the Saboteur MESH
+record still holds things we have not reversed. So the bundle keeps both halves.
+
+```
+workshop_export/CH_AL_SeanDevlin_01_FX/
+  model.glb        skinned bind pose, ONE PRIMITIVE PER SUBMESH, each bound to its material
+  textures/*.png   the bound skins, plus their _N/_S siblings, BC-decoded and editable
+  raw/*.msha       every source part's original on-disk record, byte-exact (the guarantee)
+  manifest.json    the reassembly map: submesh → material hashes → texture → how we knew,
+                   the bone table with name hashes, the source parts, and the FULL texture
+                   pool the character offered (exported or not)
+```
+
+- Textures are referenced by relative `uri`, not embedded — repainting a skin is editing a PNG in
+  place, not a re-export round trip.
+- Bind pose only; no animation channels. The clip set is a separate axis (see the transport).
+- Runs on a **worker**: assembling + BC-decoding takes seconds and used to freeze the window. The
+  viewport stays live; a progress card shows what is in flight.
+- Exports **what is on screen**, because the bundle carries the material bindings and those only
+  exist for the loaded model. Right-clicking an unloaded asset loads it first, then exports once its
+  texture resolve lands — the verb bar says so while that is pending.
+- The destination is a click on the verb bar's `→ path`; it persists in `settings.json`. Empty means
+  `workshop_export/` beside the working directory — no machine path is baked in.
 
 ## What it does
 
@@ -217,6 +247,9 @@ from `tools/sab_havok65` — the validated decoder + readers; `dtex.rs` and `pac
 `tools/sab_dtex` and `tools/sab_pack`. The egui↔winit bridge in `gui.rs` mirrors the Mercs2
 workshop's hand-rolled bridge (egui-winit 0.28 pins winit 0.30, which conflicts with winit 0.29),
 including its clipboard/cursor delivery; `gui::theme` and the command-bar / navigator / inspector /
-status / transport shell are adapted from the Mercs2 workshop's rewrite (its 4-way activity rail and
+status / transport shell are adapted from the Mercs2 workshop's rewrite; `bundle.rs` and the
+verb-bar / background-worker / progress-card export flow are ported from that workshop's `bundle.rs`
+and `Exporter` (its glTF is a `model.gltf` + `model.bin` directory and carries animation channels —
+here it is a single `model.glb` at bind pose, so the existing port pipeline keeps reading one file) (its 4-way activity rail and
 Unreal-style Details vec3 scrub widgets are omitted — sab is a single character/anim view). The
 BC1/BC3 block decoders come from that workshop's `texpng.rs`.

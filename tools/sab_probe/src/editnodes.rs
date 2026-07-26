@@ -23,7 +23,7 @@ pub fn run(args: &[String]) {
         }
     };
     match sub {
-        "info" => info(&pack, bytes.len()),
+        "info" => info(&pack, &bytes),
         "list" => list(&pack, flag(rest, "--limit").and_then(|s| s.parse().ok()).unwrap_or(40)),
         "tree" => {
             let entry = flag(rest, "--entry").and_then(|s| s.parse::<usize>().ok());
@@ -36,7 +36,7 @@ pub fn run(args: &[String]) {
 
 fn usage() {
     eprintln!("sab_probe editnodes <info|list|tree> <EditNodes.pack> [opts]");
-    eprintln!("  info                       entry/node/leaf counts, known-tag coverage");
+    eprintln!("  info                       entry/node/leaf counts, known-tag coverage, round-trip check");
     eprintln!("  list  [--limit N]          per-entry: hash, byte size, object count");
     eprintln!("  tree  [--entry N] [--depth D]   dump the node tree (tag names + decoded values)");
     eprintln!("note: the main pack is embedded in France/loosefiles_BinPC.pack; DLC slots ship");
@@ -83,12 +83,26 @@ fn walk_root(r: &Root, st: &mut Stat) {
     }
 }
 
-fn info(pack: &Pack, bytes: usize) {
+fn info(pack: &Pack, raw: &[u8]) {
     let mut st = Stat { nodes: 0, leaves: 0, containers: 0, named: 0, unknown_tags: 0 };
     for e in &pack.entries {
         walk_root(&e.root, &mut st);
     }
+    let bytes = raw.len();
     println!("EditNodes.pack: {} entries, {bytes} bytes", pack.entries.len());
+    // Parsing already proves every entry consumes to its declared size; this proves the writer
+    // reproduces the input exactly, which is the precondition for any edit-and-repack workflow.
+    let re = pack.write();
+    if re == raw {
+        println!("round-trip: byte-identical ({bytes} bytes)");
+    } else {
+        let diff = re.iter().zip(raw).position(|(a, b)| a != b);
+        println!(
+            "round-trip: MISMATCH (wrote {} bytes vs {bytes}; first differing byte at {:?})",
+            re.len(),
+            diff
+        );
+    }
     println!(
         "nodes={} (containers={}, leaves={}; LuaParam={})",
         st.nodes, st.containers, st.leaves, st.named

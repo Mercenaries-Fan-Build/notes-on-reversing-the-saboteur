@@ -14,17 +14,36 @@
 //! ```
 //!
 //! **Tag = `pandemic_hash(paramName)` stored little-endian** (same convention as GameText's
-//! `asset_id`), so reading a tag as an LE `u32` yields the hash directly. 242 of the 265 names in
-//! [`TAG_NAMES`] hash-verify against their tag (the rest are community semantic labels, e.g. the
-//! `NodeNN`/`Unknown_*` placeholders, byte-order-resolved against the real pack's tags); see the
-//! test `tag_names_sorted_and_mostly_preimages`.
+//! `asset_id`), so reading a tag as an LE `u32` yields the hash directly. 250 of the 264 names in
+//! [`TAG_NAMES`] hash-verify against their tag; the remaining 14 are community placeholders
+//! (`Unknown_*`, `WTFPortal*`, `Root`) whose real names were never recovered. See the test
+//! `tag_names_sorted_and_mostly_preimages`.
 //!
-//! ## The one ambiguity: leaf vs container
-//! Nothing in a node header says whether `n` is a byte-length (leaf) or a child-count (container).
-//! [`classify_leaf`] replicates the community inspector's heuristic (0/1/4 bytes, the `d788e5b2`
-//! 8-byte raw64, an ASCII+NUL string, a `name\0`+marker LuaParam, or a 12-byte 3-float vector →
-//! leaf; anything else → container). Verified: it consumes **every entry of both retail packs to
-//! exactly its declared size** (770 entries, 0 desyncs), and this module round-trips both packs
+//! The `NodeNN` / `FenceNodeNN` / `FenceWallFlagNN` families are **not** guesses: `Saboteur.exe`
+//! builds them with `sprintf("Node%.2d")`, `"FenceNode%.2d"`, `"FenceNodeFlag%.2d"` and
+//! `"FenceWallFlag%.2d"` (string block at `0x00c4e0b8`, owned by `WSStreamingManager.cpp`), and the
+//! expansions reproduce 113 tags in the retail pack exactly.
+//!
+//! ## Object nodes carry an instance ID, not a name hash
+//! A node whose children include a `ClassName` is an **object**. Its own tag is a per-instance
+//! unique id — NOT `pandemic_hash` of anything stored in the file (13 426 objects, 13 397 distinct
+//! ids; 640 names map to more than one id). Retail reuses an id across identical copy-pasted
+//! objects, so cloning a node *with its tag* matches shipping practice. Note also that the two
+//! name-ish fields are inverted from the intuitive reading: `Type` is the class (`"Spore"`,
+//! `"Locator"`) and `ClassName` is the instance name (`"Spore_RS_Jules"`).
+//!
+//! ## Framing is positional, not value-inferred
+//! `n` means different things by DEPTH, and nothing needs to inspect a payload to know which:
+//! root count = objects, object count = params, **param count = BYTES**. This is the engine's own
+//! rule — its reader `FUN_00a005a0` loops `param_count` times and advances `p = data + n`
+//! unconditionally — and a depth census of the retail pack agrees exactly: 13 426 containers at
+//! depth 0 (all objects), 138 850 leaves at depth 1, **zero containers below depth 0** in 152 276
+//! nodes. The body is therefore not a recursive tree; it is one level deep.
+//!
+//! Earlier versions classified leaf-vs-container by value, which shortcut `n == 0|1|4` to "leaf" and
+//! would have silently truncated any object with exactly 4 params (retail's minimum is 5, so it
+//! never fired on shipped data — but authored data would). See
+//! `object_with_four_params_is_not_mistaken_for_a_leaf`. Both retail packs round-trip
 //! byte-identically. See `docs/formats/editnodes.md`.
 
 const MAGIC: &[u8; 4] = b"00ED";
@@ -142,7 +161,7 @@ fn parse_root(b: &[u8], o: usize, end: usize) -> Result<(Root, usize), String> {
     if first == 0 {
         let mut objects = Vec::with_capacity(count);
         for _ in 0..count {
-            let (n, p) = parse_node(b, pos, end)?;
+            let (n, p) = parse_object(b, pos, end)?;
             objects.push(n);
             pos = p;
         }
@@ -158,29 +177,37 @@ fn parse_root(b: &[u8], o: usize, end: usize) -> Result<(Root, usize), String> {
     }
 }
 
-fn parse_node(b: &[u8], o: usize, end: usize) -> Result<(Node, usize), String> {
+/// An **object**: `u32 instance_id, u32 param_count`, then exactly `param_count` params.
+///
+/// `n` is a CHILD COUNT here and a BYTE COUNT one level down — the split is positional, decided by
+/// depth, never by inspecting the value. This mirrors the engine's reader `FUN_00a005a0`, which
+/// loops `param_count` times and advances with `next = child + 8 + n` unconditionally.
+fn parse_object(b: &[u8], o: usize, end: usize) -> Result<(Node, usize), String> {
     let tag = u32_at(b, o, end)?;
-    let n = u32_at(b, o + 4, end)? as usize;
-    let ds = o + 8;
-    if ds + n > end {
-        // For a leaf `n` is a byte count; for a container it is a child count. Either way a value
-        // this large that also isn't a valid child sequence means we mis-stepped upstream.
-        // Fall through to the container path, which will error precisely if the children don't fit.
-    }
-    let data_end = ds.saturating_add(n).min(end);
-    let is_leaf = ds + n <= end && classify_leaf(tag, &b[ds..data_end]);
-    if is_leaf {
-        return Ok((Node::Leaf { tag, data: b[ds..ds + n].to_vec() }, ds + n));
-    }
-    // container: `n` children
-    let mut pos = ds;
-    let mut children = Vec::with_capacity(n.min(64));
-    for _ in 0..n {
-        let (c, p) = parse_node(b, pos, end)?;
+    let count = u32_at(b, o + 4, end)? as usize;
+    let mut pos = o + 8;
+    let mut children = Vec::with_capacity(count.min(256));
+    for i in 0..count {
+        let (c, p) = parse_param(b, pos, end).map_err(|e| format!("object {tag:08x} param {i}: {e}"))?;
         children.push(c);
         pos = p;
     }
     Ok((Node::Container { tag, children }, pos))
+}
+
+/// A **param**: `u32 tag, u32 byte_len`, then `byte_len` bytes kept verbatim. Always a leaf — the
+/// retail packs contain 138 850 params and **not one container below an object** (depth census in
+/// `docs/formats/editnodes.md`). Any nesting inside `data` is that tag's own private encoding, which
+/// the engine hands to a per-tag sub-reader; it is not generic node framing.
+fn parse_param(b: &[u8], o: usize, end: usize) -> Result<(Node, usize), String> {
+    let tag = u32_at(b, o, end)?;
+    let n = u32_at(b, o + 4, end)? as usize;
+    let ds = o + 8;
+    let de = ds.checked_add(n).ok_or_else(|| format!("tag {tag:08x}: length {n} overflows"))?;
+    if de > end {
+        return Err(format!("tag {tag:08x}: {n} bytes at {ds} runs past entry end {end}"));
+    }
+    Ok((Node::Leaf { tag, data: b[ds..de].to_vec() }, de))
 }
 
 impl Root {
@@ -318,27 +345,10 @@ fn named_name(d: &[u8]) -> Option<String> {
     }
 }
 
-/// Decide whether a node is a **leaf** (its `u32` is a byte length) vs a **container** (a child
-/// count). Faithful port of the inspector's `parseProperty` order.
-fn classify_leaf(tag: u32, data: &[u8]) -> bool {
-    let n = data.len();
-    if n == 0 || n == 1 || n == 4 {
-        return true;
-    }
-    if n == 8 && RAW64_TAGS.contains(&tag) {
-        return true;
-    }
-    if is_ascii_string_leaf(data) {
-        return true;
-    }
-    if named_name(data).is_some() {
-        return true;
-    }
-    if n == 12 && (VECTOR_TAGS.contains(&tag) || looks_like_vec3(data)) {
-        return true;
-    }
-    false
-}
+// The inspector's `parseProperty` value test used to decide leaf-vs-container here. It is gone:
+// framing is positional (see `parse_object`/`parse_param`), so nothing about the file's structure
+// depends on what a payload looks like. The surviving value tests live in `Node::value` and only
+// choose how to DISPLAY a leaf's bytes.
 
 #[cfg(test)]
 mod tests {
@@ -349,8 +359,10 @@ mod tests {
     fn tag_names_sorted_and_mostly_preimages() {
         assert!(TAG_NAMES.windows(2).all(|w| w[0].0 < w[1].0), "TAG_NAMES must be sorted, unique");
         let verified = TAG_NAMES.iter().filter(|&&(t, n)| pandemic_hash(n) == t).count();
-        // 242/265 hash-verify; the rest are community labels (NodeNN, Unknown_*, Root, …).
-        assert_eq!(verified, 242, "expected 242 hash-verified tag names");
+        // 250/264 hash-verify. The remaining 14 are community placeholders whose real names were
+        // never recovered (`Unknown_*`, `WTFPortal*`, `UnknownTag`, `Root`, `Raw64_*`); every
+        // engine-derived name now verifies. See `docs/formats/editnodes.md`.
+        assert_eq!(verified, 250, "expected 250 hash-verified tag names");
     }
 
     #[test]
@@ -360,36 +372,80 @@ mod tests {
         assert_eq!(tag_name(0xdead_beef), None);
     }
 
-    /// A minimal pack: one entry, an EditNode with a ClassName string + a Position vector, round-trips.
+    fn vec3(f: [f32; 3]) -> Vec<u8> {
+        f.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    /// A minimal pack: one entry, one object (instance id + params), round-trips byte-identically.
+    /// The root's children are OBJECTS; params live one level down.
     #[test]
     fn synthetic_roundtrip() {
-        let root = Root::EditNode {
-            objects: vec![
+        let object = Node::Container {
+            tag: 0xdead_1234, // per-instance id, not a name hash
+            children: vec![
+                Node::Leaf { tag: pandemic_hash("Type"), data: b"Spore\0".to_vec() },
                 Node::Leaf { tag: pandemic_hash("ClassName"), data: b"Human_GS_Grunt\0".to_vec() },
-                Node::Leaf {
-                    tag: pandemic_hash("Position"),
-                    data: {
-                        let mut v = Vec::new();
-                        for f in [95.5f32, 234.3, 110.9] {
-                            v.extend_from_slice(&f.to_le_bytes());
-                        }
-                        v
-                    },
-                },
+                Node::Leaf { tag: pandemic_hash("Position"), data: vec3([95.5, 234.3, 110.9]) },
             ],
         };
-        let pack = Pack { entries: vec![Entry { hash: 0x1234_5678, root }] };
+        let pack =
+            Pack { entries: vec![Entry { hash: 0x1234_5678, root: Root::EditNode { objects: vec![object] } }] };
         let bytes = pack.write();
         let re = Pack::parse(&bytes).unwrap();
         assert_eq!(re.entries.len(), 1);
         assert_eq!(re.write(), bytes, "byte-identical round-trip");
-        if let Root::EditNode { objects } = &re.entries[0].root {
-            assert_eq!(objects[0].value(), Some(Value::Str("Human_GS_Grunt".into())));
-            assert_eq!(tag_name(objects[0].tag()), Some("ClassName"));
-            assert!(matches!(objects[1].value(), Some(Value::Vec3(_))));
-        } else {
-            panic!("expected EditNode root");
-        }
+        let Root::EditNode { objects } = &re.entries[0].root else { panic!("expected EditNode root") };
+        let Node::Container { tag, children } = &objects[0] else { panic!("expected an object") };
+        assert_eq!(*tag, 0xdead_1234);
+        assert_eq!(children[1].value(), Some(Value::Str("Human_GS_Grunt".into())));
+        assert_eq!(tag_name(children[1].tag()), Some("ClassName"));
+        assert!(matches!(children[2].value(), Some(Value::Vec3(_))));
+    }
+
+    /// ★ The regression the old value-based classifier could not survive: an object with exactly
+    /// 4 params. `n == 4` used to be shortcut to "leaf, 4 bytes", silently truncating the object and
+    /// desyncing everything after it. Retail never trips this (min param count is 5) — authored data
+    /// easily would. Positional parsing makes it a non-event.
+    #[test]
+    fn object_with_four_params_is_not_mistaken_for_a_leaf() {
+        let object = Node::Container {
+            tag: 0x0000_00ff,
+            children: vec![
+                Node::Leaf { tag: pandemic_hash("Type"), data: b"Locator\0".to_vec() },
+                Node::Leaf { tag: pandemic_hash("ClassName"), data: b"L\0".to_vec() },
+                Node::Leaf { tag: pandemic_hash("Position"), data: vec3([1.0, 2.0, 3.0]) },
+                Node::Leaf { tag: pandemic_hash("XAxis"), data: vec3([1.0, 0.0, 0.0]) },
+            ],
+        };
+        let pack = Pack { entries: vec![Entry { hash: 7, root: Root::EditNode { objects: vec![object] } }] };
+        let bytes = pack.write();
+        let re = Pack::parse(&bytes).expect("a 4-param object must parse");
+        assert_eq!(re.write(), bytes, "byte-identical round-trip");
+        let Root::EditNode { objects } = &re.entries[0].root else { panic!("expected EditNode root") };
+        let Node::Container { children, .. } = &objects[0] else { panic!("expected an object, got a leaf") };
+        assert_eq!(children.len(), 4, "all four params must survive");
+    }
+
+    /// A param's `n` is a byte count even when its payload looks like a node sequence — the engine
+    /// advances `next = child + 8 + n` regardless. `DynamicFenceNodes` is the retail example: a
+    /// 4-byte leaf holding a COUNT, whose entries are flat siblings (`FenceNode00`, …).
+    #[test]
+    fn param_payload_is_never_reparsed_as_children() {
+        let object = Node::Container {
+            tag: 1,
+            children: vec![
+                Node::Leaf { tag: pandemic_hash("ClassName"), data: b"Fence\0".to_vec() },
+                Node::Leaf { tag: pandemic_hash("DynamicFenceNodes"), data: 4u32.to_le_bytes().to_vec() },
+                Node::Leaf { tag: pandemic_hash("FenceNode00"), data: vec3([0.0, 0.0, 0.0]) },
+            ],
+        };
+        let pack = Pack { entries: vec![Entry { hash: 9, root: Root::EditNode { objects: vec![object] } }] };
+        let bytes = pack.write();
+        let re = Pack::parse(&bytes).unwrap();
+        let Root::EditNode { objects } = &re.entries[0].root else { panic!() };
+        let Node::Container { children, .. } = &objects[0] else { panic!() };
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[1].value(), Some(Value::U32(4)), "the count stays a 4-byte leaf");
     }
 }
 
@@ -407,7 +463,7 @@ pub(crate) static TAG_NAMES: &[(u32, &str)] = &[
     (0x05e0ed37, "FenceNodeFlag27"),
     (0x0852d5ef, "SoundFake3DSettings"),
     (0x08c714d2, "Node10"),
-    (0x08d89c8a, "Node18"),
+    (0x08da9c8a, "Node18"),
     (0x08e1d248, "FenceNode26"),
     (0x0a6c5a61, "FenceNodeFlag36"),
     (0x0a95de23, "FenceWallFlag27"),
@@ -448,7 +504,7 @@ pub(crate) static TAG_NAMES: &[(u32, &str)] = &[
     (0x377d1a3a, "FenceWallFlag04"),
     (0x3955d835, "FenceNodeFlag18"),
     (0x39e04477, "FenceNode14"),
-    (0x3ce51772, "ZoneTriggerRegionFlags"),
+    (0x3ce51772, "Flags"),
     (0x404d1343, "LuaTable"),
     (0x42498680, "Script"),
     (0x42a1330e, "FenceNodeFlag04"),
@@ -544,7 +600,7 @@ pub(crate) static TAG_NAMES: &[(u32, &str)] = &[
     (0x88a1dd70, "FenceWallFlag20"),
     (0x88c1ce24, "Node16"),
     (0x88e718f6, "FenceNode28"),
-    (0x8a8aa58b, "ID1"),
+    (0x8aada58b, "ID1"),
     (0x8ab222b9, "ID3"),
     (0x8ace9d3d, "Node13"),
     (0x8ad5d2fb, "FenceNode21"),
@@ -586,15 +642,14 @@ pub(crate) static TAG_NAMES: &[(u32, &str)] = &[
     (0xaf825450, "FenceWallFlag06"),
     (0xafd43246, "FenceNode11"),
     (0xb0b01ff4, "ID2"),
+    (0xb1388009, "FenceNodeFlag14"),
     (0xb14f2f93, "RadiusOfEffect"),
     (0xb1524043, "CollisionModule"),
     (0xb1758b83, "FenceWallFlag01"),
-    (0xb1b18009, "FenceNodeFlag14"),
-    (0xb1b2ec4b, "FenceNode18"),
-    (0xb1bdb8da, "SeatNameRef"),
+    (0xb1bd8bda, "SeatNameRef"),
+    (0xb1c2ec4b, "FenceNode18"),
     (0xb2e588d7, "Raw64_d788e5b2"),
-    (0xb7b8bc0c, "FenceNode13"),
-    (0xb7d8bc0c, "Unknown_Vector_0cbcd8b7"),
+    (0xb7d8bc0c, "FenceNode13"),
     (0xb93d09cf, "FenceNodeFlag12"),
     (0xb9e58b25, "FenceNode16"),
     (0xc3b329fe, "AttachedID0"),
@@ -635,7 +690,7 @@ pub(crate) static TAG_NAMES: &[(u32, &str)] = &[
     (0xe5b59e1b, "AttachedID1"),
     (0xe6f43618, "SoundScriptSettings"),
     (0xe728749b, "DistanceTriggered"),
-    (0xe84fcffc, "DynamicFenceFlags"),
+    (0xe85f4cfc, "DynamicFenceFlags"),
     (0xe8617770, "PrevID3"),
     (0xe8936a06, "FenceWallFlag26"),
     (0xe9c08be3, "Node24"),

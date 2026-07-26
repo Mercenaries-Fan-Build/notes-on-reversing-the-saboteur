@@ -404,6 +404,55 @@ writes, and it is how "rotate this spawned car" is expressed in the data.
 
 ---
 
+## DLC override: a slot pack shadows the world per-entry, it does not replace it ★
+
+The engine keeps an **array of EditNodes pack objects**, not one:
+
+```
+this + 0xE0A0   array of pack objects, stride 0x68
+this + 0xE170   u8 count
+
+slot 0  base world  France\EditNodes\EditNodes.pack          FUN_009f4320  -> sets count = 1
+slot 1  DLC         <dlcroot>\France\EditNodes\EditNodes.pack FUN_009906c0 -> FUN_009eea90(path, 1),
+                                                                              count += 1  -> 2
+```
+
+Lookup (`FUN_009ef620`) walks it **top-down and returns the first hit**:
+
+```asm
+mov   al,[edi+0xe170]        ; count
+movzx esi,al
+sub   esi,1                  ; i = count-1
+js    bail
+loop: mov ecx,esi
+      imul ecx,ecx,0x68      ; stride
+      lea  edi,[ecx+edi+0xe0a0]
+      call FUN_0064b600      ; find entry by hash in slot i
+      jne  found             ; first hit wins; else i-- and retry
+```
+
+Three consequences, all read off the mount sites (`0x009f4c08`, `0x009eeab1`) and the lookup
+(`0x009ef808`):
+
+1. **A DLC pack does not wipe the world.** `FUN_0064b420` destroys the entry array of the object it
+   loads into — but slot 1 is a *different* object (`base + 1*0x68`), so the 767 base entries survive.
+   The worry that shipping a 3-entry DLC pack would collapse the world to 3 entries is unfounded.
+2. **Later slot wins, per directory hash.** A DLC entry shadows the base entry of the same hash; any
+   hash the DLC pack lacks falls straight through to the base. This is a genuine **additive override**
+   — and it is the *opposite* of the GameText/DNEC situation, where a DLC slot cannot override an
+   existing hash and edits must patch base.
+3. **Exactly two slots.** The index is computed `setne bl` → clamped to 0/1, so at most one DLC
+   EditNodes pack is ever mounted. That composes with the engine mounting exactly one DLC slot of
+   01–04 anyway.
+
+**★ The one constraint that shapes an editor: override granularity is the ENTRY, not the object.**
+A shadowed entry is replaced wholesale, so changing one NPC means shipping that entry's *entire*
+object list. A publish step is therefore: copy the base entry verbatim → apply the edits → emit a DLC
+pack containing only the touched entries. Untouched entries must be left out, not copied, so they
+keep falling through to base.
+
+---
+
 ## Validation
 
 `sab_formats::editnodes` over both retail packs (`sab_probe editnodes` / the module tests):
@@ -437,6 +486,9 @@ writes, and it is how "rotate this spawned car" is expressed in the data.
 | pack = `"00ED"`, u32 count, `{hash,size,offset}` directory, bodies contiguous to EOF | **CONFIRMED** (exact-consume + byte-identical round-trip, both packs; field roles read off `FUN_0064b420` + `FUN_0064b600`) |
 | `offset` is an absolute seek within the pack; `size` is the sub-stream length | **CONFIRMED** (`FUN_0064b600` seeks to `entry.offset`, installs `entry.size` as the length) |
 | entries are `.wsd` objects; the pack is the `.wsd` provider | **CONFIRMED** (`FUN_009ef620` routes the `.wsd` extension to this class) |
+| packs are an ARRAY (base + DLC, stride 0x68 @ `+0xE0A0`, count @ `+0xE170`, max 2) | **CONFIRMED** — disassembly of the two mount sites and the lookup |
+| a DLC pack shadows base entries per-hash and does NOT replace the world | **CONFIRMED** — lookup walks `count-1 → 0`, first hit wins; slots are distinct objects |
+| override granularity is the whole ENTRY, not the object | **CONFIRMED** — the shadowing happens at the directory-hash lookup, so a shadowed entry is replaced wholesale |
 | loose-file container: 0x80 header, `size` at +4, name at +8, payload at +0x80, next entry 0x10-aligned | **CONFIRMED** (`FUN_00dc1060`) |
 | the loose-file header's leading `u32` is never read by the engine | **CONFIRMED** — one reference in the whole PE (byte-level scan for `0x01502878`), the destination of the header read |
 | that field is `CRC-32/BZIP2(lowercased name)` — a NAME hash, not a content checksum | **CONFIRMED** — 7/7 retail entries; `sab_formats::loosefiles::name_crc`. So a payload edit can never invalidate it |

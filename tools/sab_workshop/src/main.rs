@@ -16,6 +16,7 @@ mod app;
 mod assets;
 mod bone_names;
 mod boot;
+mod bundle;
 mod camera;
 mod dtex;
 mod editor;

@@ -59,6 +59,10 @@ pub struct Settings {
     /// separate third-party tool, not bundled.
     #[serde(default)]
     pub vgmstream_path: String,
+    /// Where `Export bundle` writes. Empty means `workshop_export/` beside the working directory —
+    /// set from the verb bar's destination link, not typed.
+    #[serde(default)]
+    pub export_dir: String,
 }
 
 impl Default for Settings {
@@ -70,6 +74,7 @@ impl Default for Settings {
             mod_name: default_mod_name(),
             type_scale: default_scale(),
             vgmstream_path: String::new(),
+            export_dir: String::new(),
         }
     }
 }
@@ -259,6 +264,7 @@ mod tests {
             mod_name: "Resistance Pack".into(),
             type_scale: 1.45,
             vgmstream_path: "C:/tools/vgmstream/vgmstream-cli.exe".into(),
+            export_dir: "D:/mods/bundles".into(),
         };
         written.clamp();
         // save_to must create the intermediate directories, not fail on them.
@@ -270,6 +276,7 @@ mod tests {
         assert_eq!(read.dlc_slot, "07");
         assert_eq!(read.mod_name, "Resistance Pack");
         assert_eq!(read.vgmstream_path, "C:/tools/vgmstream/vgmstream-cli.exe");
+        assert_eq!(read.export_dir, "D:/mods/bundles");
         assert!((read.type_scale - 1.45).abs() < 1e-6);
         // A stored install path must NOT be replaced by auto-detection.
         assert_ne!(read.game_dir, detect_install().unwrap_or_default());

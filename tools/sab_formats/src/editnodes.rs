@@ -283,6 +283,210 @@ impl Node {
     }
 }
 
+// ------------------------------------------------------------------ editing
+
+/// `pandemic_hash` of the params an editor touches most. Pinned by `well_known_tags_are_preimages`.
+pub mod tags {
+    /// The object's **instance name** (`"Spore_RS_Jules"`) — despite the name.
+    pub const CLASS_NAME: u32 = 0x5d78_ede2;
+    /// The object's **class** (`"Spore"`, `"Locator"`) — despite the name.
+    pub const TYPE: u32 = 0x28e1_0525;
+    pub const POSITION: u32 = 0x05d7_fc60;
+    pub const X_AXIS: u32 = 0xfbb4_bda8;
+    pub const Y_AXIS: u32 = 0xd0c2_6e7d;
+    pub const Z_AXIS: u32 = 0x4fb7_6002;
+}
+
+fn vec3_bytes(v: [f32; 3]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+impl Pack {
+    pub fn entry(&self, hash: u32) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.hash == hash)
+    }
+
+    pub fn entry_mut(&mut self, hash: u32) -> Option<&mut Entry> {
+        self.entries.iter_mut().find(|e| e.hash == hash)
+    }
+
+    /// Build the **sparse DLC override pack**: a new pack holding only `hashes`, copied from `self`.
+    ///
+    /// This is the publish step. A DLC-slot pack shadows the base pack **per directory hash** and a
+    /// shadowed entry is replaced *wholesale* (`docs/formats/editnodes.md`), so the recipe is: take
+    /// the base entry entire, edit it, and ship only the entries you touched. Entries you leave out
+    /// keep falling through to the base pack — copying them in would be harmless but pointless, and
+    /// would freeze them against future patches.
+    ///
+    /// Errors if a hash is not present, since silently shipping a smaller pack than intended is
+    /// exactly the failure that is invisible until you are in-game.
+    pub fn override_pack(&self, hashes: &[u32]) -> Result<Pack, String> {
+        let mut entries = Vec::with_capacity(hashes.len());
+        for &h in hashes {
+            let src = self.entry(h).ok_or_else(|| format!("entry {h:08x} is not in this pack"))?;
+            entries.push(Entry { hash: h, root: src.root.deep_clone() });
+        }
+        Ok(Pack { entries })
+    }
+}
+
+impl Root {
+    fn deep_clone(&self) -> Root {
+        match self {
+            Root::EditNode { objects } => Root::EditNode { objects: objects.iter().map(Node::deep_clone).collect() },
+            Root::Container { tag, children } => {
+                Root::Container { tag: *tag, children: children.iter().map(Root::deep_clone).collect() }
+            }
+        }
+    }
+}
+
+impl Entry {
+    /// The entry's objects, or `&[]` for the defensive `Root::Container` shape (absent from retail).
+    pub fn objects(&self) -> &[Node] {
+        match &self.root {
+            Root::EditNode { objects } => objects,
+            Root::Container { .. } => &[],
+        }
+    }
+
+    pub fn objects_mut(&mut self) -> Option<&mut Vec<Node>> {
+        match &mut self.root {
+            Root::EditNode { objects } => Some(objects),
+            Root::Container { .. } => None,
+        }
+    }
+
+    /// Index of the first object whose `ClassName` (the instance name) matches, case-sensitively.
+    pub fn find_object(&self, instance_name: &str) -> Option<usize> {
+        self.objects().iter().position(|o| o.class_name().as_deref() == Some(instance_name))
+    }
+
+    /// Clone object `index` and insert the copy directly after it, returning the new index.
+    ///
+    /// **The instance id (the object's tag) is copied too**, which is deliberate: retail itself
+    /// reuses an id across identical copy-pasted objects, so this matches shipping practice and
+    /// there is no id to mint. Rename the copy via [`Node::set_class_name`] and move it with
+    /// [`Node::set_position`].
+    pub fn duplicate_object(&mut self, index: usize) -> Result<usize, String> {
+        let objects = self.objects_mut().ok_or("entry has no object list")?;
+        let copy = objects.get(index).ok_or_else(|| format!("no object at index {index}"))?.deep_clone();
+        objects.insert(index + 1, copy);
+        Ok(index + 1)
+    }
+
+    pub fn remove_object(&mut self, index: usize) -> Result<Node, String> {
+        let objects = self.objects_mut().ok_or("entry has no object list")?;
+        if index >= objects.len() {
+            return Err(format!("no object at index {index}"));
+        }
+        Ok(objects.remove(index))
+    }
+}
+
+impl Node {
+    fn deep_clone(&self) -> Node {
+        match self {
+            Node::Leaf { tag, data } => Node::Leaf { tag: *tag, data: data.clone() },
+            Node::Container { tag, children } => {
+                Node::Container { tag: *tag, children: children.iter().map(Node::deep_clone).collect() }
+            }
+        }
+    }
+
+    /// An object's params. Empty for a leaf.
+    pub fn params(&self) -> &[Node] {
+        match self {
+            Node::Container { children, .. } => children,
+            Node::Leaf { .. } => &[],
+        }
+    }
+
+    /// Raw bytes of the first param with `tag`.
+    pub fn param(&self, tag: u32) -> Option<&[u8]> {
+        self.params().iter().find_map(|p| match p {
+            Node::Leaf { tag: t, data } if *t == tag => Some(data.as_slice()),
+            _ => None,
+        })
+    }
+
+    /// Set (or append) a param. Returns `true` if an existing param was replaced.
+    ///
+    /// Appending grows the object's param count, which the writer re-emits — there are no offsets to
+    /// fix, because framing is positional.
+    pub fn set_param(&mut self, tag: u32, data: Vec<u8>) -> Result<bool, String> {
+        let Node::Container { children, .. } = self else {
+            return Err("set_param on a leaf; params live on objects".into());
+        };
+        for p in children.iter_mut() {
+            if let Node::Leaf { tag: t, data: d } = p {
+                if *t == tag {
+                    *d = data;
+                    return Ok(true);
+                }
+            }
+        }
+        children.push(Node::Leaf { tag, data });
+        Ok(false)
+    }
+
+    /// A NUL-terminated ASCII param, without the terminator.
+    pub fn string_param(&self, tag: u32) -> Option<String> {
+        let d = self.param(tag)?;
+        let end = d.iter().position(|&b| b == 0).unwrap_or(d.len());
+        Some(String::from_utf8_lossy(&d[..end]).into_owned())
+    }
+
+    /// Write a NUL-terminated ASCII param.
+    pub fn set_string_param(&mut self, tag: u32, s: &str) -> Result<bool, String> {
+        let mut data = s.as_bytes().to_vec();
+        data.push(0);
+        self.set_param(tag, data)
+    }
+
+    /// The object's **instance name** (`ClassName`).
+    pub fn class_name(&self) -> Option<String> {
+        self.string_param(tags::CLASS_NAME)
+    }
+
+    pub fn set_class_name(&mut self, name: &str) -> Result<bool, String> {
+        self.set_string_param(tags::CLASS_NAME, name)
+    }
+
+    /// The object's **class** (`Type`) — `"Spore"`, `"Locator"`, ...
+    pub fn type_name(&self) -> Option<String> {
+        self.string_param(tags::TYPE)
+    }
+
+    pub fn vec3_param(&self, tag: u32) -> Option<[f32; 3]> {
+        let d = self.param(tag)?;
+        if d.len() != 12 {
+            return None;
+        }
+        Some([f32_at(d, 0), f32_at(d, 4), f32_at(d, 8)])
+    }
+
+    pub fn position(&self) -> Option<[f32; 3]> {
+        self.vec3_param(tags::POSITION)
+    }
+
+    pub fn set_position(&mut self, p: [f32; 3]) -> Result<bool, String> {
+        self.set_param(tags::POSITION, vec3_bytes(p))
+    }
+
+    /// Set the rotation basis to a yaw about the up axis, in degrees.
+    ///
+    /// Y is up and yaw turns in the XZ plane: `X = (cos, 0, -sin)`, `Y = (0, 1, 0)`,
+    /// `Z = (sin, 0, cos)`. The engine expands `Position` with `w = 1` and these with `w = 0`.
+    pub fn set_yaw_degrees(&mut self, deg: f32) -> Result<(), String> {
+        let (s, c) = deg.to_radians().sin_cos();
+        self.set_param(tags::X_AXIS, vec3_bytes([c, 0.0, -s]))?;
+        self.set_param(tags::Y_AXIS, vec3_bytes([0.0, 1.0, 0.0]))?;
+        self.set_param(tags::Z_AXIS, vec3_bytes([s, 0.0, c]))?;
+        Ok(())
+    }
+}
+
 /// The human name for a tag, if known ([`TAG_NAMES`], mostly `pandemic_hash` preimages).
 pub fn tag_name(tag: u32) -> Option<&'static str> {
     TAG_NAMES.binary_search_by_key(&tag, |&(t, _)| t).ok().map(|i| TAG_NAMES[i].1)
@@ -424,6 +628,127 @@ mod tests {
         let Root::EditNode { objects } = &re.entries[0].root else { panic!("expected EditNode root") };
         let Node::Container { children, .. } = &objects[0] else { panic!("expected an object, got a leaf") };
         assert_eq!(children.len(), 4, "all four params must survive");
+    }
+
+    /// Build a Locator-ish object the way a caller would.
+    fn sample_object(tag: u32, name: &str) -> Node {
+        Node::Container {
+            tag,
+            children: vec![
+                Node::Leaf { tag: tags::TYPE, data: b"Locator\0".to_vec() },
+                Node::Leaf { tag: tags::CLASS_NAME, data: format!("{name}\0").into_bytes() },
+                Node::Leaf { tag: tags::POSITION, data: vec3([1.0, 2.0, 3.0]) },
+                Node::Leaf { tag: tags::X_AXIS, data: vec3([1.0, 0.0, 0.0]) },
+                Node::Leaf { tag: tags::Y_AXIS, data: vec3([0.0, 1.0, 0.0]) },
+                Node::Leaf { tag: tags::Z_AXIS, data: vec3([0.0, 0.0, 1.0]) },
+            ],
+        }
+    }
+
+    fn sample_pack() -> Pack {
+        Pack {
+            entries: vec![
+                Entry {
+                    hash: 0xaaaa_0001,
+                    root: Root::EditNode {
+                        objects: vec![sample_object(0x1111, "Guard_A"), sample_object(0x2222, "Guard_B")],
+                    },
+                },
+                Entry { hash: 0xbbbb_0002, root: Root::EditNode { objects: vec![sample_object(0x3333, "Car_A")] } },
+            ],
+        }
+    }
+
+    /// The tag constants an editor writes against must really be their names' hashes.
+    #[test]
+    fn well_known_tags_are_preimages() {
+        assert_eq!(tags::CLASS_NAME, pandemic_hash("ClassName"));
+        assert_eq!(tags::TYPE, pandemic_hash("Type"));
+        assert_eq!(tags::POSITION, pandemic_hash("Position"));
+        assert_eq!(tags::X_AXIS, pandemic_hash("XAxis"));
+        assert_eq!(tags::Y_AXIS, pandemic_hash("YAxis"));
+        assert_eq!(tags::Z_AXIS, pandemic_hash("ZAxis"));
+    }
+
+    #[test]
+    fn reads_and_writes_object_params() {
+        let mut o = sample_object(7, "Guard_A");
+        assert_eq!(o.class_name().as_deref(), Some("Guard_A"));
+        assert_eq!(o.type_name().as_deref(), Some("Locator"));
+        assert_eq!(o.position(), Some([1.0, 2.0, 3.0]));
+
+        assert!(o.set_position([10.0, 20.0, 30.0]).unwrap(), "replaces the existing param");
+        assert_eq!(o.position(), Some([10.0, 20.0, 30.0]));
+        assert_eq!(o.params().len(), 6, "replacing must not add a param");
+
+        assert!(!o.set_string_param(pandemic_hash("Script"), "MyScript").unwrap(), "appends a new one");
+        assert_eq!(o.params().len(), 7);
+        assert_eq!(o.string_param(pandemic_hash("Script")).as_deref(), Some("MyScript"));
+    }
+
+    #[test]
+    fn yaw_writes_the_engines_basis() {
+        let mut o = sample_object(7, "Guard_A");
+        o.set_yaw_degrees(90.0).unwrap();
+        let approx = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(approx(o.vec3_param(tags::X_AXIS).unwrap(), [0.0, 0.0, -1.0]));
+        assert!(approx(o.vec3_param(tags::Y_AXIS).unwrap(), [0.0, 1.0, 0.0]));
+        assert!(approx(o.vec3_param(tags::Z_AXIS).unwrap(), [1.0, 0.0, 0.0]));
+    }
+
+    /// The clone-a-template workflow: duplicate, rename, move — and keep the instance id, which is
+    /// what retail does for copy-pasted objects.
+    #[test]
+    fn duplicate_keeps_the_instance_id_and_round_trips() {
+        let mut pack = sample_pack();
+        let entry = pack.entry_mut(0xaaaa_0001).unwrap();
+        let i = entry.find_object("Guard_A").unwrap();
+        let j = entry.duplicate_object(i).unwrap();
+        assert_eq!(j, i + 1, "the copy lands directly after the template");
+
+        let copy = &mut entry.objects_mut().unwrap()[j];
+        assert_eq!(copy.tag(), 0x1111, "instance id is carried over, as retail does");
+        copy.set_class_name("Guard_A_Copy").unwrap();
+        copy.set_position([50.0, 0.0, 50.0]).unwrap();
+        copy.set_yaw_degrees(180.0).unwrap();
+
+        assert_eq!(entry.objects().len(), 3);
+        let bytes = pack.write();
+        let re = Pack::parse(&bytes).expect("an edited pack must re-parse");
+        assert_eq!(re.write(), bytes, "byte-identical after a round-trip");
+        let objs = re.entry(0xaaaa_0001).unwrap().objects();
+        assert_eq!(objs[1].class_name().as_deref(), Some("Guard_A_Copy"));
+        assert_eq!(objs[1].position(), Some([50.0, 0.0, 50.0]));
+        assert_eq!(objs[0].class_name().as_deref(), Some("Guard_A"), "the template is untouched");
+    }
+
+    /// The publish step: ship only the touched entries, so the rest fall through to base.
+    #[test]
+    fn override_pack_holds_only_the_touched_entries() {
+        let base = sample_pack();
+        let dlc = base.override_pack(&[0xbbbb_0002]).unwrap();
+        assert_eq!(dlc.entries.len(), 1);
+        assert_eq!(dlc.entries[0].hash, 0xbbbb_0002);
+        assert_eq!(dlc.entry(0xbbbb_0002).unwrap().objects()[0].class_name().as_deref(), Some("Car_A"));
+        assert!(dlc.entry(0xaaaa_0001).is_none(), "untouched entries must fall through, not be copied");
+        let bytes = dlc.write();
+        assert_eq!(Pack::parse(&bytes).unwrap().write(), bytes);
+    }
+
+    /// A deep copy, so editing the override cannot reach back into the base pack.
+    #[test]
+    fn override_pack_is_independent_of_the_base() {
+        let base = sample_pack();
+        let mut dlc = base.override_pack(&[0xaaaa_0001]).unwrap();
+        dlc.entry_mut(0xaaaa_0001).unwrap().objects_mut().unwrap()[0].set_class_name("Renamed").unwrap();
+        assert_eq!(base.entry(0xaaaa_0001).unwrap().objects()[0].class_name().as_deref(), Some("Guard_A"));
+    }
+
+    #[test]
+    fn override_pack_rejects_an_unknown_hash() {
+        let base = sample_pack();
+        let Err(err) = base.override_pack(&[0xdead_beef]) else { panic!("must reject an unknown hash") };
+        assert!(err.contains("deadbeef"), "{err}");
     }
 
     /// A param's `n` is a byte count even when its payload looks like a node sequence — the engine

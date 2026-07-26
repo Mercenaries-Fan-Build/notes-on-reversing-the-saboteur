@@ -292,15 +292,42 @@ the checksum:
    field stale is therefore **safe, CONFIRMED** — the earlier "UNVERIFIED" caveat is discharged. Its
    algorithm is still unidentified (not `pandemic_hash(name)`, not zlib CRC-32 padded or unpadded —
    0/7 on the leading entries), but nothing at runtime cares.
-2. **★ Entry order is load-bearing.** A *miss* does not advance the cursor, so the archive is only
-   ever consumed in packed order — it is a load-order-optimised stream, not a random-access
-   directory. On a miss the engine falls back to opening the file from disk, and
-   `France/EditNodes/EditNodes.pack`, `GameTemplates.wsd`, `France.shaders`, `global.map` and
-   `France.map` **do not exist on disk** — they are pack-only. So a reorder or a mis-timed insert
-   does not degrade to a slow path, it makes those assets unloadable. **Resizing an entry in place is
-   safe** (every position is derived from the sizes at read time; there are no stored offsets to
-   fix), but reordering or inserting is not, unless the new entry is requested at exactly that point
-   in the sequence.
+2. **★ Entry order looks load-bearing — mechanism confirmed, consequence UNTESTED.** A *miss* does
+   not advance the cursor, so the archive can only ever be consumed in packed order: it is a
+   load-order-optimised stream, not a random-access directory. On a miss the engine falls back to
+   opening the file from disk.
+
+   All **7** entries are pack-only — verified against the filesystem, every one, not a sample:
+
+   ```
+   France.shaders                                  23 066 269
+   Cinematics\Conversations\Conversations.cnvpack     509 273
+   Cinematics\Cinematics.cinpack                   11 821 963
+   global.map                                         284 388
+   France.map                                       2 817 849
+   France\EditNodes\EditNodes.pack                  2 606 468
+   GameTemplates.wsd                                8 204 431
+   ```
+
+   There is exactly one loosefiles pack in the install; DLC slots ship none. The walk tiles the file
+   exactly and no entry uses the `0xFFFFFFFF` sentinel.
+
+   **What is NOT established:** that a miss is fatal. Nobody has traced what the caller does when the
+   disk open fails, and **the game has never been run with a modified `loosefiles`**. The inference
+   "reorder ⇒ unloadable asset" is a reading of the code plus a filesystem check, not an experiment.
+   What *does* corroborate the cursor model is that retail works at all: with 7 pack-only entries and
+   a strictly sequential cursor, the engine's request order must already match the packed order.
+
+   Treat the edit classes differently, then:
+
+   | edit | status |
+   |---|---|
+   | **resize an entry in place** | safe — every position is derived from the sizes at read time; no stored offsets to fix. This is the only loosefiles-level edit anyone has actually shipped. |
+   | **append after the last entry** | expected harmless — worst case the new entry is never matched |
+   | **insert in the middle / reorder** | expected to break every entry from that point on — **untested**; run the experiment before relying on either outcome |
+
+   The experiment is cheap and decisive: back up `loosefiles_BinPC.pack`, swap two entries, launch.
+   Until someone does that, this row is a prediction.
 3. **`size == 0xFFFFFFFF` is a "load from disk" sentinel** — the cursor steps over the 128-byte
    header and the engine opens the real file instead.
 
@@ -358,7 +385,9 @@ writes, and it is how "rotate this spawned car" is expressed in the data.
 | entries are `.wsd` objects; the pack is the `.wsd` provider | **CONFIRMED** (`FUN_009ef620` routes the `.wsd` extension to this class) |
 | loose-file container: 0x80 header, `size` at +4, name at +8, payload at +0x80, next entry 0x10-aligned | **CONFIRMED** (`FUN_00dc1060`) |
 | the loose-file header's leading `u32` is never read by the engine | **CONFIRMED** — `DAT_01502878` occurs exactly once in 36,935 functions, as the read destination |
-| loose-file entry ORDER is load-bearing (sequential cursor; a miss does not advance) | **CONFIRMED** (`FUN_00dc1060`); pack-only assets become unloadable if the order breaks |
+| loose-file reader is a sequential cursor; a miss does not advance it | **CONFIRMED** (`FUN_00dc1060`) |
+| all 7 loose-file entries are pack-only (no on-disk fallback copy) | **CONFIRMED** (filesystem, all 7) |
+| therefore reordering/inserting makes those assets unloadable | **INFERRED, UNTESTED** — the failure path of the disk fallback was never traced and the game has never been run with a modified `loosefiles`. Resize-in-place is unaffected either way. |
 | `size == 0xFFFFFFFF` means "open the real file from disk" | **CONFIRMED** (`FUN_00dc1060`) |
 | LuaParam markers are `pandemic_hash("LuaFloat"/"LuaBool"/"LuaString")` | **CONFIRMED** (3/4 preimages reproduce exactly; the string-list marker is unresolved) |
 | entry root = EditNode `{u32 ver=0, u32 count, Nodes}` | **CONFIRMED** (767/767 embedded + 3/3 DLC roots are version 0) |

@@ -16,6 +16,7 @@ re-verified against the Saboteur binary/assets before you rely on it.
 | **Lua bytecode = LuaQ 5.1** | `LuaScripts.luap` entries start `1B 4C 75 61 51`; same ChunkSpy/unluac path |
 | **f16 vertex positions** | MESH streams use half-float positions |
 | **Pebble core library** (`Pbl*`/`Pcl*` classes, hash tables, streams, tasks) | RTTI names in exe; same lineage as Mercs 1 source |
+| **CRC-32/BZIP2** kernel (poly `0x04C11DB7`, init/xorout `0xFFFFFFFF`, **non-reflected**) — ⚠️ same algorithm, **different input per game**: re-derive what it covers | Saboteur: the loose-file header's `+0x00` = `crc32_bzip2(lowercased name)`, ✅ **7/7 on retail** `loosefiles_BinPC.pack` ([`formats/editnodes.md`](formats/editnodes.md), `sab_formats::loosefiles`). Mercs 2 uses the same kernel over the **save body** (`ProfileHash`). Note this is *not* Mercs 2's `crc32_mercs2`/FFCS `CSUM`, which is **reflected** poly `0xEDB88320` and does **not** match anything here |
 | General methodology: Ghidra headless flow, rainbow-table hash resolution, Wwise→vgmstream approach | our tooling |
 
 ## SIMILAR CONCEPT — different structure, DO NOT copy offsets/layout
@@ -33,7 +34,7 @@ re-verified against the Saboteur binary/assets before you rely on it.
 | **World/map** | FFCS block index + `low_res_terrain` grid | `MAP6` descriptors + `HEI1` heightfield + tile packs | Different world model |
 | **DLC** | Xbox STFS → block injection into `vz-patch.wad` | `DLC/01` folder + `MAP6` + loose `.dynpack` (SBLA) | Folder/pack, not injection |
 | **Audio package** | PWS streams + wavebanks (IMA/PCM), sounddb | Wwise `1KCP` package → `.wem` (Wwise Vorbis) | Entirely different audio stack |
-| **Save format** | `.profile` zlib blob | (unreversed here) | Re-derive from Saboteur |
+| **Save format** | `.profile` zlib blob, `u32 ProfileHash` @0x00 = CRC-32/BZIP2 over `[4:]` | (unreversed here) | Re-derive from Saboteur — though the CRC kernel above is a reasonable first hypothesis to *test* |
 
 ## DIFFERENT — new/incompatible; treat as from-scratch
 

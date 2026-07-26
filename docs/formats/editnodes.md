@@ -334,13 +334,13 @@ the checksum:
    away: probing name-hash candidates hit `global.map` and nothing else, and `global.map` is the one
    retail name already entirely lowercase.
 
-   **The proof is entirely Saboteur-side: 7/7 against this game's own retail data.** Mercs 2 supplied
-   a hypothesis, not evidence. That distinction matters, because what the two engines share is mapped
-   subsystem by subsystem in `notes-on-the-released-game/docs/saboteur_engine_comparison.md` and
-   divergence is the norm — the `pandemic_hash` variant and `sges` compression are identical, but
-   megapack≠FFCS, `.luap`≠BINN/UCFX, MESH≠UCFX-GEOM, WSAO≠MTRL, DTEX≠DDS-in-UCFX, AP0L≠Havok-5.5,
-   MAP6≠FFCS-blocks. Nothing here should be inferred from Mercs 2 without confirming it on Saboteur
-   bytes.
+   **The proof is entirely Saboteur-side: 7/7 against this game's own retail data**, plus the
+   published CRC-32/BZIP2 check value. Mercs 2 supplied a hypothesis, not evidence — per
+   [`../AGENTS.md`](../../AGENTS.md)'s prime directive, a Mercs 2 hash is never carried over without
+   being re-derived here. The kernel is now recorded in
+   [`../lineage_and_divergence.md`](../lineage_and_divergence.md) (the authority on what transfers)
+   with the caveat that the *input* differs per game: Saboteur hashes a name, Mercs 2 hashes a save
+   body.
 
    **Consequence for writers — better than "leave it stale":** because it hashes the *name*, editing
    or resizing a payload **never invalidates it**. It only needs computing when an entry is added or

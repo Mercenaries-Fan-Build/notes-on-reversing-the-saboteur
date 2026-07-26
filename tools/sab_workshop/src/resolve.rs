@@ -39,6 +39,7 @@ impl Role {
 /// only its header metadata — decoding is LAZY (`decode()`), because a bundle sweep turns up a couple
 /// hundred records and eagerly BC-decoding them all would cost seconds and hundreds of MB of RGBA for
 /// the handful actually bound to a submesh.
+#[derive(Clone)]
 pub struct TexAsset {
     pub name: String,
     pub role: Role,

@@ -27,6 +27,7 @@ pub mod dtex;
 pub mod editnodes;
 pub mod gametemplates;
 pub mod gametext;
+pub mod loosefiles;
 pub mod megapack;
 pub mod mesh;
 pub mod sbla;

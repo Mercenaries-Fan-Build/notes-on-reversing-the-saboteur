@@ -12,7 +12,7 @@ DLC/NN/France/EditNodes/EditNodes.pack                                 ~37 KB   
 ```
 
 The main pack is **embedded** in `loosefiles_BinPC.pack` (a 128-byte-header loose-file container: a
-`u32 crc`, `u32 size`, `char name[120]` header, the payload, then 0x10 alignment). The DLC packs are
+`u32 name_crc`, `u32 size`, `char name[120]` header, the payload, then 0x10 alignment; see `sab_formats::loosefiles`). The DLC packs are
 loose files you can open directly.
 
 Parser/writer: [`sab_formats::editnodes`](../../tools/sab_formats/src/editnodes.rs) (shared library).
@@ -302,24 +302,42 @@ the checksum:
    There is no second consumer hiding behind a differently-named symbol or an undecompiled function.
    Leaving the field stale is **safe, CONFIRMED**.
 
-   **Its algorithm is still unidentified**, and the obvious candidate is ruled out. Mercenaries 2
-   uses a CRC-32 with `init=0` and no final XOR (poly `0xEDB88320`) for its FFCS `CSUM` chunks —
-   `mercs2_formats::crc32::crc32_mercs2`, the same engine lineage. It does not match. Ruled out,
-   0/7 on every entry:
+   **★ SOLVED — and it is a NAME hash, not a content checksum:**
 
-   * **algorithms** — `crc32_mercs2`; zlib CRC-32 and its complement; Adler-32; FNV-1a and FNV-1 over
-     raw bytes; `pandemic_hash` in both the Mercs 1 (no finalizer) and Mercs 2 / Saboteur variants;
-     sum-of-u32-words, xor-of-u32-words, sum-of-bytes
-   * **inputs** — payload; payload padded to 0x10; prefix slices of 0x40…0x4000 bytes (in case it is
-     a fast partial checksum); the name; the full 120-byte name field; the header with the checksum
-     zeroed, with and without the payload; the size prefixed and suffixed to the payload
-   * **name decorations** — lower/upper case, forward slashes, basename, extension stripped, and
-     `france\`, `global\`, `\` prefixes, `.pack` suffix
+   ```
+   name_crc = CRC-32/BZIP2( name.to_ascii_lowercase() )
+              poly 0x04C11DB7, init 0xFFFFFFFF, xorout 0xFFFFFFFF, NON-reflected (MSB-first)
+   ```
 
-   The value does not correlate with size or offset and has no visible structure. It may not be a
-   content checksum at all — a build-time id or timestamp would look the same. The writer is a build
-   tool and is not in the shipped exe, so cracking it needs more equations than the 7 this file
-   provides: another build (the 2008 pre-release) or a console SKU would supply them.
+   **7 / 7** on every retail entry. Implemented as
+   [`sab_formats::loosefiles::name_crc`](../../tools/sab_formats/src/loosefiles.rs), pinned by a test
+   carrying all seven `(name, crc)` pairs inline.
+
+   | name | stored `+0x00` |
+   |---|---|
+   | `France.shaders` | `ee2e6431` |
+   | `Cinematics\Conversations\Conversations.cnvpack` | `46350dcf` |
+   | `Cinematics\Cinematics.cinpack` | `0f3c8f37` |
+   | `global.map` | `6b37a7cb` |
+   | `France.map` | `25b96f25` |
+   | `France\EditNodes\EditNodes.pack` | `c965b7ea` |
+   | `GameTemplates.wsd` | `12cdbde3` |
+
+   Only **case** is normalised — separators are hashed as stored, so `\` and `/` give different
+   values even though the *lookup* in `FUN_00dc1060` folds them.
+
+   **What actually cracked it** was the Mercenaries corpus, not more sweeping: Mercs 2's save-game
+   `ProfileHash` is CRC-32/BZIP2 over the save body (`mercs2_formats::save`), and it was the only
+   non-reflected CRC in the Pandemic lineage — a variant that ~60 earlier candidates had all missed,
+   because the obvious relative (`crc32_mercs2`, the FFCS `CSUM` algorithm) is *reflected*, poly
+   `0xEDB88320`, and does not match. The normalisation then gave itself away: probing name-hash
+   candidates hit on `global.map` and nothing else, and `global.map` is the one retail name already
+   entirely lowercase.
+
+   **Consequence for writers — better than "leave it stale":** because it hashes the *name*, editing
+   or resizing a payload **never invalidates it**. It only needs computing when an entry is added or
+   renamed. Combined with the engine never reading it, there is now no scenario in which this field
+   can break an edit.
 2. **★ Entry order looks load-bearing — mechanism confirmed, consequence UNTESTED.** A *miss* does
    not advance the cursor, so the archive can only ever be consumed in packed order: it is a
    load-order-optimised stream, not a random-access directory. On a miss the engine falls back to
@@ -413,7 +431,7 @@ writes, and it is how "rotate this spawned car" is expressed in the data.
 | entries are `.wsd` objects; the pack is the `.wsd` provider | **CONFIRMED** (`FUN_009ef620` routes the `.wsd` extension to this class) |
 | loose-file container: 0x80 header, `size` at +4, name at +8, payload at +0x80, next entry 0x10-aligned | **CONFIRMED** (`FUN_00dc1060`) |
 | the loose-file header's leading `u32` is never read by the engine | **CONFIRMED** — one reference in the whole PE (byte-level scan for `0x01502878`), the destination of the header read |
-| that field's algorithm | **UNIDENTIFIED** — ~60 combinations ruled out, including Mercs 2's `crc32_mercs2` CSUM. Needs equations from another build |
+| that field is `CRC-32/BZIP2(lowercased name)` — a NAME hash, not a content checksum | **CONFIRMED** — 7/7 retail entries; `sab_formats::loosefiles::name_crc`. So a payload edit can never invalidate it |
 | loose-file reader is a sequential cursor; a miss does not advance it | **CONFIRMED** (`FUN_00dc1060`) |
 | all 7 loose-file entries are pack-only (no on-disk fallback copy) | **CONFIRMED** (filesystem, all 7) |
 | therefore reordering/inserting makes those assets unloadable | **INFERRED, UNTESTED** — the failure path of the disk fallback was never traced and the game has never been run with a modified `loosefiles`. Resize-in-place is unaffected either way. |

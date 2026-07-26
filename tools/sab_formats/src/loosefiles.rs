@@ -21,8 +21,10 @@
 
 /// CRC-32/BZIP2: poly `0x04C11DB7`, init/xorout `0xFFFFFFFF`, **non-reflected** (MSB-first).
 ///
-/// The same algorithm Mercenaries 2 uses for its save-game `ProfileHash`, which is how it was
-/// identified — Saboteur's is over a name, Mercs 2's over the save body.
+/// Mercenaries 2 uses the same standard CRC for its save-game `ProfileHash`, which is where the
+/// candidate came from — but the grounding is Saboteur's own data (7/7 retail entries, below), not
+/// the shared lineage. What the two engines actually share is mapped subsystem by subsystem in
+/// `notes-on-the-released-game/docs/saboteur_engine_comparison.md`, and most containers diverged.
 fn crc32_bzip2(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &b in data {

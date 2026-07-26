@@ -18,6 +18,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::WindowBuilder;
 
 use crate::anim_index::{self, AnimCatalog};
+use crate::bundle;
 use crate::camera::OrbitCamera;
 use crate::formats::{self, Bone, Smsh, SubMesh};
 use crate::gui::theme;
@@ -242,8 +243,21 @@ pub fn run(cfg: Config) {
     let mut nav_search = String::new();
     // Outcome of the last click-to-load, surfaced in the status bar: (message, is_error).
     let mut load_status: Option<(String, bool)> = None;
-    // The parts of the currently-viewed character, for glTF export (re-assembled on demand).
-    let mut current_parts: Vec<meshload::MeshEntry> = Vec::new();
+    // The parts of the currently-viewed character, for bundle export (re-assembled on demand).
+    //
+    // SEEDED FROM THE BOOT MODEL. This only ever filled on a browser click, so the character the app
+    // opens on — the one you are looking at before you touch anything — counted as "nothing loaded"
+    // and could not be exported until you clicked something else. The boot parts come from the same
+    // `cfg.megapack` the exporter reopens, so their offsets are valid there.
+    let mut current_parts: Vec<meshload::MeshEntry> = boot_parts.clone();
+    // In-flight background bundle export, polled once per frame.
+    let mut exporter: Option<Exporter> = None;
+    // Is a texture resolve still in flight for the current model? An export started before it lands
+    // would write a bundle with an empty texture pool, so the verb bar says so and the deferred
+    // "load & export" waits for it.
+    let mut tex_pending = from_pack;
+    // A context-menu export that must wait for the click-to-load (and its texture resolve) first.
+    let mut export_when_ready = false;
     let mut last_frame = Instant::now();
 
     // mouse
@@ -297,6 +311,10 @@ pub fn run(cfg: Config) {
                     }
                 }
                 WindowEvent::RedrawRequested => {
+                    // Set by the verb bar, F10, or a texture resolve landing for a deferred
+                    // context-menu export. Declared up here because the texture drain below can
+                    // raise it before the UI runs.
+                    let mut export_req = false;
                     // Drain whatever background stages have arrived and paint them (progressive fill).
                     while let Ok(msg) = bg_rx.try_recv() {
                         match msg {
@@ -352,6 +370,13 @@ pub fn run(cfg: Config) {
                                     }
                                 }
                             }
+                            // The bindings are now what the bundle would write, so a deferred
+                            // "load & export" can finally fire.
+                            tex_pending = false;
+                            if export_when_ready {
+                                export_when_ready = false;
+                                export_req = true;
+                            }
                         }
                     }
 
@@ -382,13 +407,23 @@ pub fn run(cfg: Config) {
 
                     // --- UI ---
                     let rig_ok = skel.len() == rig_bones;
-                    let mut export_glb_req = false;
+                    let mut pick_export_dir = false;
+                    let mut export_ctx = ExportCtx {
+                        request: &mut export_req,
+                        pick_dir: &mut pick_export_dir,
+                        busy: exporter.as_ref().map(|e| e.label.clone()),
+                        // Export what is on screen: the bundle carries the texture bindings, and
+                        // those only exist for the model that is actually loaded.
+                        ready: megapack.is_some() && !current_parts.is_empty(),
+                        tex_pending,
+                        dest: bundle_root(&settings_ctx.s).join(&model_name).display().to_string(),
+                    };
                     gui.run(|ctx| {
                         build_ui(
                             ctx, &catalog, &playable_rows, &mut show_all,
                             &current, &mut playback, &mut pending_load, &mut renderer.show_grid,
                             &mut renderer.show_textures, &mut lock_root, &errors, pack.is_some(), rig_ok,
-                            mesh_stats, &model_name, &load_status, &mut page, &mut thumbs, &mut export_glb_req,
+                            mesh_stats, &model_name, &load_status, &mut page, &mut thumbs, &mut export_ctx,
                             &mut MatsCtx {
                                 submeshes: &submeshes,
                                 assets: &assets,
@@ -412,6 +447,7 @@ pub fn run(cfg: Config) {
                                 selected_tex: &mut sel_tex,
                                 groups: &groups,
                                 pending_group: &mut pending_group,
+                                export_after_load: &mut export_when_ready,
                                 models_loading,
                             },
                             &mut editor_state,
@@ -419,30 +455,57 @@ pub fn run(cfg: Config) {
                         );
                     });
 
-                    // --- act on an "Export .glb" click (Inspect page): re-assemble the viewed
-                    // character and write a skinned bind-pose glTF to a chosen path ---
-                    if export_glb_req {
-                        match &megapack {
-                            Some(mp) if !current_parts.is_empty() => {
-                                match meshload::assemble(mp.raw(), &current_parts) {
-                                    Ok(lm) => {
-                                        if let Some(out) = rfd::FileDialog::new()
-                                            .set_title("Export model as glTF (.glb)")
-                                            .set_file_name(format!("{model_name}.glb"))
-                                            .add_filter("glTF binary", &["glb"])
-                                            .save_file()
-                                        {
-                                            let glb = meshload::write_glb(&lm);
-                                            load_status = Some(match std::fs::write(&out, &glb) {
-                                                Ok(()) => (format!("exported → {}", out.display()), false),
-                                                Err(e) => (format!("write: {e}"), true),
-                                            });
-                                        }
-                                    }
-                                    Err(e) => load_status = Some((format!("export assemble: {e}"), true)),
-                                }
+                    // --- pick a new bundle destination (verb bar "→ path") ---
+                    if pick_export_dir {
+                        if let Some(d) = rfd::FileDialog::new()
+                            .set_title("Where to write export bundles")
+                            .set_directory(bundle_root(&settings_ctx.s))
+                            .pick_folder()
+                        {
+                            settings_ctx.s.export_dir = d.to_string_lossy().replace('\\', "/");
+                            if let Err(e) = settings_ctx.s.save() {
+                                load_status = Some((format!("settings: {e}"), true));
                             }
-                            _ => load_status = Some(("open a character from the browser first".into(), true)),
+                        }
+                    }
+
+                    // --- start a bundle export (verb bar / F10 / navigator context menu) ---
+                    //
+                    // Handing this to a WORKER is the whole point: assembling the character,
+                    // BC-decoding its skins to PNG and writing the raw records takes seconds, and
+                    // doing it inline painted the window "Not Responding" until it finished.
+                    if export_req && exporter.is_none() {
+                        if current_parts.is_empty() || megapack.is_none() {
+                            load_status = Some(("open a character from the browser first".into(), true));
+                        } else {
+                            exporter = Some(spawn_bundle_export(bundle::Job {
+                                megapack: cfg.megapack.clone(),
+                                label: model_name.clone(),
+                                parts: current_parts.clone(),
+                                submeshes: submeshes.clone(),
+                                assets: assets.clone(),
+                                submesh_tex: submesh_tex.clone(),
+                                submesh_prov: submesh_prov.clone(),
+                                outroot: bundle_root(&settings_ctx.s),
+                            }));
+                        }
+                    }
+
+                    // --- poll the export worker ---
+                    if let Some(e) = &exporter {
+                        match e.rx.try_recv() {
+                            Ok(r) => {
+                                load_status = Some(match r {
+                                    Ok(dir) => (format!("exported → {dir}"), false),
+                                    Err(err) => (format!("export: {err}"), true),
+                                });
+                                exporter = None;
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                load_status = Some(("export worker died".into(), true));
+                                exporter = None;
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {}
                         }
                     }
 
@@ -479,6 +542,7 @@ pub fn run(cfg: Config) {
                                     submesh_tex = vec![None; submeshes.len()];
                                     submesh_prov = vec![resolve::Prov::Unresolved; submeshes.len()];
                                     model_req = model_req.wrapping_add(1);
+                                    tex_pending = true;
                                     spawn_tex_resolve(
                                         &cfg,
                                         &picked,
@@ -526,6 +590,10 @@ pub fn run(cfg: Config) {
                                     // rather than appearing to ignore the click.
                                     eprintln!("[sab_workshop] assemble: {e}");
                                     load_status = Some((format!("assemble: {e}"), true));
+                                    // Disarm a context-menu "Export bundle": there is no texture
+                                    // resolve coming, so leaving it armed would fire the export on
+                                    // whichever model the user loaded NEXT.
+                                    export_when_ready = false;
                                 }
                             }
                         }
@@ -673,6 +741,50 @@ struct ModelTex {
     submesh_tex: Vec<Option<usize>>,
     submesh_prov: Vec<resolve::Prov>,
     decoded: Vec<(usize, crate::dtex::CpuTexture)>,
+}
+
+/// The last two components of a path — `…/workshop_export/CH_AL_SeanDevlin_01`.
+///
+/// Enough to recognise where a bundle lands; the absolute path belongs in a tooltip, not in a bar
+/// whose job is to show a button.
+fn short_path(p: &str) -> String {
+    let norm = p.replace('\\', "/");
+    let tail: Vec<&str> = norm.rsplit('/').take(2).collect();
+    match tail.as_slice() {
+        [last, parent] => format!("…/{parent}/{last}"),
+        _ => p.to_string(),
+    }
+}
+
+/// Handle to an in-flight background bundle export (poll `rx` once per frame).
+struct Exporter {
+    rx: std::sync::mpsc::Receiver<Result<String, String>>,
+    /// The asset being exported — for the progress card and the completion message.
+    label: String,
+}
+
+/// Where export bundles land: the configured directory, else `workshop_export/` beside wherever the
+/// app was launched.
+///
+/// NOT a hardcoded absolute path — a machine path baked into the binary is dead for everyone whose
+/// copy lives elsewhere, which is the same failure `Settings::game_dir` exists to fix.
+fn bundle_root(s: &crate::settings::Settings) -> std::path::PathBuf {
+    if s.export_dir.is_empty() {
+        std::env::current_dir().unwrap_or_default().join("workshop_export")
+    } else {
+        std::path::PathBuf::from(&s.export_dir)
+    }
+}
+
+/// Run a bundle export off the UI thread. The job owns everything it needs and opens its OWN
+/// megapack mmap, so it touches neither the app's pack handle nor the GPU.
+fn spawn_bundle_export(job: bundle::Job) -> Exporter {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let label = job.label.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(bundle::run(&job));
+    });
+    Exporter { rx, label }
 }
 
 /// Resolve + BC-decode a clicked model's textures OFF the main thread. Reopens the megapacks (mmap is
@@ -1570,6 +1682,25 @@ impl NavTab {
 
 /// The Materials panel's borrowed state: the draw list, the resolved texture pool, the current
 /// assignment, and the out-param a picker click writes to.
+/// The export verb's state for one frame — what the verb bar reads, and what it raises.
+///
+/// A struct rather than four more `&mut bool` parameters on `build_ui`, which is already at the
+/// point where positional arguments stop being readable.
+struct ExportCtx<'a> {
+    /// Raised by the verb-bar button or F10: start an export of what is loaded.
+    request: &'a mut bool,
+    /// Raised by clicking the destination path: pick a new bundle root.
+    pick_dir: &'a mut bool,
+    /// The asset an export is already running for, if any — the verb is disabled while set.
+    busy: Option<String>,
+    /// Is there a loaded model to export at all?
+    ready: bool,
+    /// Textures are still resolving; a bundle written now would be untextured.
+    tex_pending: bool,
+    /// Where this export would land, shown so it is never a mystery.
+    dest: String,
+}
+
 struct MatsCtx<'a> {
     submeshes: &'a [SubMesh],
     assets: &'a [resolve::TexAsset],
@@ -1606,6 +1737,9 @@ struct NavCtx<'a> {
     groups: &'a crate::models::Groups,
     /// A right-click "move to group" request: (model index, new category), applied after the UI.
     pending_group: &'a mut Option<(usize, String)>,
+    /// A right-click "Export bundle" on a row that is not the loaded model: arm an export to fire
+    /// once `pending_model` has loaded AND its texture resolve has landed.
+    export_after_load: &'a mut bool,
     /// True until the model list has streamed in from the megapack — show a spinner meanwhile.
     models_loading: bool,
 }
@@ -1846,7 +1980,7 @@ fn build_ui(
     load_status: &Option<(String, bool)>,
     page: &mut Page,
     thumbs: &mut Thumbs,
-    export_glb: &mut bool,
+    exp: &mut ExportCtx,
     mats: &mut MatsCtx,
     nav: &mut NavCtx,
     ed: &mut crate::editor::Editor,
@@ -1963,17 +2097,6 @@ fn build_ui(
                 theme::DIM,
             ));
             ui.separator();
-            // Export the viewed character as a skinned bind-pose glTF (Inspect page, rigged models).
-            if page.editor().is_none() && mesh_stats.2 > 0 {
-                if ui
-                    .add(egui::Button::new(theme::disp_text("Export .glb", 10.0, theme::COLD)).fill(theme::COLD_SOFT).stroke(egui::Stroke::new(1.0, theme::COLD_DK)).rounding(egui::Rounding::ZERO))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    *export_glb = true;
-                }
-                ui.separator();
-            }
             // Each page reports the fact IT is about; the status bar is not a fixed readout.
             ui.label(theme::data_text(
                 match page.editor() {
@@ -1991,6 +2114,110 @@ fn build_ui(
             }
         });
     });
+
+    // ── VERB BAR ──
+    //
+    // The one thing this page is FOR, given its own band. Export used to be a 10pt button wedged
+    // between two monospace readouts in the 24pt status bar, which is a place for facts, not verbs —
+    // it was unfindable, and it vanished entirely whenever the model had no bones. Lifting it into a
+    // dedicated bar (the shape `mercs2_workshop` settled on) gives it room for the shortcut, the
+    // destination, and the caveat that the bundle would come out untextured.
+    if page.editor().is_none() {
+        // Exact height + `horizontal_centered`, NOT `add_space` either side of an auto-sized row.
+        // A panel that sizes to its tallest child cannot be padded symmetrically — the button's box
+        // and the labels' line boxes differ, so equal spacers still landed more air under the button
+        // than over it. `bar_frame` carries no vertical margin for exactly this reason: the centring
+        // owns that axis. Same construction as the command and status bars.
+        egui::TopBottomPanel::bottom("verbbar")
+            .exact_height(theme::verb_h())
+            .frame(theme::bar_frame())
+            .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                let busy = exp.busy.is_some();
+                // The shortcut rides IN the label, the way the Mercs2 verb bar states its verbs —
+                // one element instead of a button plus a chip arguing for the same attention.
+                let label = match &exp.busy {
+                    Some(l) => format!("exporting {l}…"),
+                    None => "Export  F10".into(),
+                };
+                let r = theme::action_button(ui, &label, exp.ready && !busy);
+                if r.clicked() {
+                    *exp.request = true;
+                }
+                // The label says the verb; the tooltip says what lands on disk. Spelling the whole
+                // bundle out on the button made it the widest thing in the app.
+                r.on_hover_text(
+                    "Export bundle — writes model.glb (skinned, one primitive per submesh), \
+                     textures/*.png, the verbatim raw/ source records, and manifest.json (the \
+                     reassembly map).",
+                );
+                ui.separator();
+
+                // Where it lands, and how to change that. Shown as the tail only: the absolute path
+                // is ~100 characters and swallowed the whole bar, which buried the very button this
+                // panel exists to show off. The full path is one hover away.
+                ui.label(theme::data_text("→", 11.0, theme::FAINT));
+                if ui
+                    .add(
+                        egui::Label::new(theme::data_text(short_path(&exp.dest), 10.0, theme::COLD))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("{}\n\nClick to choose where bundles are written", exp.dest))
+                    .clicked()
+                {
+                    *exp.pick_dir = true;
+                }
+
+                if exp.ready && exp.tex_pending {
+                    ui.separator();
+                    ui.label(theme::data_text(
+                        "textures still resolving — exporting now writes an untextured bundle",
+                        10.0,
+                        theme::EMBER,
+                    ));
+                } else if !exp.ready {
+                    ui.separator();
+                    ui.label(theme::data_text("load a model to export", 10.0, theme::FAINT));
+                }
+            });
+        });
+
+        // F10 anywhere on the page, matching the label on the button. Not while a text field has
+        // focus, for the same reason the 1-5 page keys are gated.
+        if !ctx.wants_keyboard_input()
+            && ctx.input(|i| i.key_pressed(egui::Key::F10))
+            && exp.ready
+            && exp.busy.is_none()
+        {
+            *exp.request = true;
+        }
+    }
+
+    // ── EXPORT PROGRESS ──
+    //
+    // Deliberately NOT modal: the export runs on a worker against its own copy of the data, so
+    // there is nothing to protect the app from — orbiting the model while it writes is fine.
+    if let Some(l) = &exp.busy {
+        ctx.request_repaint(); // keep the spinner turning without pointer input
+        egui::Window::new(theme::disp_text("EXPORTING", 12.0, theme::TX))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(15.0).color(theme::EMBER));
+                    ui.add_space(6.0);
+                    ui.label(theme::data_text(format!("{l} — assembling, decoding skins…"), 11.0, theme::TX));
+                });
+                ui.add_space(3.0);
+                ui.label(theme::data_text(
+                    "Decoding a character's skins takes a few seconds. The viewport stays live.",
+                    10.0,
+                    theme::FAINT,
+                ));
+            });
+    }
 
     // ── RAIL ──
     // Declared before the navigator so it owns the far-left edge, and after the status bar so it
@@ -2263,6 +2490,16 @@ fn build_ui(
                                         *nav.pending_model = Some(a.assembly());
                                     }
                                     r.context_menu(|ui| {
+                                        // Load-then-export: the bundle carries the texture
+                                        // bindings, and those only come into existence once this
+                                        // asset's resolve lands. `defer` fires the export then.
+                                        if ui.button("Export bundle").clicked() {
+                                            *nav.sel_asset = Some(i);
+                                            *nav.pending_model = Some(a.assembly());
+                                            *nav.export_after_load = true;
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
                                         ui.label(theme::data_text("Move to group", 10.0, theme::FAINT));
                                         for c in crate::models::CATEGORIES {
                                             if ui.button(*c).clicked() {
@@ -2489,4 +2726,21 @@ fn build_ui(
                 }
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The verb bar shows the destination's tail, not a 100-character absolute path.
+    #[test]
+    fn short_path_keeps_the_last_two_components() {
+        assert_eq!(
+            short_path(r"C:\Users\Shadow\Desktop\repo\tools\sab_workshop\workshop_export\Sean"),
+            "…/workshop_export/Sean"
+        );
+        assert_eq!(short_path("/home/x/workshop_export/Sean"), "…/workshop_export/Sean");
+        // Too short to trim: hand it back rather than inventing an ellipsis.
+        assert_eq!(short_path("Sean"), "Sean");
+    }
 }

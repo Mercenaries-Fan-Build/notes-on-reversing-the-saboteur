@@ -761,6 +761,44 @@ pub mod theme {
         )
     }
 
+    /// The ACTION: the one verb a page is FOR, at the weight that says so.
+    ///
+    /// [`EMBER`] rather than [`RED`] because red is spent on live/selected — a red export button
+    /// would read as "this row is chosen". Ember is the palette's "resolved / ready / colour
+    /// returning", which is exactly what handing an asset out to a DCC is. Chamfered like a card so
+    /// it belongs to the same printed vocabulary.
+    ///
+    /// Sized to be FOUND, not to dominate. The ember fill and the chamfer are what make it findable
+    /// — weight is not doing that work, so it does not need any. It sits at the [`MIN_DISP`] floor,
+    /// the same size as a `chip`, with tight padding and no minimum height: the label's own line box
+    /// sets the height. The 10pt version buried in the status bar was invisible; 12pt/22px and then
+    /// 11pt/17px both overshot the other way.
+    pub fn action_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+        let (fg, bg, edge) = if enabled { (INK, EMBER, EMBER_DK) } else { (FAINT, G2, LINE) };
+        let bevel = ui.painter().add(egui::Shape::Noop);
+        let r = ui
+            .scope(|ui| {
+                ui.spacing_mut().button_padding = egui::vec2(7.0, 2.0) * type_scale();
+                ui.add_enabled(
+                    enabled,
+                    egui::Button::new(disp_text(label.to_uppercase(), MIN_DISP, fg))
+                        .fill(egui::Color32::TRANSPARENT)
+                        .rounding(egui::Rounding::ZERO)
+                        .stroke(egui::Stroke::NONE),
+                )
+            })
+            .inner;
+        ui.painter().set(
+            bevel,
+            egui::Shape::convex_polygon(chamfer(r.rect, CUT * 0.7), bg, egui::Stroke::new(1.0, edge)),
+        );
+        if enabled {
+            r.clone().on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            r
+        }
+    }
+
     /// The STAMP: an irreversible action, as a printed mark rather than a colour.
     ///
     /// With one hot hue spent on selection there is no second hue left to mean "danger", so this
@@ -845,6 +883,10 @@ pub mod theme {
     }
     pub fn status_h() -> f32 {
         24.0 * type_scale()
+    }
+    /// The verb bar — taller than the status bar because it holds a button rather than a readout.
+    pub fn verb_h() -> f32 {
+        30.0 * type_scale()
     }
 
     /// The frame shared by both bars: panel fill, horizontal breathing room, and NO vertical
@@ -1011,6 +1053,7 @@ fn map_key(code: KeyCode) -> Option<egui::Key> {
         KeyCode::KeyV => K::V,
         KeyCode::KeyX => K::X,
         KeyCode::KeyZ => K::Z,
+        KeyCode::F10 => K::F10,
         _ => return None,
     })
 }

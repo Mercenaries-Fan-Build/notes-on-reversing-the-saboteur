@@ -288,10 +288,38 @@ the checksum:
 
 1. **The leading `u32` is never read.** The header is pulled in as one 0x80-byte blob to
    `DAT_01502878`, and that symbol appears **exactly once in all 36,935 decompiled functions** — as
-   the destination of that read. Only `+4` (size) and `+8` (name) are ever consumed. Leaving the
-   field stale is therefore **safe, CONFIRMED** — the earlier "UNVERIFIED" caveat is discharged. Its
-   algorithm is still unidentified (not `pandemic_hash(name)`, not zlib CRC-32 padded or unpadded —
-   0/7 on the leading entries), but nothing at runtime cares.
+   the destination of that read. Only `+4` (size) and `+8` (name) are ever consumed.
+
+   That was then confirmed *below* the decompiler, by scanning the whole PE for each field's address
+   as a literal — so it does not depend on Ghidra having decompiled everything:
+
+   | address | field | references in `Saboteur.exe` |
+   |---|---|---|
+   | `0x01502878` | the checksum | **1** — at `0xdc1100`, the destination pointer of `read(&buf, 0x80)` |
+   | `0x0150287c` | `size` | 1 — the consumer |
+   | `0x01502880` | `name` | 2 — the two comparisons |
+
+   There is no second consumer hiding behind a differently-named symbol or an undecompiled function.
+   Leaving the field stale is **safe, CONFIRMED**.
+
+   **Its algorithm is still unidentified**, and the obvious candidate is ruled out. Mercenaries 2
+   uses a CRC-32 with `init=0` and no final XOR (poly `0xEDB88320`) for its FFCS `CSUM` chunks —
+   `mercs2_formats::crc32::crc32_mercs2`, the same engine lineage. It does not match. Ruled out,
+   0/7 on every entry:
+
+   * **algorithms** — `crc32_mercs2`; zlib CRC-32 and its complement; Adler-32; FNV-1a and FNV-1 over
+     raw bytes; `pandemic_hash` in both the Mercs 1 (no finalizer) and Mercs 2 / Saboteur variants;
+     sum-of-u32-words, xor-of-u32-words, sum-of-bytes
+   * **inputs** — payload; payload padded to 0x10; prefix slices of 0x40…0x4000 bytes (in case it is
+     a fast partial checksum); the name; the full 120-byte name field; the header with the checksum
+     zeroed, with and without the payload; the size prefixed and suffixed to the payload
+   * **name decorations** — lower/upper case, forward slashes, basename, extension stripped, and
+     `france\`, `global\`, `\` prefixes, `.pack` suffix
+
+   The value does not correlate with size or offset and has no visible structure. It may not be a
+   content checksum at all — a build-time id or timestamp would look the same. The writer is a build
+   tool and is not in the shipped exe, so cracking it needs more equations than the 7 this file
+   provides: another build (the 2008 pre-release) or a console SKU would supply them.
 2. **★ Entry order looks load-bearing — mechanism confirmed, consequence UNTESTED.** A *miss* does
    not advance the cursor, so the archive can only ever be consumed in packed order: it is a
    load-order-optimised stream, not a random-access directory. On a miss the engine falls back to
@@ -384,7 +412,8 @@ writes, and it is how "rotate this spawned car" is expressed in the data.
 | `offset` is an absolute seek within the pack; `size` is the sub-stream length | **CONFIRMED** (`FUN_0064b600` seeks to `entry.offset`, installs `entry.size` as the length) |
 | entries are `.wsd` objects; the pack is the `.wsd` provider | **CONFIRMED** (`FUN_009ef620` routes the `.wsd` extension to this class) |
 | loose-file container: 0x80 header, `size` at +4, name at +8, payload at +0x80, next entry 0x10-aligned | **CONFIRMED** (`FUN_00dc1060`) |
-| the loose-file header's leading `u32` is never read by the engine | **CONFIRMED** — `DAT_01502878` occurs exactly once in 36,935 functions, as the read destination |
+| the loose-file header's leading `u32` is never read by the engine | **CONFIRMED** — one reference in the whole PE (byte-level scan for `0x01502878`), the destination of the header read |
+| that field's algorithm | **UNIDENTIFIED** — ~60 combinations ruled out, including Mercs 2's `crc32_mercs2` CSUM. Needs equations from another build |
 | loose-file reader is a sequential cursor; a miss does not advance it | **CONFIRMED** (`FUN_00dc1060`) |
 | all 7 loose-file entries are pack-only (no on-disk fallback copy) | **CONFIRMED** (filesystem, all 7) |
 | therefore reordering/inserting makes those assets unloadable | **INFERRED, UNTESTED** — the failure path of the disk fallback was never traced and the game has never been run with a modified `loosefiles`. Resize-in-place is unaffected either way. |

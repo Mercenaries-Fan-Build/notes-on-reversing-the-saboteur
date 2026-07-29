@@ -178,11 +178,120 @@ impl GameTemplates {
     }
 }
 
-/// Named property/value hashes reversed so far (property names + the `Texture` reference).
+#[path = "gametemplates_props.rs"]
+mod props;
+
+/// What a property's bytes mean. Derived, not declared: the engine's per-class `SetProperty`
+/// dispatchers reveal which reader helper consumes each key, and the type is only recorded when
+/// that reader agrees with the size histogram observed across all 10,761 retail templates.
+///
+/// This is for DISPLAY and authoring assistance only, never for framing. `size` in the pair header
+/// is always authoritative — see `docs/formats/editnodes.md`'s account of a value-based classifier
+/// that became a live parse bug.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropType {
+    /// one byte, usually a flag (often packed into a bitfield by the engine)
+    Bool,
+    /// four bytes read plainly — an int or a float, and the corpus cannot always say which
+    Scalar4,
+    /// four bytes read byte-reversing: a `pandemic_hash` naming another blueprint, a texture or a
+    /// string. `"none"` (`0x4FF9F863`) is the null sentinel.
+    Ref,
+    /// twelve bytes, three f32
+    Vec3,
+    /// NUL-terminated text
+    Str,
+    /// anything else, including keys whose width varies between templates
+    Bytes,
+}
+
+/// The property name for a key, if one has been recovered.
+///
+/// 835 of the 2,723 keys present in retail are named, covering 41.3% of all property uses — up
+/// from the 15 hand-listed names this replaced. Every row satisfies
+/// `pandemic_hash(name) == key` little-endian; see [`props`] and the test below.
 pub fn known_property_name(hash: u32) -> Option<&'static str> {
-    const NAMES: &[&str] = &[
-        "Name", "Model", "Priority", "Offset", "Type", "LOD", "Color", "Face", "Head", "Skin",
-        "Description", "Image", "Texture", "none", "AIAttractionPt",
-    ];
-    NAMES.iter().copied().find(|n| pandemic_hash(n) == hash)
+    props::NAMES
+        .binary_search_by_key(&hash, |&(k, _)| k)
+        .ok()
+        .map(|i| props::NAMES[i].1)
+}
+
+/// The derived value type for a key. `None` for a key that does not occur in the retail table.
+pub fn property_type(hash: u32) -> Option<PropType> {
+    props::TYPES
+        .binary_search_by_key(&hash, |&(k, _)| k)
+        .ok()
+        .map(|i| props::TYPES[i].1)
+}
+
+#[cfg(test)]
+mod prop_table_tests {
+    use super::*;
+
+    /// The whole safety story for the generated table. `pandemic_hash` is a perfect oracle here: a
+    /// name either reproduces its key or it does not, so nothing in the table can be a guess. This
+    /// is deliberately stricter than the EditNodes tag dictionary, which inherited 14 invented
+    /// labels — we generate our own preimages, so we can demand all of them.
+    #[test]
+    fn every_property_name_is_a_preimage() {
+        for &(key, name) in props::NAMES {
+            assert_eq!(
+                pandemic_hash(name),
+                key,
+                "{name:?} does not hash to 0x{key:08X} — the table must carry no guesses"
+            );
+        }
+        assert!(props::NAMES.len() > 800, "expected the derived table, got {}", props::NAMES.len());
+    }
+
+    /// Both tables are binary-searched, so sortedness is load-bearing, and a duplicate key would
+    /// make the lookup pick an arbitrary one of them.
+    #[test]
+    fn the_tables_are_sorted_and_unique() {
+        for w in props::NAMES.windows(2) {
+            assert!(w[0].0 < w[1].0, "NAMES not sorted/unique at 0x{:08X}", w[0].0);
+        }
+        for w in props::TYPES.windows(2) {
+            assert!(w[0].0 < w[1].0, "TYPES not sorted/unique at 0x{:08X}", w[0].0);
+        }
+    }
+
+    /// Spot-checks that survive regeneration, one per evidence class:
+    /// - `Looping` / `Sound Events` — the audio attachment block, where the recovered NAMES and the
+    ///   decompiled record layout independently agree
+    /// - `Game Event Name` — a name containing SPACES, which identifier-shaped harvesting cannot
+    ///   produce and which the community dictionary filed under a byteswapped key
+    /// - `Model` / `Texture` — carried over from the 15 hand-listed names, so nothing regressed
+    #[test]
+    fn known_names_and_types_survive_regeneration() {
+        for (key, name) in [
+            (0x1E59E605u32, "Looping"),
+            (0x42C6DA9D, "Sound Events"),
+            (0x246DB06C, "Game Event Name"),
+            (0xD76D7747, "Sound Event Name"),
+            (0x5B724250, "Model"),
+            (0xF011157A, "Texture"),
+        ] {
+            assert_eq!(pandemic_hash(name), key, "{name:?} is not a preimage of 0x{key:08X}");
+            assert_eq!(
+                known_property_name(key).map(str::to_ascii_lowercase),
+                Some(name.to_ascii_lowercase()),
+                "0x{key:08X} should be named {name:?} (pandemic_hash case-folds, so compare folded)"
+            );
+        }
+        // Width-backed types are trustworthy: `Looping` is one byte in all 6,525 uses.
+        assert_eq!(property_type(0x1E59E605), Some(PropType::Bool));
+        // `AudibleEvent` is a Ref on the engine's own reader (FUN_004511d0) agreeing with width 4.
+        assert_eq!(property_type(0x02D3EB9F), Some(PropType::Ref));
+        // KNOWN LIMIT, not an oversight. `Game Event Name` really is a Ref — the decomp reads it
+        // with the byte-reversing helper — but its only appearance is behind an inverted
+        // `if (param_2 != 0xKEY)` guard, so equality-only attribution cannot claim it and the
+        // size histogram cannot tell Scalar4 from Ref (both are 4 bytes). It therefore falls back
+        // to Scalar4. Separating the two needs brace-aware extraction; until then this asserts the
+        // conservative answer rather than a flattering one.
+        assert_eq!(property_type(0x246DB06C), Some(PropType::Scalar4));
+        // A key that is not in the retail table has no type.
+        assert_eq!(property_type(0xDEADBEEF), None);
+    }
 }

@@ -1,0 +1,2729 @@
+# GameTemplates blueprint property table -- DERIVED, do not hand-edit.
+# Regenerate: python tools/derive/derive_blueprint_properties.py
+# Every `name` satisfies pandemic_hash(name) == key, little-endian.
+# type_src=decomp+size means the engine's reader helper agrees with the observed
+# size histogram; type_src=size means only the corpus shape supports it.
+key	name	name_src	type	type_src	uses	sizes	top_types	dispatchers
+02d3eb9f	AudibleEvent	dict	Ref	decomp+size	6525	4x6525	Prop,Human,ParticleEffectSpawner	FUN_00662530
+1e59e605	Looping	dict	Bool	size	6525	1x6525	Prop,Human,ParticleEffectSpawner	FUN_005e7380,FUN_00662530
+246db06c	Game Event Name	dict	Scalar4	size	6525	4x6525	Prop,Human,ParticleEffectSpawner	FUN_00662530
+d76d7747	Sound Event Name	dict	Scalar4	size	6525	4x6525	Prop,Human,ParticleEffectSpawner	FUN_00662530
+207fba52	boneName	sym	Scalar4	size	6317	4x6317	Prop,CAR,TRUCK	
+22650220			Bool	size	6316	1x6316	Prop,CAR,TRUCK	
+3885f292	isWheel	sym	Bool	size	6316	1x6316	Prop,CAR,TRUCK	
+86de6639	pristine	sym	Bool	size	6316	1x6316	Prop,CAR,TRUCK	
+bb0bf4a2	PartList	exe	Scalar4	size	6316	4x6316	Prop,CAR,TRUCK	
+dd2aa7ab	DamageGroup	sym	Scalar4	size	6316	4x6316	Prop,CAR,TRUCK	
+9465294b			Scalar4	size	6238	4x6238	Prop,CAR,TRUCK	
+6302f1cc	dynamic	dict	Bool	size	6233	1x6233	Prop,ParticleEffectSpawner,FxHumanBodyPart	FUN_006d8b50,FUN_007dfcf0
+8d117b98			Scalar4	size	4759	4x4759	Prop,CAR,TRUCK	
+db0f705c			Bytes	size	4493	25x1359,21x839,24x454,26x427,15x272,23x216,19x200,18x155,17x153,12x143,20x44,22x31,28x31,30x27,27x26,32x20,33x15,16x15,14x15,36x9,29x8,13x5,34x4,39x3,35x3,11x3,31x3,41x2,43x2,42x2,37x2,38x1,46x1,40x1,10x1,67x1	Spore,ScriptController,AIAttractionPt	
+04fbb1ee			Str	decomp+size	4377	1x4244,25x16,14x13,19x12,20x11,13x11,29x9,11x9,17x7,18x6,26x6,21x6,24x5,22x5,15x5,23x4,12x3,31x1,28x1,16x1,8x1,10x1	Prop,ParticleEffectSpawner,AIAttractionPt	FUN_00662530
+3217cdf0			Scalar4	size	4377	4x4377	Prop,ParticleEffectSpawner,AIAttractionPt	FUN_00662530
+e94e8608			Scalar4	size	4377	4x4377	Prop,ParticleEffectSpawner,AIAttractionPt	FUN_00662530
+212a9db0	Send Distance	dict	Bool	decomp+size	3849	1x3849	Prop,ParticleEffectSpawner,Sound	FUN_00662530
+42c6da9d	Sound Events	dict	Scalar4	size	3849	4x3849	Prop,ParticleEffectSpawner,Sound	FUN_00662530
+85b86bd7	Send Doppler	dict	Bool	decomp+size	3849	1x3849	Prop,ParticleEffectSpawner,Sound	FUN_00662530
+afce4ba2			Scalar4	size	3849	4x3849	Prop,ParticleEffectSpawner,Sound	FUN_00662530
+cc1ee14d	Audible	dict	Scalar4	size	3849	4x3849	Prop,ParticleEffectSpawner,Sound	
+ec8964b3			Scalar4	size	3849	4x3849	Prop,ParticleEffectSpawner,Sound	FUN_00662530
+c4c441bd	PartTimer	sym	Scalar4	size	3711	4x3711	Prop,CAR,AnimatedObject	
+6dd070b1			Scalar4	size	3384	4x3384	Prop	
+5b724250	Model	dict	Ref	decomp+size	3190	4x3190	Prop,PhysicsParticle,Foliage	FUN_0044af50,FUN_00474e90,FUN_0069dc40,FUN_006d8b50,FUN_007f8950,FUN_0162ab50
+2a8f3b51			Scalar4	size	2696	4x2696	Prop,LightSettings,CAR	FUN_007e0f39
+75791974			Scalar4	decomp+size	2615	4x2615	Prop,Human,AnimatedObject	FUN_00663d00
+24e96e81			Scalar4	decomp+size	2585	4x2585	Prop,Human,AnimatedObject	FUN_00663d00
+b37bf5b2			Scalar4	decomp+size	2584	4x2584	Prop,Human,AnimatedObject	FUN_00663d00
+0e29263b			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+12066797			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+2a3029f3			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+2d96c4f2			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+3d960ea8			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+416e074f			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+4f18fa7a			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+54019561			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+6ac12b1e			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+73ff7621			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+7c203814			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+81cd9a01			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+8ecb69db			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+ac0f66b8			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+c11c102e			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+d0e3a1a1			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+da3a3781			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+f7c72618			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+f9c458e7			Scalar4	decomp+size	2582	4x2582	Prop,Human,AnimatedObject	FUN_00663d00
+8cbc442d	InitialHealth	dict	Scalar4	decomp+size	2580	4x2580	Prop,Human,AnimatedObject	FUN_00663d00
+49d5c2ae	DamageGroups	sym	Scalar4	size	2578	4x2578	Prop,CAR,TRUCK	FUN_006663b0
+c8d0f617	groupName	sym	Ref	decomp+size	2578	4x2578	Prop,CAR,TRUCK	FUN_006663b0
+e3eb3242			Scalar4	size	2578	4x2578	Prop,CAR,TRUCK	FUN_006663b0
+dd7eae2c	Weakness	dict	Scalar4	decomp+size	2572	4x2572	Prop,Human,AnimatedObject	FUN_00663d00
+e813fe45			Scalar4	size	2564	4x2564	Prop,LightSettings	FUN_007fb4d0,FUN_00800a80
+8c9928fb	UseDynamicPool	dict	Bool	size	2419	1x2419	Prop,FxHumanBodySetup,Weapon	
+414631b3			Scalar4	size	2224	4x2224	Prop,AnimatedObject,Weapon	FUN_00663d00
+a873293a			Scalar4	size	2172	4x2172	Prop,Weapon,Ammo	
+92473a24	AIAttractionPt	exe	Scalar4	size	2109	4x2109	Prop,AnimatedObject,CAR	
+87519019	Priority	dict	Scalar4	size	2093	4x2093	Prop,AIChatter	
+189208a6			Scalar4	size	2078	4x2078	CAR,TrainCarriage,TRUCK	
+8839711a	SeatSpawnObject	exe	Scalar4	size	2078	4x2078	CAR,TrainCarriage,TRUCK	
+a9176462			Scalar4	size	2078	4x2078	CAR,TrainCarriage,TRUCK	
+b1bd8bda	SeatNameRef	exe	Scalar4	size	2078	4x2078	CAR,TrainCarriage,TRUCK	
+3ff4f976	Color	dict	Bytes	size	2075	4x1718,24x357	FxHumanBodyPart,Foliage,CAR	FUN_0064bbc5,FUN_006d8b50,FUN_006f51b0,FUN_007dfcf0,FUN_01616320
+ae1ed17f	NoWillToFight	dict	Bool	size	2048	1x2048	Prop,Weapon,Ammo	
+6ade730a			Ref	decomp+size	2041	4x2041	Prop,Weapon,Ammo	FUN_004b6b89,FUN_0069dc40
+7e4e77e0	Labels	dict	Scalar4	size	2021	4x2021	Human,AIAttractionPt,Spore	FUN_00505010
+c6300246			Scalar4	decomp+size	2005	4x2005	Prop,Weapon,CAR	FUN_004b6b89,FUN_005d53f6,FUN_006b8d30
+3e495387			Bool	decomp+size	1976	1x1976	Prop,AnimatedObject	FUN_0044af50,FUN_004b6b89
+5aab9e8a	Reflection	exe	Bool	decomp+size	1976	1x1976	Prop,AnimatedObject	FUN_0044af50,FUN_004b6b89
+aeff60b8			Bool	decomp+size	1976	1x1976	Prop,AnimatedObject	FUN_0044af50,FUN_004b6b89
+f5572421			Bool	decomp+size	1976	1x1976	Prop,AnimatedObject	FUN_0044af50,FUN_0044bd20,FUN_004b6b89
+04601549			Scalar4	size	1960	4x1960	Prop,CAR,TrainCarriage	FUN_01616320
+07165002			Scalar4	size	1960	4x1960	Prop,CAR,TrainCarriage	FUN_01616320
+734ddb10			Scalar4	size	1960	4x1960	Prop,CAR,TrainCarriage	FUN_01616320
+82e62211			Ref	decomp+size	1923	4x1923	Prop,CAR,TRUCK	FUN_00663d00
+3dcc7355	SabotageType	sym	Ref	decomp+size	1910	4x1910	Prop,CAR,AIAttractionPt	FUN_004b6b89,FUN_005d53f6
+099a56fa	uShift	sym	Scalar4	decomp+size	1888	4x1888	Prop,CAR	FUN_004b6b89
+62f3fceb	VShift	sym	Scalar4	decomp+size	1888	4x1888	Prop,CAR	FUN_004b6b89
+f8a84dac			Scalar4	size	1841	4x1841	Prop,Turret,SearchTurret	
+0b9bef11			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+0c0dd773			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+0c5a04cd			Scalar4	size	1828	4x1828	Prop	FUN_007fab90
+17b66269	PushDataList	sym	Scalar4	size	1828	4x1828	Prop	FUN_004b6b89
+1a62c9ae			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+1dd10731	attachments	exe	Scalar4	size	1828	4x1828	Prop	FUN_004b6b89
+2255030d			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+2ba1d21a			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+2ce48d05			Bool	decomp+size	1828	1x1828	Prop	FUN_0044af50,FUN_004b6b89
+302b2084			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+3121eecd	AreaDamage	sym	Ref	decomp+size	1828	4x1828	Prop	FUN_00663d00
+317edad4	RotateDataList	sym	Scalar4	size	1828	4x1828	Prop	FUN_004b6b89
+5e36bd15			Bool	size	1828	1x1828	Prop	FUN_004b6b89
+725c3533			Scalar4	size	1828	4x1828	Prop	FUN_004b6b89
+7729c979	InWater	sym	Bool	decomp+size	1828	1x1828	Prop	FUN_004b3770,FUN_004b6b89
+784b7d7d			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+9ece86a3			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+a52e4407			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+a5b32fb8			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+c900d2cf			Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+d6cfed23			Ref	decomp+size	1828	4x1828	Prop	FUN_004b6b89
+ddc0ac2f			Bool	size	1828	1x1828	Prop	
+e4400c70	KeyFramedAtStart	sym	Bool	decomp+size	1828	1x1828	Prop	FUN_004b6b89
+f3eab72d			Ref	decomp+size	1828	4x1828	Prop	FUN_004b6b89
+f71c8e51			Bool	size	1828	1x1828	Prop	
+19a14c78			Ref	decomp+size	1769	4x1769	Foliage	FUN_006d8b50
+1c0aee5e			Vec3	size	1769	12x1769	Foliage	FUN_006d8b50
+fd44ecde			Scalar4	size	1769	4x1769	Foliage	FUN_006d8b50
+1aac9531	LIST	exe	Scalar4	size	1690	4x1690	Prop,CAR,AnimatedObject	FUN_0064bbc5,FUN_006d8b50
+922cc098	FxHumanBodyPartVariation	dict	Scalar4	size	1639	4x1639	FxHumanBodySetup	
+a1757f0a	BodyPart	dict	Scalar4	size	1639	4x1639	FxHumanBodySetup	
+d0541403	BodyPartProbability	dict	Scalar4	size	1639	4x1639	FxHumanBodySetup	
+94114e8c	empty	exe	Scalar4	size	1472	4x1472	CameraSettings,Human,Ricochet	
+1cba8055	ColorVariation	sym	Scalar4	size	1468	4x1468	FxHumanBodyPart,CAR,TRUCK	FUN_01616320
+d6a5096b	ColorRandWeight	sym	Scalar4	size	1468	4x1468	FxHumanBodyPart,CAR,TRUCK	FUN_01616320
+fb31f1ef	AI	dict	Scalar4	size	1188	4x1188	AIAttractionPt,Human,CAR	
+354694db	Radius	exe	Scalar4	size	1038	4x1038	LightSettings,LightHalo,VirVehicleWheel	
+30c712ee			Scalar4	size	989	4x989	AIAttractionPt,Spore,Foliage	FUN_006d8b50
+cba8d62c	CombinedLODModel	dict	Scalar4	size	983	4x983	FxHumanBodyPart,FxHumanBodySetup	
+03e19511			Scalar4	size	923	4x923	TRUCK,APC,TANK	
+cbe8ed58	Distance	exe	Scalar4	decomp+size	921	4x921	Sound,AIChatter,ClothObject	FUN_007f7480,FUN_009127b0
+3b07ad90	Emitters	sym	Scalar4	size	915	4x915	ParticleEffect	
+37077436			Scalar4	size	914	4x914	ParticleEffect	
+8479bbe5			Scalar4	size	914	4x914	ParticleEffect	
+496a25d2			Bool	size	890	1x890	Prop,CAR,Turret	FUN_00663d00
+49c74990			Scalar4	size	890	4x890	Prop,CAR,Turret	FUN_00663d00
+55817592			Ref	decomp+size	890	4x890	Prop,CAR,Turret	FUN_00663d00
+a1b82ba7			Ref	decomp+size	890	4x890	Prop,CAR,Turret	FUN_00663d00
+c86877fd			Ref	decomp+size	890	4x890	Prop,CAR,Turret	FUN_00663d00
+fd4869cd			Bytes	size	890	8x890	Prop,CAR,Turret	FUN_00663d00
+62404569	HighDetailModel	sym	Scalar4	size	889	4x889	FxHumanBodyPart,FxHumanHead	
+679cd9a1	ColorVariationsA	sym	Scalar4	size	889	4x889	FxHumanBodyPart,FxHumanHead	
+d9725c55	LowDetailModel	sym	Scalar4	size	889	4x889	FxHumanBodyPart,FxHumanHead	
+e5955136	ColorVariationsB	sym	Scalar4	size	889	4x889	FxHumanBodyPart,FxHumanHead	
+f2f6eaec			Scalar4	size	889	4x889	FxHumanBodyPart,FxHumanHead	
+6bed3d76	AnimType	sym	Ref	decomp+size	874	4x874	LightSettings,LightHalo	FUN_007dfcf0
+7fd9a169	weight	exe	Scalar4	size	874	4x874	RandomObj,Human,PhysicalOrdnance	FUN_00505010
+917335ad			Scalar4	decomp+size	874	4x874	LightSettings,LightHalo	FUN_007dfcf0
+cb7ba603			Scalar4	decomp+size	874	4x874	LightSettings,LightHalo	FUN_007dfcf0
+97ac8632			Ref	decomp+size	845	4x845	AIAttractionPt,Weapon,Ammo	FUN_005d53f6,FUN_00634970,FUN_0069dc40
+798a195e	Persistent	dict	Bool	size	816	1x816	Spore,Human	
+8d2eedb7	Honkable	dict	Bool	decomp+size	816	1x816	Spore,Human	FUN_00505010
+d2d52e54	MaxDistance	sym	Scalar4	decomp+size	807	4x807	ParticleEffectSpawner,Highlight,Bullet	FUN_004abab0,FUN_0069fed0,FUN_00995440
+7a052b7c	Voices	dict	Ref	decomp+size	799	4x799	Human	FUN_00505010
+848096a5	Emitter	exe	Bytes	size	767	4x108,22x53,24x52,26x50,25x48,12x45,23x41,27x41,28x39,21x35,20x29,29x27,17x22,31x21,15x20,30x20,16x17,33x16,19x15,32x15,18x13,34x8,14x6,13x6,10x5,37x3,35x3,36x2,11x2,1x2,38x1,5x1,6x1	ParticleEffect,Explosion,DamageSphere	FUN_0047ed50,FUN_00489700,FUN_006dfba0
+6633cc0a	Damage Region	sym	Ref	decomp+size	757	4x757	ParticleEffectSpawner	FUN_004abab0
+982589a0	offset	exe	Bytes	size	757	12x693,4x64	AIAttractionPt,LightSettings,ClothObject	FUN_006ee240,FUN_007fb4d0
+c8ea585d	Effects	exe	Scalar4	size	757	4x757	ParticleEffectSpawner	FUN_004abab0
+15667836	ScaleY	sym	Scalar4	size	742	4x742	LightSettings,RadialBlur	
+404d1343	LuaTable	dict	Ref	decomp+size	742	4x742	Spore,Human,ScriptController	FUN_01634800
+0033984f			Scalar4	size	736	4x736	LightSettings	
+2cfa7b6b			Scalar4	size	736	4x736	LightSettings	
+32e060b4			Scalar4	size	736	4x736	LightSettings	
+3e6f5c10			Scalar4	size	736	4x736	LightSettings	
+4bf5f9e3			Scalar4	size	736	4x736	LightSettings	
+52fcf5d4			Scalar4	size	736	4x736	LightSettings	
+566b3f52	Group	exe	Scalar4	size	736	4x736	LightSettings	
+5b89b397			Scalar4	size	736	4x736	LightSettings	
+63a27078			Bool	size	736	1x736	LightSettings	
+73514f39			Scalar4	size	736	4x736	LightSettings	
+76c3fcf2			Scalar4	size	736	4x736	LightSettings	
+7cbbca09			Scalar4	size	736	4x736	LightSettings	
+836d3dfc			Scalar4	size	736	4x736	LightSettings	
+85a5b4dd			Scalar4	size	736	4x736	LightSettings	
+976e00a1	ScaleZ	sym	Scalar4	size	736	4x736	LightSettings	
+a0716ed6			Scalar4	size	736	4x736	LightSettings	
+acffc219			Scalar4	size	736	4x736	LightSettings	
+af9f46ea			Scalar4	size	736	4x736	LightSettings	
+f0758d60			Bool	size	736	1x736	LightSettings	
+f7688793	ScaleX	sym	Scalar4	size	736	4x736	LightSettings	
+ff244a07	LightType	exe	Scalar4	size	736	4x736	LightSettings	
+ff27868e	ON	exe	Bool	size	736	1x736	LightSettings	
+725eaa9b			Scalar4	size	733	4x733	LightSettings	
+7a9d55f3			Bool	size	733	1x733	LightSettings	
+05fbab16			Scalar4	size	726	4x726	FxHumanBodyPart,Human,Player	
+4b19b750	ParticleEffect	exe	Ref	decomp+size	724	4x724	ParticleEffectSpawner	FUN_004abab0
+a4c1b1c3			Ref	decomp+size	724	4x724	ParticleEffectSpawner	FUN_004abab0
+d43de771			Bytes	size	724	8x724	ParticleEffectSpawner	FUN_004abab0
+de642b29			Ref	decomp+size	714	4x714	CAR,TRUCK,APC	FUN_005f08f0
+f23c0127			Scalar4	size	714	4x714	CAR,TRUCK,APC	FUN_005f08f0
+18281b3b			Bool	size	690	1x690	FxHumanBodyPart	
+0aa3e5d9	Amount	sym	Scalar4	size	688	4x688	RandomObj,Ammo	
+31e1a9b0	weaponName	sym	Ref	decomp+size	670	4x670	CAR,TrainCarriage,TRUCK	FUN_005dc1a0
+5d2923df			Scalar4	size	670	4x670	CAR,TrainCarriage,TRUCK	
+1bf8088f	PathMovementType	sym	Ref	decomp+size	663	4x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+6486e117			Scalar4	size	663	4x663	CAR,TrainCarriage,TRUCK	
+6f14a6ad	PathName	sym	Ref	decomp+size	663	4x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+70fe02ab	PathReference	sym	Ref	decomp+size	663	4x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+a60e6230	PathDuration	sym	Scalar4	decomp+size	663	4x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+e6468a9e	LightDistControl	sym	Bool	size	663	1x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+ef40f693	PathDirection	sym	Ref	decomp+size	663	4x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+f67559b9	searcherName	sym	Ref	decomp+size	663	4x663	CAR,TrainCarriage,TRUCK	FUN_005e7380
+1a61709c			Scalar4	size	660	4x660	CAR,TrainCarriage,TRUCK	
+772b0b2f	rotation	exe	Bytes	size	660	8x357,12x165,4x138	Foliage,LightSettings,LightHalo	FUN_006d8b50,FUN_006f51b0,FUN_007dfcf0,FUN_007fb4d0
+e94f943c			Scalar4	size	659	4x659	ParticleEffect	
+1870458b	Set	exe	Scalar4	size	656	4x656	PhysicsParticleSet,ParticleEffect	
+f0c7da5f	LabelFilter	sym	Bytes	size	647	5x452,16x40,9x37,17x30,15x20,14x19,19x15,13x8,12x5,11x4,24x4,20x3,25x3,10x3,23x1,22x1,21x1,18x1	RandomObj,AIAttractionPt	
+01cab9a5			Scalar4	size	625	4x625	RandomObj	
+3eeccf6b	BlueprintName	dict	Scalar4	size	625	4x625	RandomObj	
+622dd842	Face	dict	Scalar4	size	613	4x613	FxHumanBodySetup	
+c57d2b43	FxHumanHeadVariation	dict	Scalar4	size	613	4x613	FxHumanBodySetup	
+d594db5b	FaceProbability	dict	Scalar4	size	613	4x613	FxHumanBodySetup	
+1e25164d			Scalar4	size	541	4x541	Sound	FUN_009127b0
+28718268			Bool	decomp+size	541	1x541	Sound	FUN_009127b0
+92d61cfd			Scalar4	size	541	4x541	Sound	
+1de5c824	Name	exe	Scalar4	size	532	4x532	AIAttractionPt,Difficulty,Prop	
+5e58eac8	ParentObject	sym	Ref	decomp+size	532	4x532	AIAttractionPt,AISpawner,Prop	FUN_00833ad0,FUN_008ea610
+019ef97e	DoNotRayCast	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+01d505a2	RunHere	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+054a8fb1			Scalar4	decomp+size	528	4x528	AIAttractionPt,Prop	FUN_0161656c
+07ad6ebf	UseHeightMax	sym	Scalar4	size	528	4x528	AIAttractionPt,Prop	
+09e38146			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+0f12604c			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+192a3633			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+1de59c2f			Bool	decomp+size	528	1x528	AIAttractionPt,Prop	FUN_008ea610
+2523b4ee			Bool	size	528	1x528	AIAttractionPt,Prop	
+29ec9f57			Bool	size	528	1x528	AIAttractionPt,Prop	
+2ed2ec21			Bool	size	528	1x528	AIAttractionPt,Prop	
+32d97474			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+331d2aa8	EnableAlts	exe	Bool	size	528	1x528	AIAttractionPt,Prop	
+3566ae45			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+365fb660			Bool	decomp+size	528	1x528	AIAttractionPt,Prop	FUN_008ea610
+3dfe6182	NumUseStates	sym	Scalar4	size	528	4x528	AIAttractionPt,Prop	
+4070b35e			Bool	size	528	1x528	AIAttractionPt,Prop	
+460e7f77			Bool	size	528	1x528	AIAttractionPt,Prop	
+4a67bcc0			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+4d44efe0			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+55d89223			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+658d48e2			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+6935c0fd	PreferredDistance	sym	Scalar4	size	528	4x528	AIAttractionPt,Prop	
+6a099303			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+6be83213			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+726f6dcc	StartUseDisabled	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+787a47a5			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+7cd0df87	DLCMiniGame	exe	Bytes	size	528	5x527,17x1	AIAttractionPt,Prop	FUN_0161656c
+7e1d5456	EmptyIdle	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+7ed98262	UseRadiusMax	sym	Scalar4	size	528	4x528	AIAttractionPt,Prop	
+7ef2b668	UseInLowWTF	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+84d70c5e			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+8c8d6435			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+8db13a88			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+8fd2512f	IsDoorTrigger	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+99a54cbf	StartDisabled	sym	Bool	decomp+size	528	1x528	AIAttractionPt,Prop	FUN_008ea610
+a2ff7739	yRot	sym	Scalar4	size	528	4x528	AIAttractionPt,Prop	
+a8079dd8			Bytes	size	528	8x528	AIAttractionPt,Prop	
+a8db360c			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+aeea42f8			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+b2e588d7	idleDuration	sym	Bytes	size	528	8x528	AIAttractionPt,Prop	FUN_008ea610
+b3af2a59	Usable	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+c8ddd177	UseAngleMax	sym	Scalar4	size	528	4x528	AIAttractionPt,Prop	
+cbd8745e			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+de634e2f			Bool	size	528	1x528	AIAttractionPt,Prop	
+e66ced59			Bool	size	528	1x528	AIAttractionPt,Prop	
+e9a5bc9c	UseInHighWTF	sym	Bool	size	528	1x528	AIAttractionPt,Prop	
+f49f0182			Scalar4	size	528	4x528	AIAttractionPt,Prop	
+41f557b1	Frequency	sym	Scalar4	decomp+size	518	4x518	Sound,AIRoad	FUN_009127b0,FUN_00995440
+9c323cfd			Scalar4	size	505	4x505	PhysicsParticleSet,PhysicsParticle	
+02f5b417			Scalar4	size	504	4x504	CAR,TRUCK,APC	FUN_005f08f0
+4a09e56c	Camera	exe	Ref	decomp+size	504	4x504	CAR,TRUCK,APC	FUN_005f08f0,FUN_00945320
+5eb18f3e			Ref	decomp+size	504	4x504	CAR,TRUCK,APC	FUN_005f08f0
+7fa0efe1			Scalar4	decomp+size	504	4x504	CAR,TRUCK,APC	FUN_005f08f0
+c216de38			Scalar4	decomp+size	504	4x504	CAR,TRUCK,APC	FUN_005f08f0
+e441fd9a			Bytes	size	504	8x504	CAR,TRUCK,APC	FUN_005f08f0
+fee0ac21			Scalar4	decomp+size	488	4x488	CAR,TANK,TRUCK	FUN_00610430
+137f0c86			Ref	decomp+size	476	4x476	CAR,TRUCK,APC	FUN_005f08f0
+8b109314			Ref	decomp+size	476	4x476	CAR,TRUCK,APC	FUN_005f08f0
+b2e3212d			Ref	decomp+size	476	4x476	CAR,TRUCK,APC	FUN_005f08f0
+c3aeb321	Mass	exe	Scalar4	decomp+size	476	4x476	ClothObject,VerletBoneObject,PhysicsParticle	FUN_00610430,FUN_006645b0,FUN_007f7480
+a26c3d31	PhysicsParticleRef	sym	Scalar4	size	471	4x471	PhysicsParticleSet	
+e0b01d9f	InitialModule	dict	Bytes	size	468	4x357,5x17,12x9,11x8,13x8,8x7,9x6,22x6,14x6,15x6,18x6,21x4,16x4,19x4,23x3,17x3,20x3,25x2,7x2,26x2,24x2,28x1,10x1,6x1	Human,ScriptController,AIController	
+f3cecae2	Slacker	exe	Bool	size	463	1x463	Spore	
+3258d692	PitchSpeed	dict	Scalar4	decomp+size	462	4x462	CameraSettings,CAR,TRUCK	FUN_0046e350,FUN_006935f9
+67277c2c	Rooftop	exe	Bool	size	460	1x460	Spore,AIAttractionPt	
+0baf1a92			Bool	size	459	1x459	Spore	
+1bbd44db	DieOnSpawn	sym	Bool	size	459	1x459	Spore	
+20314dc7	NeedsEnabled	exe	Bool	size	459	1x459	Spore	
+3bbe3368			Scalar4	size	459	4x459	Spore	
+44454a7b	Vendor	exe	Bool	size	459	1x459	Spore	
+45facbd5	NightChance	sym	Scalar4	size	459	4x459	Spore	
+47ac5044	HighWTFMult	sym	Scalar4	size	459	4x459	Spore	
+65f01872	AttractionPt	exe	Scalar4	size	459	4x459	Spore	
+6d3eada6			Scalar4	size	459	4x459	Spore	
+709fc695	HumanBlueprint	exe	Scalar4	size	459	4x459	Spore	
+8cda47a7	BubbleProof	sym	Bool	size	459	1x459	Spore	
+9b9e837d	RandomBlueprint	exe	Scalar4	size	459	4x459	Spore	
+9fe905f6			Bool	size	459	1x459	Spore	
+a4bedfa9	DayChance	sym	Scalar4	size	459	4x459	Spore	
+a73e9219	EscDespawnImmune	exe	Bool	size	459	1x459	Spore	
+b5d4a9e6			Bool	size	459	1x459	Spore	
+c7a270c0	LowWTFMult	sym	Scalar4	size	459	4x459	Spore	
+ce5b1183	Talkable	exe	Bool	size	459	1x459	Spore	
+d1fabe57			Bool	size	459	1x459	Spore	
+df5a5c99			Bool	size	459	1x459	Spore	
+e193a972	MissionCritical	exe	Bool	size	459	1x459	Spore	
+e5ea8436	AlwaysRespawn	sym	Bool	size	459	1x459	Spore	
+ecc135d4	WorldPop	sym	Bool	size	459	1x459	Spore	
+ece762e3			Bool	size	459	1x459	Spore	
+f930d873			Bool	size	459	1x459	Spore	
+0f132dd1			Bool	size	458	1x458	CAR,TANK,TRUCK	
+2fc58dc9			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+31050ac4			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+3b3b5b97			Bytes	size	458	8x458	CAR,TANK,TRUCK	
+7c48323f			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+85850491			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+873e5ac6	VehicleWheelFX	exe	Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+8ac02299	RadiusBuffer	sym	Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+8c0cb944			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+8db64fa5			Bytes	size	458	8x458	CAR,TANK,TRUCK	
+9ae508a0			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+a54722ac			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+b8739cd5			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+b8a537bb			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+bf5e0aac			Bool	size	458	1x458	CAR,TANK,TRUCK	
+bf667004	VehicleWheel	exe	Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+c6cd5f80			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+daf1fc98			Scalar4	size	458	4x458	CAR,TANK,TRUCK	
+69282df5			Bool	size	451	1x451	LightSettings	
+d1488ab4			Scalar4	size	451	4x451	LightSettings	
+d930020e	Flammable	dict	Bool	size	439	1x439	Human,ClothObject	FUN_00505010
+e1ae04b8	Height	exe	Scalar4	decomp+size	421	4x421	LightSettings,LightHalo,CreditName	FUN_007dfcf0,FUN_00a005a0
+062d657b	Fake3d	sym	Bool	size	402	1x402	Sound	
+0852d5ef			Scalar4	size	402	4x402	Sound	
+109acd7c	Variation	sym	Scalar4	decomp+size	402	4x402	Sound	FUN_009127b0
+1f317606			Scalar4	size	402	4x402	Sound	
+2a9efe59	TimeTriggered	sym	Bool	decomp+size	402	1x402	Sound	FUN_009127b0
+2f753989			Bytes	size	402	8x402	Sound	FUN_009127b0
+44037fad	InnerRadius	sym	Scalar4	size	402	4x402	Sound	
+50df1f84	TriggerOnce	sym	Bool	decomp+size	402	1x402	Sound	FUN_009127b0
+60f3b263			Ref	decomp+size	402	4x402	Sound	FUN_009127b0
+660d1368			Scalar4	size	402	4x402	Sound	
+66ac7e16			Scalar4	size	402	4x402	Sound	
+7076575c			Scalar4	size	402	4x402	Sound	
+72f9d03f			Ref	decomp+size	402	4x402	Sound	FUN_009127b0
+7758e64d			Bool	size	402	1x402	Sound	
+7c541819			Scalar4	size	402	4x402	Sound	
+7ee2f763	ScriptTriggered	sym	Bool	decomp+size	402	1x402	Sound	FUN_009127b0
+92ad58b9			Bool	decomp+size	402	1x402	Sound	FUN_009127b0
+d0b107bb	Sound3D	sym	Bool	size	402	1x402	Sound	FUN_00945320
+dc679240	OuterRadius	sym	Scalar4	size	402	4x402	Sound	
+e6f43618			Scalar4	size	402	4x402	Sound	
+e728749b	DistanceTriggered	sym	Bool	decomp+size	402	1x402	Sound	FUN_009127b0
+ea4e212d			Bool	size	402	1x402	Sound	FUN_009127b0
+f103cebd			Bool	decomp+size	402	1x402	Sound	FUN_009127b0
+f33eac7d			Scalar4	size	402	4x402	Sound	
+8c3654c2	Size	exe	Bytes	size	396	16x357,4x39	Foliage,Decal	FUN_006d8b50,FUN_006dc1c0,FUN_006ee240,FUN_006f51b0
+a80c9145			Scalar4	size	396	4x396	AnimatedObject,Weapon,CAR	
+0b213d8e	LightHaloAttachment	sym	Ref	decomp+size	390	4x390	Prop,TrainCarriage,LightSettings	FUN_007e0f39
+1c128785			Scalar4	decomp+size	390	4x390	Prop,TrainCarriage,LightSettings	FUN_007e0f39
+438c44f5	LightHalo	exe	Scalar4	size	390	4x390	Prop,TrainCarriage,LightSettings	
+54f0b858			Scalar4	decomp+size	390	4x390	Prop,TrainCarriage,LightSettings	FUN_007e0f39
+b4a80855			Scalar4	size	390	4x390	Prop,TrainCarriage,LightSettings	
+f80abfb7			Scalar4	size	390	4x390	Prop,TrainCarriage,LightSettings	
+28e10525	type	exe	Ref	decomp+size	383	4x383	Foliage,DamageSphere	FUN_0047ed50,FUN_006d8b50,FUN_006dfba0,FUN_00a005a0
+fa7752e4			Scalar4	size	380	4x380	WillToFight	
+787c0871	Weapon	dict	Ref	decomp+size	376	4x376	Human,Spore,Player	FUN_004f6940,FUN_00505010
+c90aa601	AmmoInventory	dict	Scalar4	size	370	4x370	Human	
+1b3d2993			Scalar4	size	363	4x363	VerletBoneObject	
+4a1336bf	Bone	exe	Scalar4	size	363	4x363	VerletBoneObject	
+76b63150			Scalar4	size	363	4x363	VerletBoneObject	
+d5478e6f			Scalar4	size	363	4x363	VerletBoneObject	
+16e3526a	Pistol Bone	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+2fb8840a	RifleTip Bone	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+48330e09			Scalar4	decomp+size	358	4x358	Human,Player	FUN_00505010
+48da3fa7	Light Damage Sound	dict	Scalar4	size	358	4x358	Human,Player	
+5604450c	Death Sound	dict	Scalar4	size	358	4x358	Human,Player	FUN_006645b0
+6d63fbfa			Scalar4	decomp+size	358	4x358	Human,Player	FUN_00505010
+725a3658	UseFastCollision	dict	Bool	size	358	1x358	Human,Player	FUN_00582fd0
+735fed0a	Pistol Takeout Anim	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+771c9e1f			Str	decomp+size	358	9x261,5x97	Human,Player	FUN_00505010
+789946e1	Rifle Takeout Anim	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+7d95d29d	HUDName	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+84ff2ab2	FxBodySetup	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+9d59e8d8	Heavy Damage Sound	dict	Scalar4	size	358	4x358	Human,Player	
+a0315577	Rifle Stow Anim	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+aa6291e1	Shot Damage Sound	dict	Scalar4	size	358	4x358	Human,Player	
+b1307170	RifleButt Bone	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+bb0c02d2	Team	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+cb248263	HumanPhysics	dict	Scalar4	size	358	4x358	Human,Player	
+d58593a2	Pistol Stow Anim	dict	Scalar4	size	358	4x358	Human,Player	FUN_00505010
+e87f62eb	MeleeType	dict	Ref	decomp+size	358	4x358	Human,Player	FUN_00505010
+061397de	MagicSlot	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+063c7ce7			Scalar4	size	357	4x357	Human	FUN_00505010
+0a6d03e3			Bool	size	357	1x357	Human	
+0a9cd9e0			Scalar4	decomp+size	357	4x357	Human	FUN_00505010
+0b03b982			Bool	decomp+size	357	1x357	Human	FUN_00505010
+0b7f6bf2	HandSlot	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+0c0174da	Hot	dict	Bool	decomp+size	357	1x357	Human	FUN_00505010
+14a81a29	RandomItem	dict	Ref	decomp+size	357	4x357	Human	FUN_00505010
+187a572d	RifleSlot	dict	Ref	decomp+size	357	4x357	Human	FUN_00505010
+1e89a51c			Bool	size	357	1x357	Human	FUN_00505010
+2a222281	FloatSlot	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+2addc0f9			Bool	size	357	1x357	Human	FUN_00505010
+2efb7e33			Scalar4	size	357	4x357	Human	FUN_00505010
+333c2126			Bytes	size	357	8x357	Foliage	FUN_006d8b50
+37562519			Scalar4	decomp+size	357	4x357	Human	FUN_00505010
+377e4246			Scalar4	size	357	4x357	Human	FUN_00505010
+37a088d3	HealthRecoveryPct	exe	Scalar4	size	357	4x357	Human	FUN_00505010
+3e5e2614			Scalar4	size	357	4x357	Human	FUN_00505010
+43f1b4a2			Scalar4	size	357	4x357	Human	FUN_00505010
+4c1fef5b			Scalar4	size	357	4x357	Human	FUN_00505010
+4d633bd7			Bool	size	357	1x357	Human	
+587bad0f	Inventory	dict	Scalar4	size	357	4x357	Human	FUN_0074ee80
+5e34db53	SpawnOffset	sym	Vec3	size	357	12x357	Foliage	
+63f4b09e			Scalar4	size	357	4x357	Human	FUN_00505010
+66f90769	SuspicionChangeRedHighlight	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+6755404e	Character	dict	Bool	size	357	1x357	Human	FUN_00505010
+69d8ef02	SuspicionChangeYellowHighlight	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+6a080fc9	Female	dict	Bool	size	357	1x357	Human	FUN_00505010,FUN_0068cdc0
+6b58ee52			Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+6e7f38fa			Bool	size	357	1x357	Human	
+6fdc0334			Bool	decomp+size	357	1x357	Human	FUN_00505010
+74e5fb06	AnimPriority	exe	Scalar4	size	357	4x357	Human	FUN_00505010
+790553c3			Scalar4	decomp+size	357	4x357	Human	FUN_00505010
+79473cae			Bool	size	357	1x357	Human	FUN_00505010
+7a0c0640	FoliageCluster	exe	Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+7d4b28a4	OcclusionLight	sym	Scalar4	decomp+size	357	4x357	Foliage	FUN_006d8b50
+7e05c01e			Scalar4	size	357	4x357	Human	FUN_00505010
+8571db18	SuspicionChangeOrangeHighlight	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+88277056			Scalar4	size	357	4x357	Human	FUN_00505010
+8c381938			Bool	size	357	1x357	Human	
+8fdd5479			Scalar4	size	357	4x357	Human	FUN_00505010
+9196ce7d			Scalar4	size	357	4x357	Human	FUN_00505010
+92408ee1			Scalar4	size	357	4x357	Human	FUN_00505010
+95eb0e6c			Bool	size	357	1x357	Human	
+9de9171d	gradient	exe	Scalar4	decomp+size	357	4x357	Foliage	FUN_006d8b50
+9f7e509d			Scalar4	size	357	4x357	Human	FUN_00505010
+a1eb4a60			Scalar4	size	357	4x357	Human	FUN_00505010
+a5fbbc36	LOD	exe	Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+a61d707e			Scalar4	size	357	4x357	Human	FUN_00505010
+a66c0f96			Scalar4	decomp+size	357	4x357	Human	FUN_00505010
+a9d8589b	RunsFromFire	dict	Bool	size	357	1x357	Human	FUN_00505010
+ad02c909			Bool	decomp+size	357	1x357	Human	FUN_00505010
+af895be5			Vec3	decomp+size	357	12x357	Foliage	FUN_006d8b50
+b1170eee			Scalar4	size	357	4x357	Human	FUN_00505010
+b4035d48	PistolSlot	dict	Ref	decomp+size	357	4x357	Human	FUN_00505010
+b66a6c44	ParticleCount	sym	Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+b84a3449			Scalar4	size	357	4x357	Human	FUN_00505010
+bcaf259a	Suspicion	dict	Bool	size	357	1x357	Human	FUN_00505010
+bf83d3af	Backup	dict	Scalar4	size	357	4x357	Human	
+c25ef593			Bool	decomp+size	357	1x357	Human	FUN_00505010
+c37d6213	alpha	exe	Bytes	size	357	8x357	Foliage	FUN_006d8b50,FUN_006dc1c0,FUN_006ee240
+c43b697d	AICombatParams	dict	Ref	decomp+size	357	4x357	Human	FUN_00505010
+d26e7fe5			Bool	size	357	1x357	Human	
+d2a2ec4d			Bool	decomp+size	357	1x357	Human	FUN_00505010
+d62ab744	BodySetup	dict	Ref	decomp+size	357	4x357	Human	FUN_00505010
+e3518ba6	SphereLimits	sym	Bytes	size	357	8x357	Foliage	FUN_006d8b50
+e3982ded			Scalar4	size	357	4x357	Human	FUN_00505010
+e3c7c6f2	seed	sym	Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+e3e53fe0			Bool	decomp+size	357	1x357	Human	FUN_00505010
+e4dc3ec5	SuspicionChangeGreenHighlight	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+ead94cf1	RenderDist	sym	Bytes	size	357	8x357	Foliage	FUN_006d8b50
+eb506256			Bytes	size	357	8x357	Foliage	FUN_006d8b50
+f15083d6	MissionStarterHighlight	dict	Scalar4	size	357	4x357	Human	FUN_00505010
+f37790e1	SpawnBox	sym	Bytes	size	357	24x357	Foliage	FUN_006d8b50
+f6d9b967	SizeVariance	sym	Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+fb91ebd1			Bytes	size	357	8x357	Foliage	FUN_006d8b50
+fc3e92a7	Variations	sym	Scalar4	size	357	4x357	Foliage	FUN_006d8b50
+1f89a84e			Scalar4	size	347	4x347	LightVolume,LightHalo	FUN_007dfcf0,FUN_00970fa0
+3bf1cdb6			Ref	decomp+size	340	4x340	CAR,Weapon,TRUCK	FUN_005e55f0,FUN_005f08f0,FUN_006b8d30
+560a68c4			Ref	decomp+size	340	4x340	CAR,Weapon,TRUCK	FUN_005e55f0,FUN_005f08f0,FUN_006b8d30
+b838a7e9			Bytes	size	340	8x340	CAR,Weapon,TRUCK	FUN_005e55f0,FUN_005f08f0,FUN_006b8d30
+ce4384bf			Bytes	size	340	8x340	CAR,Weapon,TRUCK	FUN_005e55f0,FUN_005f08f0,FUN_006b8d30
+f011157a	Texture	exe	Ref	decomp+size	332	4x332	Foliage,LightHalo,Decal	FUN_006d8b50,FUN_006dfba0,FUN_007dfcf0
+c61edbd1			Scalar4	decomp+size	330	4x330	WillToFight,WaterController,LightSettings	FUN_016171ec
+0302e3d4			Vec3	size	304	12x304	WillToFight	
+191b77aa			Scalar4	size	304	4x304	WillToFight	
+274a2852			Scalar4	size	304	4x304	WillToFight	
+739b2031			Scalar4	size	304	4x304	WillToFight	
+7b3250b9			Scalar4	size	304	4x304	WillToFight	
+ade25af7			Scalar4	size	304	4x304	WillToFight	
+ae124f3a			Scalar4	size	304	4x304	WillToFight	
+b3d09074			Scalar4	size	304	4x304	WillToFight	
+b8ebf50e			Vec3	size	304	12x304	WillToFight	
+be40f72a			Scalar4	size	304	4x304	WillToFight	
+be581a0a			Scalar4	size	304	4x304	WillToFight	
+c3f4660b			Scalar4	size	304	4x304	WillToFight	
+c638c2d4			Scalar4	size	304	4x304	WillToFight	
+c9a32e0a			Scalar4	size	304	4x304	WillToFight	
+f20b50c4			Scalar4	size	304	4x304	WillToFight	
+05d2a6d9			Scalar4	decomp+size	297	4x297	CameraSettings,WillToFight,GroupCameraSettings	FUN_0046e350
+30c25ea4	OPACITY	exe	Scalar4	size	297	4x297	CameraSettings,WillToFight,GroupCameraSettings	FUN_0046e350
+3634d93e			Scalar4	decomp+size	297	4x297	CameraSettings,WillToFight,GroupCameraSettings	FUN_0046e350
+38940c6b			Scalar4	size	297	4x297	CameraSettings,WillToFight,GroupCameraSettings	FUN_0046e350
+c3c4bcd8			Scalar4	decomp+size	297	4x297	CameraSettings,WillToFight,GroupCameraSettings	FUN_0046e350
+f5c8f95d	DepthBlurFilter	exe	Scalar4	size	297	4x297	CameraSettings,WillToFight,GroupCameraSettings	
+1e233fa7	GearC	sym	Scalar4	size	293	4x293	FxHumanBodySetup	
+37a9525d			Scalar4	size	293	4x293	FxHumanBodySetup	
+44c27fcb	Head	exe	Scalar4	size	293	4x293	FxHumanBodySetup	FUN_004f841c
+79691a2f	UpperBody	sym	Scalar4	size	293	4x293	FxHumanBodySetup	
+9e288655	GearA	sym	Scalar4	size	293	4x293	FxHumanBodySetup	
+c3a43714	SkinToneMax	dict	Scalar4	size	293	4x293	FxHumanBodySetup	
+d4d4470a			Scalar4	size	293	4x293	FxHumanBodySetup	
+db9c23dc	LowerBody	sym	Scalar4	size	293	4x293	FxHumanBodySetup	
+dd1296da	SkinToneMin	dict	Scalar4	size	293	4x293	FxHumanBodySetup	
+fc20cb8a	GearB	sym	Scalar4	size	293	4x293	FxHumanBodySetup	
+0f2823ac	ConeScrollSpeed	sym	Scalar4	size	282	4x282	LightSettings	
+2bf2d35e	ConeFallOffMin	sym	Scalar4	size	282	4x282	LightSettings	
+35b6696c	ConeLength	sym	Scalar4	size	282	4x282	LightSettings	
+38d0ad05	ConeEdgeFade	sym	Scalar4	size	282	4x282	LightSettings	
+456a2d80	ConeFallOffMax	sym	Scalar4	size	282	4x282	LightSettings	
+586891f5			Scalar4	size	282	4x282	LightSettings	
+726047c6			Scalar4	size	282	4x282	LightSettings	
+73e741e3	advanced	exe	Bool	size	282	1x282	LightSettings	
+76308672	ConeOnly	sym	Bool	size	282	1x282	LightSettings	
+79aea90a	HasCone	sym	Bool	size	282	1x282	LightSettings	
+8900b33f	OuterAngle	sym	Scalar4	size	282	4x282	LightSettings	
+99327d6f	Width	exe	Scalar4	size	282	4x282	LightSettings	
+b7cfc8dd	ConeAlphaMultiplier	sym	Scalar4	size	282	4x282	LightSettings	
+c8af0e75	ConeColor	sym	Scalar4	size	282	4x282	LightSettings	
+d7dbf28c	CastShadow	sym	Bool	size	282	1x282	LightSettings	
+f467d031			Scalar4	size	282	4x282	LightSettings	
+fbabfd4c	InnerAngle	sym	Scalar4	size	282	4x282	LightSettings	
+558c91d7			Bytes	size	274	24x140,23x129,22x5	CAR,TRUCK,TANK	
+1cc87777	Highlight	exe	Scalar4	size	272	4x272	LightVolume,Ammo	
+6c9d982b			Ref	decomp+size	271	4x271	TrainCarriage,Prop,Weapon	FUN_007dbdf9
+81eb0e4f			Scalar4	decomp+size	271	4x271	TrainCarriage,Prop,Weapon	FUN_007dbdf9
+8ed97e12			Scalar4	decomp+size	271	4x271	TrainCarriage,Prop,Weapon	FUN_007dbdf9
+9ab4f3ed			Ref	decomp+size	271	4x271	TrainCarriage,Prop,Weapon	FUN_007dbdf9
+a3613f4d	lightAttachement	sym	Ref	decomp+size	271	4x271	TrainCarriage,Prop,Weapon	FUN_007dbdf9
+c25641df	Light	exe	Ref	decomp+size	271	4x271	TrainCarriage,Prop,Weapon	FUN_006972c0,FUN_006dfba0,FUN_007dbdf9,FUN_00a005a0
+7be5aa43	friction	exe	Scalar4	decomp+size	266	4x266	PhysicsParticle,VirVehicleChassis,PhysicalOrdnance	FUN_00610430
+076b2507			Bytes	size	265	8x265	AIChatter	
+22cc5267			Bool	size	265	1x265	AIChatter	
+2c504344	Conversation	exe	Ref	decomp+size	265	4x265	AIChatter	FUN_0160ede0
+70c454d5			Bytes	size	265	8x265	AIChatter	
+7213e378	FaceFx	exe	Scalar4	size	265	4x265	AIChatter	FUN_00945320
+bdb6564e			Scalar4	size	265	4x265	AIChatter	
+c187efd3	Ambient	exe	Bool	size	265	1x265	AIChatter	
+dc83f68f			Bytes	size	265	8x265	AIChatter	
+46eb60bf	restitution	exe	Scalar4	decomp+size	256	4x256	PhysicsParticle,VirVehicleChassis	FUN_00610430
+84f14707			Scalar4	size	256	4x256	RandomObj	
+dfafcda6	BlueprintList	sym	Scalar4	size	256	4x256	RandomObj	
+f8a56e55	LocationBased	sym	Bool	size	256	1x256	RandomObj	
+576a2a93	FireBone	dict	Ref	decomp+size	246	4x246	CAR,TRUCK,APC	FUN_006935f9
+2fbc51c3			Ref	decomp+size	244	4x244	ClothObject	FUN_007f8950
+5ac2612b			Vec3	size	244	12x244	ClothObject	FUN_007f7480
+69a86828	UpdateFrequency	sym	Scalar4	size	244	4x244	ClothObject	FUN_007f7480
+a0d456cb	NumIterations	sym	Scalar4	size	244	4x244	ClothObject	FUN_007f7480
+eafc3a7d			Scalar4	size	244	4x244	ClothObject	FUN_007f7480
+efe5d990	ConstraintType	exe	Scalar4	size	244	4x244	ClothObject	FUN_007f7480
+1379ebe2			Scalar4	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+28506e5c			Scalar4	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+30df4f04	FireOffset	dict	Vec3	decomp+size	243	12x243	CAR,TRUCK,APC	FUN_006935f9
+42bc590b	YawSpeed	dict	Ref	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+62ff4512	AimerSettings	dict	Scalar4	size	243	4x243	CAR,TRUCK,APC	
+63ec5e50			Scalar4	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+6da3db23			Scalar4	size	243	4x243	CAR,TRUCK,APC	
+ac3a2dab	PitchBone	dict	Ref	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+dd4e3954	YawBone	dict	Ref	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+e88fd118			Scalar4	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+f4cfc0e9	PitchLimits	dict	Bytes	size	243	8x243	CAR,TRUCK,APC	FUN_006935f9
+f8640116	YawLimits	dict	Bytes	size	243	8x243	CAR,TRUCK,APC	FUN_006935f9
+fc971d7f	AimerYawOffset	dict	Scalar4	decomp+size	243	4x243	CAR,TRUCK,APC	FUN_006935f9
+8d9f39b1			Scalar4	size	240	4x240	AIChatterSet	
+bba6eba6			Scalar4	size	240	4x240	AIChatterSet	
+df9c6fef			Scalar4	size	240	4x240	AIChatterSet	
+0ed9e1d3	IdleAnimation	sym	Scalar4	size	238	4x238	CAR,TRUCK,APC	
+2caa3b38			Scalar4	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+330537ae			Bool	size	238	1x238	CAR,TRUCK,APC	FUN_005f08f0
+3b645216			Bool	size	238	1x238	CAR,TRUCK,APC	FUN_005f08f0
+43e5a73b			Scalar4	size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+516aa372			Scalar4	size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+6c9e76f1			Ref	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+9d66fd52			Bool	size	238	1x238	CAR,TRUCK,APC	FUN_005f08f0
+9eb6a878			Scalar4	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+a7642f51			Scalar4	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+ac256817			Bool	size	238	1x238	CAR,TRUCK,APC	FUN_005f08f0
+ac2cf95e			Ref	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+b8ee1ba8			Scalar4	size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+bdd764f3	SeatName	exe	Ref	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+d892ad22			Bool	size	238	1x238	CAR,TRUCK,APC	FUN_005f08f0
+eb4f93e7			Scalar4	size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+edeb8754	SeatBone	sym	Ref	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+f079328d			Ref	decomp+size	238	4x238	CAR,TRUCK,APC	FUN_005f08f0
+5218eb52	SkeletonScale	exe	Ref	decomp+size	234	4x234	Human	FUN_00505010
+b33d5c94			Scalar4	size	233	4x233	Human	FUN_00505010
+06da8775	Label	dict	Ref	decomp+size	232	4x232	Weapon,Ammo,Item	FUN_00474e90,FUN_0069dc40
+0ebe12ab			Scalar4	size	228	4x228	WillToFight	
+36fc5555			Scalar4	size	228	4x228	WillToFight	
+38ace951			Scalar4	size	228	4x228	WillToFight	
+78f7d4c3			Scalar4	size	228	4x228	WillToFight	
+fff8c56d			Scalar4	size	228	4x228	WillToFight	
+2e978372			Scalar4	size	226	4x226	PhysicsParticle	
+3904f4e4			Scalar4	size	226	4x226	PhysicsParticle	
+50f8bffa			Bool	size	226	1x226	PhysicsParticle	
+adae06c3			Bool	size	226	1x226	PhysicsParticle	
+c6ff3c76			Scalar4	size	226	4x226	PhysicsParticle	
+225331e5	WallPushLength	sym	Scalar4	size	225	4x225	CameraSettings,GroupCameraSettings	FUN_0046e350
+7b70b843	RestPitchWhenStill	sym	Bool	size	225	1x225	CameraSettings,GroupCameraSettings	FUN_0046e350
+85622e42	fov	exe	Scalar4	decomp+size	225	4x225	CameraSettings,GroupCameraSettings	FUN_0046e350
+0f5a6d51	Offset1	exe	Vec3	size	224	12x224	CameraSettings,GroupCameraSettings	FUN_0046e350
+8d52e4e6	Offset2	exe	Vec3	size	224	12x224	CameraSettings,GroupCameraSettings	FUN_0046e350
+af555903	Offset3	exe	Vec3	size	224	12x224	CameraSettings,GroupCameraSettings	FUN_0046e350
+06b90ddc			Bool	size	223	1x223	VirVehicleChassis	
+0d6b34d0	Steering	sym	Bool	size	223	1x223	VirVehicleChassis	
+233498ab			Bool	size	223	1x223	VirVehicleChassis	
+3e2ad117	powered	sym	Bool	size	223	1x223	VirVehicleChassis	
+53e8d731			Bool	size	223	1x223	VirVehicleChassis	
+5a6d5f48	TorqueEfficiency	sym	Scalar4	size	223	4x223	VirVehicleChassis	
+750c87c6			Bool	size	223	1x223	VirVehicleChassis	
+7594f6c4	WheelPos	sym	Vec3	size	223	12x223	VirVehicleChassis	
+9e6c6e7c	pitchRange	sym	Bytes	size	223	8x223	CameraSettings,GroupCameraSettings	FUN_0046e350
+a483ff4a			Scalar4	size	223	4x223	VirVehicleChassis	
+c948910a	TransmissionRatio	sym	Scalar4	size	223	4x223	VirVehicleChassis	
+d8445981			Scalar4	size	223	4x223	VirVehicleChassis	FUN_00610430
+fbb5a6aa			Ref	decomp+size	223	4x223	VirVehicleChassis	FUN_00610430
+58265a64			Scalar4	size	222	4x222	CameraSettings,GroupCameraSettings	FUN_0046e350
+8d4ed835	RestingPitch	sym	Scalar4	size	222	4x222	CameraSettings,GroupCameraSettings	FUN_0046e350
+14804b69			Vec3	size	220	12x220	CameraSettings,GroupCameraSettings	FUN_0046e350
+2b88cf92	CameraTrackCenter	sym	Vec3	size	220	12x220	CameraSettings,GroupCameraSettings	FUN_0046e350
+5021d09e	Pitch1	sym	Scalar4	size	220	4x220	CameraSettings,GroupCameraSettings	FUN_0046e350
+ab302655	YawRange	sym	Bytes	size	220	8x220	CameraSettings,GroupCameraSettings	FUN_0046e350
+f2795a1e			Vec3	size	220	12x220	CameraSettings,GroupCameraSettings	FUN_0046e350
+fa7de3e4			Vec3	size	220	12x220	CameraSettings,GroupCameraSettings	FUN_0046e350
+0f59cd06			Ref	decomp+size	219	4x219	Weapon,Ammo,Item	FUN_0069dc40
+0f98b2a1	RotSpeed	sym	Scalar4	size	219	4x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+1b457a75			Bool	size	219	1x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+1c5a8313	FocusRotSpeed	sym	Scalar4	size	219	4x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+1e757409	SlotType	dict	Ref	decomp+size	219	4x219	Weapon,Ammo,Item	FUN_0069dc40
+2d1bcd5a			Ref	decomp+size	219	4x219	Weapon,Ammo,Item	FUN_0069dc40
+4c38de5e	FocusableCamera	sym	Bool	size	219	1x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+58bcb46c			Scalar4	size	219	4x219	CameraSettings,GroupCameraSettings	
+7228c1e9	Pitch2	sym	Scalar4	size	219	4x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+75060ed9	Equippable	dict	Bool	decomp+size	219	1x219	Weapon,Ammo,Item	FUN_0069dc40
+7d41b349			Ref	decomp+size	219	4x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+9d03c800	FocusPitchSpeed	sym	Scalar4	decomp+size	219	4x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+a4f21228			Bool	size	219	1x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+fbc31529	SafePointOffset	sym	Vec3	size	219	12x219	CameraSettings,GroupCameraSettings	FUN_0046e350
+3c56b891	FxBone	exe	Ref	decomp+size	217	4x217	CAR,Prop,TRUCK	FUN_006663b0
+0a91041c	Color2	exe	Scalar4	size	214	4x214	LightHalo,WillToFight	FUN_007dfcf0
+27dc224f			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+4eb751cd			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+728a2b78			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+747d62ab			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+927b534e			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+c6676245			Scalar4	size	212	4x212	Weapon,Ammo,Item	FUN_0069dc40
+ce2ab312			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+e47d7d10			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+f482a959			Scalar4	size	212	4x212	Weapon,Ammo,Item	
+03bcda2a			Scalar4	size	209	4x209	LightVolume	FUN_00970fa0
+0bdc2b41			Scalar4	size	209	4x209	LightVolume	
+1098118e			Scalar4	size	209	4x209	LightVolume	
+2dda9e53	interactive	sym	Bool	size	209	1x209	LightVolume	
+3484922d			Bytes	size	209	8x209	LightVolume	
+353b440d			Bytes	size	209	8x209	LightVolume	
+3ad49195			Scalar4	decomp+size	209	4x209	LightVolume	FUN_00970fa0
+46ccaa90			Scalar4	size	209	4x209	LightVolume	
+6086bee4			Bool	size	209	1x209	LightVolume	
+622da6ee			Scalar4	size	209	4x209	LightVolume	
+66c720f2			Scalar4	size	209	4x209	LightVolume	FUN_00970fa0
+69ab9f30			Bool	size	209	1x209	LightVolume	
+6bcd7814			Scalar4	decomp+size	209	4x209	LightVolume	FUN_00970fa0
+782741c7	NearPlane	sym	Scalar4	size	209	4x209	LightVolume	
+7d90365d			Scalar4	size	209	4x209	LightVolume	
+7e3618ec			Scalar4	size	209	4x209	LightVolume	
+82e72ed1			Scalar4	size	209	4x209	LightVolume	
+8c8bd14a			Scalar4	size	209	4x209	LightVolume	FUN_00970fa0
+99a76612			Bytes	size	209	8x209	LightVolume	
+b1ac0908			Bytes	size	209	8x209	LightVolume	
+b1b3b678	DayIntensity	sym	Scalar4	decomp+size	209	4x209	LightVolume	FUN_00970fa0
+b258547f	VolumeScale	sym	Vec3	size	209	12x209	LightVolume	
+b27d09c2			Bytes	size	209	8x209	LightVolume	
+b333bba2			Bytes	size	209	8x209	LightVolume	
+bba9da2f			Bytes	size	209	8x209	LightVolume	
+cec7707a			Scalar4	size	209	4x209	LightVolume	
+cf2fe183			Scalar4	size	209	4x209	LightVolume	
+d8a0a867	VolumeType	sym	Scalar4	size	209	4x209	LightVolume	
+ebd77bb3			Scalar4	size	209	4x209	LightVolume	
+edc59af4	NightIntensity	sym	Scalar4	decomp+size	209	4x209	LightVolume	FUN_00970fa0
+fb88adf2			Scalar4	size	209	4x209	LightVolume	
+021fa107			Ref	decomp+size	204	4x204	CAR,TRUCK,APC	FUN_005d53f6
+0cadd973			Scalar4	size	204	4x204	Ricochet	
+102796f8			Scalar4	size	204	4x204	Ricochet	
+121ace2b			Scalar4	size	204	4x204	Ricochet	
+151267c7			Ref	decomp+size	204	4x204	CAR,TRUCK,APC	FUN_005d53f6
+17d76489			Scalar4	size	204	4x204	Ricochet	
+286aaa87			Ref	decomp+size	204	4x204	CAR,TRUCK,APC	FUN_005d53f6
+2dbb470c			Scalar4	size	204	4x204	Ricochet	
+2fc81625			Scalar4	size	204	4x204	Ricochet	
+32b053dc			Scalar4	size	204	4x204	Ricochet	
+3384c30b			Scalar4	decomp+size	204	4x204	CAR,TRUCK,APC	FUN_005d53f6
+3a2a17ad			Scalar4	size	204	4x204	Ricochet	
+97d21ddb			Scalar4	size	204	4x204	Ricochet	
+9ea29ed3			Scalar4	size	204	4x204	Ricochet	
+9fe5920f			Ref	decomp+size	204	4x204	CAR,TRUCK,APC	FUN_005d53f6
+aaab0096			Scalar4	size	204	4x204	Ricochet	
+afc2cf77			Scalar4	size	204	4x204	Ricochet	
+b4bc5975			Scalar4	size	204	4x204	Ricochet	
+b8228f42			Scalar4	size	204	4x204	Ricochet	
+bca08f76			Scalar4	size	204	4x204	Ricochet	
+c4a5193c			Scalar4	size	204	4x204	Ricochet	
+c6b1e855			Scalar4	size	204	4x204	Ricochet	
+cdc0c01a			Scalar4	size	204	4x204	Ricochet	
+fdd4fd04			Scalar4	size	204	4x204	Ricochet	
+fdd97a32			Scalar4	size	204	4x204	Ricochet	
+0d111ab7	PickupHighlight	sym	Scalar4	size	202	4x202	Weapon,Ammo,Item	FUN_0069dc40
+953c60f5			Ref	decomp+size	202	4x202	Weapon,Ammo,Item	FUN_0069dc40
+f7ceee0b	HiddenWhileEquiped	dict	Bool	size	202	1x202	Weapon,Ammo,Item	FUN_0069dc40
+1cf649bb	FaceFxActor	exe	Scalar4	size	199	4x199	FxHumanHead	
+1dccdb2f	FaceFxModel	sym	Scalar4	size	199	4x199	FxHumanHead	
+6da79337			Scalar4	size	199	4x199	FxHumanHead	
+79ad9888	CameraTrackOffset	sym	Vec3	size	199	12x199	CameraSettings,GroupCameraSettings	
+ee7d0ba3			Scalar4	size	199	4x199	FxHumanHead	
+1cde14db			Scalar4	size	195	4x195	PhysicsParticleSet	
+59a23d57	ParticleList	sym	Scalar4	size	195	4x195	PhysicsParticleSet	
+7ddc5783			Scalar4	size	195	4x195	PhysicsParticleSet	
+91c23c14			Bytes	size	195	8x195	PhysicsParticleSet	
+95a91c36			Bytes	size	195	8x195	PhysicsParticleSet	
+b03f89c9			Bytes	size	195	8x195	PhysicsParticleSet	
+c6e3eed3			Bytes	size	195	8x195	PhysicsParticleSet	
+c877bd3b			Bytes	size	195	24x195	PhysicsParticleSet	
+dd6a4a63			Bytes	size	195	8x195	PhysicsParticleSet	
+e7d5ff9d			Vec3	size	195	12x195	PhysicsParticleSet	
+eefe4fbf			Scalar4	size	195	4x195	PhysicsParticleSet	
+d3dfd699	LightVolume	exe	Ref	decomp+size	192	4x192	LightSettings,Prop	FUN_007fb4d0,FUN_00800a80
+ea87b9f7	CameraMoveTension	sym	Vec3	decomp+size	187	12x187	CameraSettings,GroupCameraSettings	FUN_0046e350
+b8e16e99	PhysicsParticleSetRef	sym	Scalar4	size	185	4x185	ParticleEffect	
+bc58aa53			Str	decomp+size	179	5x37,15x21,23x20,24x15,21x14,22x14,20x11,27x9,18x8,26x5,1x4,16x4,25x4,19x3,28x3,17x2,29x2,30x1,31x1,33x1	Weapon,CAR,TRUCK	FUN_005d53f6,FUN_006b8d30
+3de8a21d			Str	decomp+size	177	5x98,28x13,27x12,25x11,24x11,31x9,26x6,29x4,30x4,32x3,33x2,23x1,1x1,35x1,22x1	Weapon,CAR,TRUCK	FUN_005d53f6,FUN_006b8d30
+0eec368f	CameraAimTension	sym	Vec3	size	171	12x171	CameraSettings,GroupCameraSettings	FUN_0046e350
+f2ccaf79	LightAttachedLV	exe	Ref	decomp+size	165	4x165	LightSettings	FUN_007fb4d0
+fd4c5c69	Configuration	sym	Scalar4	size	165	4x165	LightSettings	FUN_007fb4d0
+366c9d39			Scalar4	size	155	4x155	Foliage	FUN_006d8b50
+442fed33			Scalar4	size	155	4x155	Foliage	FUN_006d8b50
+58cdfffa			Scalar4	decomp+size	155	4x155	Foliage	FUN_006d8b50
+8b266e12			Bool	size	155	1x155	Foliage	FUN_006d8b50
+98508662			Bool	size	155	1x155	Foliage	FUN_006d8b50
+9ab5e710	Clusters	sym	Scalar4	size	155	4x155	Foliage	
+bb4d8134			Scalar4	size	155	4x155	Foliage	FUN_006d8b50
+64067103			Scalar4	size	152	4x152	WillToFight	
+0ad30144			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+17d0a018	StartOpened	sym	Bool	decomp+size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+24d568c9			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+2511cc68			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+2b9bf786	loopingAnim	sym	Bool	decomp+size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+2cd9f28f			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+2d07da6f			Ref	decomp+size	148	4x148	AnimatedObject	FUN_0044bd20
+309589e8	CloseDelay	exe	Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+34bf9491			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+36dc5038			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+37308af1			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+3f3514b7			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+4077884b			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+504894bf			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+5081076d			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+56cd780e			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+5c6bb173			Bool	decomp+size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+60ded0ed			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+6d36b289			Ref	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+82cdadfe			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+89ffdade			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+99360455			Ref	decomp+size	148	4x148	CAR,TRUCK,APC	FUN_005f08f0
+a42dab74			Ref	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+ac2b9a92			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+acf16fbf			Bool	decomp+size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+af87143a			Bool	decomp+size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+af96d677			Scalar4	size	148	4x148	AnimatedObject	FUN_0160d790
+b5290286			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+b77f637a			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+bd2d8c4c			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+c0431b07	CloseAfterOpen	sym	Bool	decomp+size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+c04edce4			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+c0d957df			Scalar4	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+c615e301			Ref	decomp+size	148	4x148	CAR,TRUCK,APC	FUN_005f08f0
+ce132f86			Bool	size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+d2425420	AttachedObject	sym	Ref	decomp+size	148	4x148	AnimatedObject	FUN_0044af50,FUN_0044bd20
+d260f3a7			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+d4cfe857			Bool	size	148	1x148	AnimatedObject	
+d617b94c			Bool	size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+d73c58bc			Ref	decomp+size	148	4x148	CAR,TRUCK,APC	FUN_005f08f0
+d8248865			Bool	size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+df77edbb			Ref	decomp+size	148	4x148	AnimatedObject	FUN_0044af50
+dfe169be			Vec3	decomp+size	148	12x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+e6023240			Ref	decomp+size	148	4x148	AnimatedObject	FUN_0044bd20
+f015a3a3			Bool	size	148	1x148	AnimatedObject	FUN_0044af50,FUN_0044c370
+888505c3	Prompt	exe	Scalar4	size	147	4x147	AIAttractionPt,ButtonPrompt	
+273b8ce7			Ref	decomp+size	146	4x146	CAR,TRUCK,APC	FUN_005d53f6
+2e659ba7			Ref	decomp+size	146	4x146	CAR,TRUCK,APC	FUN_005d53f6
+54b0a527			Ref	decomp+size	146	4x146	CAR,TRUCK,APC	FUN_005d53f6
+97eb34df			Ref	decomp+size	146	4x146	CAR,TRUCK,APC	FUN_005d53f6
+9ac8deab			Scalar4	decomp+size	146	4x146	CAR,TRUCK,APC	FUN_005d53f6
+44416d71	UseModel	sym	Bool	size	145	1x145	Foliage	FUN_006d8b50
+bc653eb9			Scalar4	size	145	4x145	Foliage	FUN_006d8b50
+216e8465	duration	exe	Scalar4	decomp+size	144	4x144	FaceExpression,ButtonPrompt,DamageSphere	FUN_0047ed50
+060fd1b4	ClothForce	exe	Ref	decomp+size	142	4x142	ClothObject	FUN_007f8950
+23b7a240			Ref	decomp+size	142	4x142	CAR,TRUCK,TANK	FUN_005d53f6,FUN_00634970
+8a7ea61a			Bool	size	142	1x142	ClothObject	
+a8413df8			Ref	decomp+size	142	4x142	CAR,TRUCK,TANK	FUN_005d53f6,FUN_00634970
+ca612893	DoorBone2	sym	Ref	decomp+size	142	4x142	CAR,TRUCK,TANK	FUN_005d53f6,FUN_00634970
+e0b51584			Scalar4	size	142	4x142	ClothObject	
+eef41706			Ref	decomp+size	142	4x142	CAR,TRUCK,TANK	FUN_005d53f6
+f063a2fc			Ref	decomp+size	142	4x142	CAR,TRUCK,TANK	FUN_005d53f6,FUN_00634970
+073b7ad2	TrainCarriageName	dict	Scalar4	size	140	4x140	Train	
+0847bf63	CarriageJumpBackwards	dict	Bool	size	140	1x140	Train	
+393083ed	CarriageJumpForwards	dict	Bool	size	140	1x140	Train	
+999b8fa3	Carriage	dict	Scalar4	size	140	4x140	Train	
+9c59fb67	CarriageBackwards	dict	Bool	size	140	1x140	Train	
+b34c6113	FenceID	dict	Scalar4	size	140	4x140	Train	
+5d71589d			Scalar4	size	139	4x139	LightHalo,LightSettings	FUN_007dfcf0
+0dec56c7			Scalar4	size	138	4x138	LightHalo	FUN_007dfcf0
+147a3e5d	FadeOut	exe	Bool	size	138	1x138	LightHalo	FUN_007dfcf0
+21b7e323			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+26f78c7b			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+27b412ff	depthBias	sym	Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+280bf82c			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+2fd9b489			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+67f3f28b			Bool	size	138	1x138	LightHalo	FUN_007dfcf0
+7186f0b7	MaxViewableAngle	sym	Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+74e42872			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+753dc701			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+76e3e09e			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+7702a37e			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+8978b4c4			Scalar4	size	138	4x138	LightHalo	FUN_007dfcf0
+8aca5bca			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+905b3312			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+927a8ae2	MaxFullViewableAngle	sym	Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+ad13ec8c			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+aec1569b	Overbright	exe	Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+b93f2efb			Bool	size	138	1x138	LightHalo	FUN_007dfcf0
+c5b44a23			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+d0822fcd			Scalar4	size	138	4x138	LightHalo	FUN_007dfcf0
+d3d07581			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+e7f46f43			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+ed3dcb8a			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+fcc5d7de			Scalar4	decomp+size	138	4x138	LightHalo	FUN_007dfcf0
+ff8abd17			Bool	size	138	1x138	LightHalo	FUN_007dfcf0
+9fbf13a0			Scalar4	size	136	4x136	WillToFight	
+a7dcd5cc			Scalar4	size	136	4x136	CAR,TrainCarriage,TRUCK	FUN_005d53f6,FUN_00634970
+1a1fe631			Ref	decomp+size	135	4x135	Melee	FUN_0066e440
+9fd0a9f5			Ref	decomp+size	135	4x135	Melee	FUN_0066e440
+bb81ae95			Scalar4	decomp+size	135	4x135	Melee	FUN_0066e440
+06ba7208	DynamicPriority	exe	Scalar4	size	132	4x132	CAR,TrainCarriage,TRUCK	FUN_005d53f6
+2dc26872			Scalar4	size	132	4x132	CAR,TrainCarriage,TRUCK	FUN_005d53f6
+36e14299			Scalar4	size	132	4x132	CAR,TrainCarriage,TRUCK	FUN_005d53f6
+5b8f052c			Scalar4	size	132	4x132	AIRoad	
+81cc5c7a			Scalar4	size	132	4x132	CAR,TrainCarriage,TRUCK	FUN_005d53f6
+921e50ff	SpawnObject	exe	Scalar4	size	132	4x132	AIRoad	
+ccc7e339			Scalar4	size	132	4x132	AIRoad	
+2344bbc0			Ref	decomp+size	130	4x130	CAR,TRUCK,APC	FUN_005d53f6
+2bbb27c8			Ref	decomp+size	130	4x130	CAR,TRUCK,APC	FUN_005d53f6
+5b355766			Ref	decomp+size	130	4x130	CAR,TRUCK,APC	FUN_005d53f6
+72abc5f0			Scalar4	decomp+size	130	4x130	CAR,TRUCK,APC	FUN_005d53f6
+a46b0807	VehicleType	sym	Ref	decomp+size	130	4x130	CAR,Shop,TRUCK	FUN_005d53f6
+c7e44514			Ref	decomp+size	130	4x130	CAR,TRUCK,APC	FUN_005d53f6
+2b8d1fdf	Vehicle	exe	Ref	decomp+size	129	4x129	AIRoad,Escalation	FUN_008acef0
+2ff354cb			Scalar4	size	128	4x128	CAR,TRUCK,APC	FUN_005d53f6
+4d1dd4d1	FilamentRadius	sym	Scalar4	size	127	4x127	LightHalo	
+2a4badfd	StartBone	sym	Ref	decomp+size	126	4x126	AnimatedObject	FUN_0160d790
+39346352	endBone	sym	Ref	decomp+size	126	4x126	AnimatedObject	FUN_0160d790
+69dca2b6			Scalar4	size	126	4x126	Weapon,Bullet	FUN_006b8d30
+d850f531			Scalar4	size	126	4x126	Weapon,Bullet	FUN_006b8d30
+fd1daa2f			Ref	decomp+size	126	4x126	AnimatedObject	FUN_0160d790
+0bcda30e			Ref	decomp+size	125	4x125	CAR,TRUCK,TANK	FUN_005d53f6
+108ce590			Ref	decomp+size	125	4x125	CAR,TRUCK,TANK	FUN_005d53f6
+1a14bdda	ExhaustEffect	sym	Ref	decomp+size	125	4x125	CAR,TRUCK,TANK	FUN_005d53f6
+49aacc9f			Scalar4	size	125	4x125	SeatAnimationsPassenger	
+4e6ba751			Ref	decomp+size	125	4x125	CAR,TRUCK,TANK	FUN_005d53f6
+8a888a08			Ref	decomp+size	125	4x125	CAR,TRUCK,TANK	FUN_005d53f6
+999a233f			Ref	decomp+size	125	4x125	CAR,TRUCK,TANK	FUN_005d53f6
+b262a814			Scalar4	size	125	4x125	SeatAnimationsPassenger	
+073dc1f5			Bytes	size	124	24x124	VerletBoneObject	
+08d113e1			Scalar4	size	124	4x124	VerletBoneObject	
+45dfdfdf			Scalar4	size	124	4x124	VerletBoneObject	
+4f814bb8			Scalar4	size	124	4x124	VerletBoneObject	
+82c74c53			Bool	size	124	1x124	VerletBoneObject	
+94a26a31			Scalar4	size	124	4x124	VerletBoneObject	
+e0a9aa46	windFactor	sym	Scalar4	size	124	4x124	VerletBoneObject	
+b4519a5b	ParkedWeakness	sym	Scalar4	decomp+size	123	4x123	CAR,TrainCarriage,TRUCK	FUN_005d53f6
+25580ec1	attrPtOffset	sym	Vec3	size	122	12x122	CAR,AnimatedObject,Prop	FUN_008f0170
+28745834	AttrPt	exe	Ref	decomp+size	122	4x122	CAR,AnimatedObject,Prop	FUN_008f0170
+a1b6ed7b	AttrPtAttachment	exe	Scalar4	size	122	4x122	CAR,AnimatedObject,Prop	FUN_008f0170
+dc46bc02			Scalar4	decomp+size	122	4x122	CAR,AnimatedObject,Prop	FUN_008f0170
+0181869c			Bool	size	116	1x116	AIRoad	
+a1c6d3a0			Bool	size	116	1x116	AIRoad	
+cad661e0			Scalar4	size	116	4x116	AIRoad	
+ea927afe	Passengers	exe	Scalar4	size	116	4x116	AIRoad	
+585f7db9			Scalar4	decomp+size	115	4x115	CAR,TRUCK,Turret	FUN_005dc930,FUN_005e7080
+763bb595	Wheels	sym	Scalar4	size	115	4x115	CAR,VirVehicleChassis,TRUCK	FUN_00610430
+81de132f	SeatMotorStrengthFactor	sym	Scalar4	decomp+size	115	4x115	CAR,TRUCK,Turret	FUN_005dc930,FUN_005e7080
+b0c2d055			Scalar4	decomp+size	115	4x115	CAR,TRUCK,Turret	FUN_005dc930,FUN_005e7080
+027faade			Scalar4	decomp+size	112	4x112	CAR,TRUCK,Turret	FUN_005dc930
+13f47172	CanDrop	sym	Bool	size	112	1x112	Ammo,Item,Weapon	FUN_0069dc40
+29c23a39			Scalar4	decomp+size	112	4x112	CAR,TRUCK,APC	FUN_005d53f6
+bbda869e	WeaponMotorStrengthFactor	sym	Scalar4	decomp+size	112	4x112	CAR,TRUCK,Turret	FUN_005dc930
+d65937b5			Ref	decomp+size	112	4x112	CAR,TRUCK,APC	FUN_005d53f6
+d9e95cf9			Ref	decomp+size	112	4x112	CAR,TRUCK,APC	FUN_005d53f6
+eae4803d			Ref	decomp+size	112	4x112	CAR,TRUCK,APC	FUN_005d53f6
+fec86cad			Ref	decomp+size	112	4x112	CAR,TRUCK,APC	FUN_005d53f6
+002aaf13			Scalar4	size	110	4x110	Prop	
+19a6973a			Bool	decomp+size	110	1x110	Prop	FUN_004b6b89
+1c5d2a70	AnimatedPropRotateData	sym	Ref	decomp+size	110	4x110	Prop	FUN_004b6b89
+21550886			Bool	decomp+size	110	1x110	Prop	FUN_004b6b89
+22aaee32			Vec3	decomp+size	110	12x110	Prop	FUN_004b6b89
+2955523d			Ref	decomp+size	110	4x110	Prop	FUN_004b6b89
+35eddeb6			Scalar4	decomp+size	110	4x110	Prop	FUN_004b6b89
+4b5bd522			Scalar4	decomp+size	110	4x110	Prop	FUN_004b6b89
+55e4b770			Scalar4	decomp+size	110	4x110	Prop	FUN_004b6b89
+5d348d7a			Scalar4	decomp+size	110	4x110	CAR,TRUCK,Turret	FUN_005dc930,FUN_005e7080
+650a47ed	IsUniqueItem	sym	Bool	decomp+size	110	1x110	Ammo,Item	FUN_0069dc40
+70785b2a	IsDetonatorItem	sym	Bool	size	110	1x110	Ammo,Item	FUN_0069dc40
+98bc61fa			Bool	decomp+size	110	1x110	Prop	FUN_004b6b89
+a702dbde			Bool	decomp+size	110	1x110	Prop	FUN_004b6b89
+ccd5561a			Bool	decomp+size	110	1x110	Prop	FUN_004b6b89
+dfd6597a			Scalar4	decomp+size	110	4x110	CAR,TRUCK,Turret	FUN_005dc930,FUN_005e7080
+06273164			Scalar4	size	108	4x108	AIAttractionPt,Prop	
+11eedab0			Ref	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005f08f0
+1b64efad			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+5167d9d0			Ref	decomp+size	107	4x107	CAR,TrainCarriage,TrainEngine	FUN_005d53f6
+55b62690	SecondaryWeapons	sym	Scalar4	size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+64f9b346			Bool	size	107	1x107	CAR,TRUCK,Turret	FUN_005dc930
+699d6c8f			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+6c36ba37			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+7e95e06c			Ref	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+ae911955			Ref	decomp+size	107	4x107	CAR,TrainCarriage,TrainEngine	FUN_005d53f6
+cd8d678e			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+cefcd0d9			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+d8f11e45			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+df6b6d8d			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+eaba3aef			Scalar4	decomp+size	107	4x107	CAR,TRUCK,Turret	FUN_005dc930
+edba8801			Ref	decomp+size	107	4x107	CAR,TrainCarriage,TrainEngine	FUN_005d53f6
+2c0fd1b3			Scalar4	decomp+size	103	4x103	Prop	FUN_004b6b89
+381f4a7e	Blueprint	exe	Ref	decomp+size	103	4x103	Prop	FUN_004b6b89
+61cc7540	numToSpawnRange	sym	Bytes	size	103	8x103	Prop	FUN_004b6b89
+fafab455	BlueprintAttachment	sym	Ref	decomp+size	103	4x103	Prop	FUN_004b6b89
+29ab6edc			Ref	decomp+size	101	4x101	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+389d5eae	FireEffect	exe	Ref	decomp+size	101	4x101	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+5d9068a3			Ref	decomp+size	101	4x101	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+7a13eb63	SmokeEffect	exe	Ref	decomp+size	101	4x101	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+c40e776e			Ref	decomp+size	101	4x101	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+d48f11ee			Ref	decomp+size	101	4x101	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+25d7ddc9			Scalar4	decomp+size	99	4x99	WillToFight,WaterController	FUN_016171ec
+d1dd6599			Scalar4	size	99	4x99	Weapon,MeleeWeapon	FUN_006b8d30
+f535722a			Scalar4	size	99	4x99	Weapon,MeleeWeapon	FUN_006b8d30
+085655ba	DeathCountdownMin	sym	Scalar4	decomp+size	98	4x98	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+3cfee6b4			Scalar4	decomp+size	98	4x98	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+62049cb7	SmokeHealthThreshold	sym	Scalar4	decomp+size	98	4x98	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+6ee8bf74	DeathCountdownMax	sym	Scalar4	decomp+size	98	4x98	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+7514be0c			Scalar4	size	98	4x98	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+8bc7c405			Scalar4	size	98	4x98	CAR,TRUCK,Turret	FUN_005d53f6,FUN_00634970
+4172d6fb	MiniGameBlueprint	exe	Scalar4	size	97	4x97	AIAttractionPt	
+5253fc93	Prompt2	sym	Scalar4	size	97	4x97	AIAttractionPt	
+7c0d1f8e			Bool	size	97	1x97	AIAttractionPt	
+ce1a4a79	description	exe	Scalar4	size	97	4x97	AIAttractionPt	
+cf88de36			Scalar4	size	97	4x97	AIAttractionPt	
+d411c23c			Bool	size	97	1x97	AIAttractionPt	
+07984e6d			Scalar4	size	95	4x95	SeatAnimations	
+1998f454			Scalar4	size	95	4x95	SeatAnimations	
+291a1f46			Bool	size	95	1x95	SeatAnimations	
+53860be6			Bool	size	95	1x95	SeatAnimations	
+abb82a18			Bytes	size	95	8x95	SeatAnimations	
+c08adfae			Bytes	size	95	8x95	SeatAnimations	
+dc22d0ef			Scalar4	size	95	4x95	SeatAnimations	
+7db13d1f	DamageSound	sym	Bytes	size	94	17x79,22x15	CAR,TRUCK	
+97e0db0f	PartImpulse	sym	Scalar4	decomp+size	94	4x94	CAR,TRUCK,Prop	FUN_00663d00
+04e3420d			Scalar4	size	93	4x93	Weapon	FUN_006b8d30
+0008dd0e			Scalar4	size	92	4x92	Weapon	
+001223fe			Scalar4	size	92	4x92	Weapon	
+00f23035			Scalar4	size	92	4x92	Weapon	
+02057c8b			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+0266d69f			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+039589bc			Bool	size	92	1x92	Weapon	FUN_006b8d30
+04ad1998			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+05b6ba7c			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+06a053c3			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+074d0d0f			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+079c2d5b	WalkAccuracyMod	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+09c7d282			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+0b3830d6			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+0f3d263b	HeightDifferenceMin	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+142c5c7a			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+1508d7dd			Bytes	size	92	16x92	Weapon	FUN_006b8d30
+1667d2c6			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+1724437a	RunAwayMod	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+1b4b7af6			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+20c14c6d			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+2652fae8			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+26ae7598			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+277b8b55	Ordnance	exe	Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+279a36e1			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+29c2a39c	AnimBank	sym	Ref	decomp+size	92	4x92	Weapon	FUN_00505010,FUN_006b8d30
+2a22fdc1			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+2caa4ace	SprintLateralMod	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+2dd68a03			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+2e022594			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+2f261817			Scalar4	size	92	4x92	Weapon	
+2f5d8019			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+2fb64efc			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+2fd5ee93			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+31e23ad4			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+33202768			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+334a7577			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+36a350ad			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+36f01f83			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+375004cf			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+379cd846			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+3c967a20			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+44297e86			Bool	size	92	1x92	Weapon	FUN_006b8d30
+46577933	RunningMinSpeed	sym	Scalar4	size	92	4x92	Weapon	
+4700fee0	SuspicionRadius	exe	Bool	decomp+size	92	1x92	Human	FUN_00505010
+491a1285			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+498c371f			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+4e13ea36			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+52619d52			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+544d5a73			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+56d6092e			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+5cd15632			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+5d4608b5			Bool	size	92	1x92	Weapon	FUN_0069dc40
+63468c4b			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+63ff9380			Bool	size	92	1x92	Weapon	FUN_006b8d30
+64f0f584			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+69059d08			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+6b484076			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+6c93dea3			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+6ca0e2fe			Bytes	size	92	16x92	Weapon	FUN_006b8d30
+6db7b63d	AchievementId	sym	Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+71dfbaee	Crosshairs	sym	Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+71e30e69			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+73a9fae3			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+74bef49a			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+761c3a09			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+76ecc8cd			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+7777d77e			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+78fa7e87			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+797a84ef	RunLateralMod	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+7a909fd2			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+7b7a641c	RunTowardsMod	sym	Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+7c0b86b9			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+7d1b8f54			Scalar4	size	92	4x92	Weapon	
+7db30b59			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+85924a26			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+865eadcb			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+89341658			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+8eb3b1a4			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+8fabbd6c			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+94b5aed3	CameraFireMovementScale	sym	Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+94fcf44a			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+95f2d6bb			Bool	size	92	1x92	Weapon	FUN_006b8d30
+96dc09bd			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+9737dc5b			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+9b889e4a	Automatic	sym	Bool	size	92	1x92	Weapon	FUN_006b8d30
+a0c571dd			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+a118044d			Scalar4	size	92	4x92	Weapon	
+a1953cd0			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+a3416e0a			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+a3868095			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+a3c83f69			Bool	size	92	1x92	Weapon	FUN_006b8d30
+a4ca8665			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+a56ee87e			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+a5bc45e2			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+a6107c89			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+a75d5327			Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+a8ab10e2			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+ab3be1a0			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+ad451485			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+ae28d6e9	SprintAwayMod	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+b182906e			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+b344cc74			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+b4676bce			Scalar4	size	92	4x92	Weapon	
+b4685717			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+b4c6842e			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+b4d334d8			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+b4dafd66			Scalar4	size	92	4x92	Weapon	
+b5c71325			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+b8627450			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+ba157547			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+bd8f9c00			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+bfa35cb2			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+c40ed65b			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+c451ab8d			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+c8e09549			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+ca55eec9			Bool	size	92	1x92	Weapon	FUN_006b8d30
+caf505ea			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+ce9447bc			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+d01f6168			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+d1b71ae8			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+d3f2828b			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+d43a1fe1			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+db4b8095			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+dc9e428f			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+ddf78d47			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+e0ac4345	HeightDifferenceMax	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+e1f8dafc			Bool	size	92	1x92	Weapon	FUN_006b8d30
+e3945c1d			Bytes	size	92	8x92	Weapon	FUN_006b8d30
+e545fbf4			Bool	decomp+size	92	1x92	Weapon	FUN_006b8d30
+e79e08fe			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+e8e01a04			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+ebb3f257			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+ec438e17	MuzzleFlashTime	sym	Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+efed376d	SprintTowardsMod	sym	Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+f20499a6			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+f4162380	CameraSetting	sym	Ref	decomp+size	92	4x92	Weapon	FUN_006b8d30
+f766aa6f			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+f8f8275d			Scalar4	decomp+size	92	4x92	Weapon	FUN_006b8d30
+fa9ad969			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+fe9c1eeb			Scalar4	size	92	4x92	Weapon	FUN_006b8d30
+688e2fba	Collisions	exe	Bool	size	90	1x90	ClothObject	
+02cf30c4			Scalar4	size	89	4x89	Highlight	FUN_0067d060
+0952a055			Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+09ca3ad5			Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+22f2c045			Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+43b43e44			Scalar4	size	89	4x89	Highlight	FUN_0067d060
+64cd994e			Ref	decomp+size	89	4x89	Highlight	FUN_0067de40
+674ae58a			Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+67c2800a			Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+9469454a	time	exe	Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+9ccc519b			Scalar4	size	89	4x89	Highlight	FUN_0067d060
+c0eb6a3a			Scalar4	decomp+size	89	4x89	Highlight	FUN_0067d060
+ddb15f1b			Scalar4	size	89	4x89	Highlight	FUN_0067d060
+04965406			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+0a1af7ef			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+0a1ed360			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+0b3c9aeb			Ref	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005f08f0
+1b1c16da			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+1d2c62a4			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+2867754b			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+2a5ac5b3			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+2ac18b0d	Nazi	exe	Bool	size	85	1x85	CAR,TRUCK,TANK	FUN_005d53f6
+2f4d73d1			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+36323226			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+372a4cfb			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+372eca29			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+4bfc24f8			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+4c2d60bb			Ref	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005f08f0
+4e69efb4			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+6350df48			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+7f3bc5e3			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+8b206832			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+a2ecf38a			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005f08f0
+a5f489dc			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+a69a8211			Bool	size	85	1x85	CAR,TRUCK,TANK	FUN_005d53f6
+af836df1			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+afec20d2			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+b1113237			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005f08f0
+b228da78			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+b85e6ef1			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+bcecebe4	Max Speed	sym	Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+c6649c6e			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+c795d87f			Scalar4	size	85	4x85	CAR,TRUCK,TANK	
+d9ed178a			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+ecbe7bef			Scalar4	size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+f1ee5038			Scalar4	decomp+size	85	4x85	CAR,TRUCK,TANK	FUN_005d53f6
+8cd42963			Scalar4	size	84	4x84	SeatAnimationsPassenger	
+8f422e48			Scalar4	size	84	4x84	SeatAnimationsPassenger	
+0b3dc01d			Bool	size	82	1x82	ClothObject	
+0fce73f0			Scalar4	size	82	4x82	Explosion	FUN_00489700
+12bb20a1	ExplosionDamage	sym	Scalar4	size	82	4x82	Explosion	FUN_00489700
+2eba9df8			Scalar4	size	82	4x82	Explosion	FUN_00489700
+349bf324			Scalar4	size	82	4x82	Explosion	FUN_00489700
+47e338fe			Scalar4	size	82	4x82	Explosion	FUN_00489700
+5e244327			Scalar4	size	82	4x82	Explosion	FUN_00489700
+62e0afde			Bool	size	82	1x82	Explosion	FUN_00489700
+74f54615			Scalar4	size	82	4x82	Explosion	FUN_00489700
+79ba2fd0			Scalar4	size	82	4x82	Explosion	FUN_00489700
+82edc825			Bool	size	82	1x82	Explosion	FUN_00489700
+9f710c1b	ExplosionForce	sym	Scalar4	size	82	4x82	Explosion	FUN_00489700
+a1ed7451			Scalar4	size	82	4x82	Explosion	FUN_00489700
+d8727836			Bool	decomp+size	82	1x82	Explosion	FUN_00489700
+ebb0a63e			Scalar4	size	82	4x82	Explosion	FUN_00489700
+ee0e25ba			Scalar4	size	82	4x82	Explosion	FUN_00489700
+71798a24	Item	exe	Scalar4	size	80	4x80	Ammo,Human,Shop	FUN_00505010
+05f55b73			Scalar4	size	79	4x79	VirVehicleWheel	
+0a8ea601			Bytes	size	79	8x79	VirVehicleWheel	
+0b934f56			Scalar4	size	79	4x79	VirVehicleWheel	
+103e4762			Scalar4	size	79	4x79	VirVehicleWheel	
+12649314	RaceCar	sym	Bool	size	79	1x79	CAR,TRUCK,APC	FUN_005c5df0,FUN_009d5820,FUN_009df490
+2381791f			Scalar4	size	79	4x79	VirVehicleWheel	
+33cb3c20			Scalar4	size	79	4x79	VirVehicleWheel	
+36665fdf			Bytes	size	79	8x79	VirVehicleWheel	
+3c49b65c			Vec3	size	79	12x79	VirVehicleWheel	
+41b95528			Scalar4	size	79	4x79	VirVehicleWheel	
+4423c957			Bytes	size	79	8x79	VirVehicleWheel	
+44b9ab07			Bytes	size	79	8x79	VirVehicleWheel	
+501e3dec			Scalar4	size	79	4x79	VirVehicleWheel	
+5ac6a66f			Scalar4	size	79	4x79	VirVehicleWheel	
+5acf5881			Scalar4	size	79	4x79	VirVehicleWheel	
+7384eb89			Scalar4	size	79	4x79	VirVehicleWheel	
+76e24366			Scalar4	size	79	4x79	VirVehicleWheel	
+78e34b2f			Scalar4	size	79	4x79	VirVehicleWheel	
+7ee81714			Bool	size	79	1x79	VirVehicleWheel	
+9a228181			Scalar4	size	79	4x79	VirVehicleWheel	
+9e4658f3			Bytes	size	79	8x79	VirVehicleWheel	
+9fbb5028			Scalar4	size	79	4x79	VirVehicleWheel	
+b09f09eb			Scalar4	size	79	4x79	VirVehicleWheel	
+b3848ebd			Bytes	size	79	8x79	VirVehicleWheel	
+b576bdd0			Scalar4	size	79	4x79	VirVehicleWheel	
+bb12d2a6			Scalar4	size	79	4x79	VirVehicleWheel	
+bf4c7045			Scalar4	size	79	4x79	Ammo,PhysicalOrdnance,FlameOrdnance	
+cd5975ab			Scalar4	size	79	4x79	VirVehicleWheel	
+d23a7435			Scalar4	size	79	4x79	VirVehicleWheel	
+e4a6ca14			Bytes	size	79	8x79	VirVehicleWheel	
+e655dc80	_MinAirResistanceSpeed	sym	Bytes	size	79	8x79	VirVehicleWheel	
+edaed3e7			Scalar4	size	79	4x79	VirVehicleWheel	
+f203bfde			Bytes	size	79	8x79	VirVehicleWheel	
+f2c98a25			Scalar4	size	79	4x79	VirVehicleWheel	
+f91438f8			Scalar4	size	79	4x79	VirVehicleWheel	
+04047f6d	Atmosphere	exe	Scalar4	size	76	4x76	WillToFight	
+04bf05e7			Scalar4	size	76	4x76	WillToFight	
+0c5fb9d2	GodRays	exe	Scalar4	size	76	4x76	WillToFight	
+11fd8e8d			Scalar4	size	76	4x76	WillToFight	
+12430911			Scalar4	size	76	4x76	WillToFight	
+158a76a2	tOP	exe	Scalar4	size	76	4x76	WillToFight	
+17924914	Sky	exe	Scalar4	size	76	4x76	WillToFight	
+183ad396	Threshold	exe	Scalar4	size	76	4x76	WillToFight	
+1f067a31			Vec3	size	76	12x76	WillToFight	
+1fdf83bd	SkyDome	exe	Scalar4	size	76	4x76	WillToFight	
+21751aa6			Scalar4	size	76	4x76	WillToFight	
+22508c93			Scalar4	size	76	4x76	WillToFight	
+23d97888	WindSpeed	sym	Scalar4	size	76	4x76	WillToFight	
+25161ea3			Scalar4	size	76	4x76	WillToFight	
+2537614e			Scalar4	size	76	4x76	WillToFight	
+2579fed7			Scalar4	size	76	4x76	WillToFight	
+29c3ee40			Scalar4	size	76	4x76	WillToFight	
+2a7575b0			Scalar4	size	76	4x76	WillToFight	
+2ec570b5			Scalar4	size	76	4x76	WillToFight	
+2fcbfe5f			Bool	size	76	1x76	WillToFight	
+30b2eca6			Scalar4	size	76	4x76	WillToFight	
+3193b1ed			Scalar4	size	76	4x76	WillToFight	
+336f1aeb			Scalar4	size	76	4x76	WillToFight	
+37b8cdaf	Start	exe	Scalar4	size	76	4x76	WillToFight	
+39d03fea			Scalar4	size	76	4x76	WillToFight	
+3b611c0d			Scalar4	size	76	4x76	WillToFight	
+3e42f880	End	exe	Scalar4	size	76	4x76	WillToFight	
+4122c9f3	Cloth	exe	Scalar4	size	76	4x76	WillToFight	
+430217a0	8bcc10 f   AkAudioEngine	sym	Scalar4	size	76	4x76	WillToFight	
+447e8f3d			Scalar4	size	76	4x76	WillToFight	
+46c2eaf3			Vec3	size	76	12x76	WillToFight	
+48dae5c2			Scalar4	size	76	4x76	WillToFight	
+4a43f5a3	Density	exe	Scalar4	size	76	4x76	WillToFight	
+4fe6eed7			Scalar4	size	76	4x76	WillToFight	
+503f8cb3			Scalar4	size	76	4x76	WillToFight	
+526ac699	Saturation	sym	Scalar4	size	76	4x76	WillToFight	FUN_006dc1c0,FUN_006ee240
+54303c41			Scalar4	size	76	4x76	WillToFight	
+546a546f			Scalar4	size	76	4x76	WillToFight	
+55a709af			Scalar4	size	76	4x76	WillToFight	
+59a43d42	Bloom	exe	Scalar4	size	76	4x76	WillToFight	
+5a1a44a9			Scalar4	size	76	4x76	WillToFight	
+5becb1f3			Vec3	size	76	12x76	WillToFight	
+5d0f729e	exposure	sym	Scalar4	size	76	4x76	WillToFight	
+622d27d2			Scalar4	size	76	4x76	WillToFight	
+63ac2e85			Scalar4	size	76	4x76	WillToFight	
+65ed29b6			Scalar4	size	76	4x76	WillToFight	
+66907990			Scalar4	size	76	4x76	WillToFight	
+6a6b91cd			Scalar4	size	76	4x76	WillToFight	
+6e3ca969	Hair	exe	Scalar4	size	76	4x76	WillToFight	
+735f6c3d	Falloff	exe	Scalar4	size	76	4x76	WillToFight	
+79e65f82			Vec3	size	76	12x76	WillToFight	
+7b074b03			Scalar4	size	76	4x76	WillToFight	
+7bf16181			Vec3	size	76	12x76	WillToFight	
+7c15a554			Scalar4	size	76	4x76	WillToFight	
+81abb33a			Scalar4	size	76	4x76	WillToFight	
+83cf2626			Scalar4	size	76	4x76	WillToFight	
+8410e4d6	SKIN	sym	Scalar4	size	76	4x76	WillToFight	
+85813b29			Bool	size	76	1x76	WillToFight	
+97a85a53			Scalar4	size	76	4x76	WillToFight	
+990d3409			Bool	size	76	1x76	WillToFight	
+9a8d4ddd			Scalar4	size	76	4x76	WillToFight	
+9b05051b			Scalar4	size	76	4x76	WillToFight	
+9b068e29			Scalar4	size	76	4x76	WillToFight	
+9cd5086d			Scalar4	size	76	4x76	WillToFight	
+9f8649c2			Scalar4	size	76	4x76	WillToFight	
+a4151bc5			Scalar4	size	76	4x76	WillToFight	
+a5026cdd			Scalar4	size	76	4x76	WillToFight	
+a6701560			Scalar4	size	76	4x76	WillToFight	
+a83d4187			Scalar4	size	76	4x76	WillToFight	
+a84eab89			Scalar4	size	76	4x76	WillToFight	
+a8f37dfa	WillToFightFilter	exe	Scalar4	size	76	4x76	WillToFight	
+a993685b			Scalar4	size	76	4x76	WillToFight	
+aad1408e			Scalar4	size	76	4x76	WillToFight	
+abb379ef			Scalar4	size	76	4x76	WillToFight	
+ac4fc80d			Scalar4	size	76	4x76	WillToFight	
+ac7a1eab			Scalar4	size	76	4x76	WillToFight	
+acc054f1			Scalar4	size	76	4x76	WillToFight	
+afe68140			Scalar4	size	76	4x76	WillToFight	
+b7bd6269			Scalar4	size	76	4x76	WillToFight	
+b84ab675			Vec3	size	76	12x76	WillToFight	
+bce2d22c			Scalar4	size	76	4x76	WillToFight	
+bd9b68f6			Scalar4	size	76	4x76	WillToFight	
+c1ae772b			Scalar4	size	76	4x76	WillToFight	
+c242e5ca			Scalar4	size	76	4x76	WillToFight	
+c2783a55	Decay	sym	Scalar4	size	76	4x76	WillToFight	
+c2b76e0c			Scalar4	size	76	4x76	WillToFight	
+c3716193			Scalar4	size	76	4x76	WillToFight	
+c55e2c38			Scalar4	size	76	4x76	WillToFight	
+c6d7d18c			Scalar4	size	76	4x76	WillToFight	
+caba5fa3			Scalar4	size	76	4x76	WillToFight	
+cd0b9642			Scalar4	size	76	4x76	WillToFight	
+ce255f67	Clouds	exe	Scalar4	size	76	4x76	WillToFight	
+d18d7100	Bottom	exe	Scalar4	size	76	4x76	WillToFight	
+d59d2f96			Scalar4	size	76	4x76	WillToFight	
+d59ea92a			Scalar4	size	76	4x76	WillToFight	
+d663cefb	LowClouds	exe	Scalar4	size	76	4x76	WillToFight	
+daed04d2			Scalar4	size	76	4x76	WillToFight	
+db6b07b6			Scalar4	size	76	4x76	WillToFight	
+e11685f6			Scalar4	size	76	4x76	WillToFight	
+e235cd45			Scalar4	size	76	4x76	WillToFight	
+e2961490			Scalar4	size	76	4x76	WillToFight	
+e2a4612f			Scalar4	size	76	4x76	WillToFight	
+e4b89239			Scalar4	size	76	4x76	WillToFight	
+e6b4443e			Scalar4	size	76	4x76	WillToFight	
+e7f6ad7e			Scalar4	size	76	4x76	WillToFight	
+eaf2c50d			Scalar4	size	76	4x76	WillToFight	
+ebf7339d			Scalar4	size	76	4x76	WillToFight	
+ec245b3b			Scalar4	size	76	4x76	WillToFight	
+ed54a26c	GlobalLighting	sym	Scalar4	size	76	4x76	WillToFight	
+eea1222d	Thickness	sym	Scalar4	size	76	4x76	WillToFight	
+eef0f848			Scalar4	size	76	4x76	WillToFight	
+ef03692a			Scalar4	size	76	4x76	WillToFight	
+f1688bbd			Scalar4	size	76	4x76	WillToFight	
+f45e896e			Scalar4	size	76	4x76	WillToFight	
+f7beab46			Scalar4	size	76	4x76	WillToFight	
+f9c44b22			Scalar4	size	76	4x76	WillToFight	
+f9e9d916			Vec3	size	76	12x76	WillToFight	
+3e33738b			Scalar4	size	74	4x74	CAR,TRUCK	FUN_005d53f6
+6435edf4			Scalar4	size	74	4x74	CAR,TRUCK	FUN_005d53f6
+6e4e5a86			Scalar4	size	74	4x74	CAR,TRUCK	FUN_005c6120
+6f24fe8f			Scalar4	size	74	4x74	WillToFight	
+f055e2f1			Scalar4	size	74	4x74	CAR,TRUCK	
+d27e3887	AmmoType	dict	Ref	decomp+size	70	4x70	Bullet,Rocket,PhysicalOrdnance	FUN_0069fed0
+c59c7b33	SoundBanks	exe	Scalar4	size	66	4x66	Weapon,Human,CAR	FUN_009127b0
+eee1a341	Scale	exe	Scalar4	size	65	4x65	WillToFight,Bird	FUN_006f3610
+523afe65			Ref	decomp+size	64	4x64	ClothObject	FUN_007f8950
+b9c2b47a	Axis	exe	Scalar4	size	64	4x64	ClothObject	
+0878c785			Bool	size	63	1x63	LightSettings	
+524fe4fc			Scalar4	size	63	4x63	Ammo	
+6596a232			Scalar4	size	63	4x63	Ammo	
+c84e7bef			Scalar4	size	63	4x63	Ammo	
+de11ca90			Scalar4	size	63	4x63	Ammo	
+00a03a33			Bool	size	61	1x61	ClothObject	
+1d679aeb			Scalar4	size	61	4x61	ClothObject	FUN_007f7580
+23a31f18			Scalar4	size	61	4x61	ClothObject	
+283c9626			Scalar4	size	61	4x61	ClothObject	
+305856df			Scalar4	size	61	4x61	ClothObject	FUN_007f7580
+33e229ea	Force	exe	Scalar4	size	61	4x61	Bullet,Rocket,FlameOrdnance	FUN_0069fed0
+36f1c579	EXPLOSIONS	sym	Bool	size	61	1x61	ClothObject	
+3eeace1a			Scalar4	size	61	4x61	ClothObject	
+5700ab72			Scalar4	size	61	4x61	ClothObject	FUN_007f8950
+6c89c416			Scalar4	size	61	4x61	ClothObject	
+9c924267			Bool	size	61	1x61	ClothObject	
+c1ddd580			Bool	size	61	1x61	ClothObject	
+ce4a2343			Bool	size	61	1x61	ClothObject	
+e11b7999			Scalar4	size	61	4x61	ClothObject	
+e3aec3cd			Scalar4	size	61	4x61	ClothObject	
+01807aca			Ref	decomp+size	60	4x60	Bullet,Rocket,FlameOrdnance	FUN_0069fed0
+1fbe43b4			Scalar4	size	60	4x60	WillToFight	
+37b68026			Scalar4	size	60	4x60	CAR	
+37eb1ad8			Scalar4	size	60	4x60	WillToFight	
+42ca8ff8	HorizonCloudLayer	sym	Scalar4	size	60	4x60	WillToFight	
+46da6755	AITurnAngleToBrake	sym	Scalar4	decomp+size	60	4x60	CAR	FUN_005d53f6
+66c65590	AIMinSteerLookahead	sym	Scalar4	decomp+size	60	4x60	CAR	FUN_005d53f6
+80f02ca2	AIMaxSteerLookahead	sym	Scalar4	decomp+size	60	4x60	CAR	FUN_005d53f6
+903bb20c	AIDamage	sym	Scalar4	size	60	4x60	Bullet,Rocket,FlameOrdnance	FUN_0069fed0
+98e74cbe			Scalar4	size	60	4x60	WillToFight	
+c530465f			Scalar4	size	60	4x60	WillToFight	
+e0f0480c			Bool	size	60	1x60	CAR	FUN_005d53f6
+f251f970	AISpeed	sym	Scalar4	decomp+size	60	4x60	Bullet,Rocket,FlameOrdnance	FUN_0069fed0
+f4434ade	Damage	exe	Scalar4	decomp+size	60	4x60	Bullet,Rocket,FlameOrdnance	FUN_0069fed0
+f9bbc94b			Scalar4	size	60	4x60	WillToFight	
+145ed13c			Bytes	size	59	8x59	VirVehicleTransmission	
+4048bb35			Scalar4	size	59	4x59	VirVehicleTransmission	
+661c6bd6			Scalar4	size	59	4x59	Highlight	
+ba14958d	GearRatio	sym	Scalar4	size	59	4x59	VirVehicleTransmission	
+e823f441			Scalar4	size	59	4x59	Highlight	
+2947cb2d			Ref	decomp+size	55	4x55	Prop	FUN_004b6b89
+9f1233ca	MaxSpeed	sym	Scalar4	decomp+size	55	4x55	VirVehicleChassis,Rocket,Bird	FUN_00610430
+b1796d79	Train	dict	Bytes	size	54	1x33,4x21	AIRoad,TrainList	
+2b9aa730	StartSpeed	dict	Scalar4	size	53	4x53	Train,Rocket	
+c023acd3	Expression	exe	Scalar4	size	53	4x53	FaceExpression	FUN_0094af60
+c2161e01	BlendTime	sym	Scalar4	size	53	4x53	FaceExpression	
+16930afe	Explosion	exe	Scalar4	size	52	4x52	AIAttractionPt,Rocket,PhysicalOrdnance	FUN_00945320
+36471d15			Scalar4	size	52	4x52	SeatAnimations	
+61c65669			Scalar4	size	52	4x52	SeatAnimations	
+c21ff421			Scalar4	size	52	4x52	SeatAnimations	
+c5e0a718			Scalar4	size	52	4x52	SeatAnimations	
+067fdff6	Delay	sym	Scalar4	size	50	4x50	ButtonPrompt	
+5832e0d8	Transition	exe	Scalar4	size	49	4x49	CameraSettings,GroupCameraSettings	FUN_0046e350
+70092c52			Ref	decomp+size	49	4x49	CameraSettings,GroupCameraSettings	FUN_0046e350
+eaca428d			Scalar4	size	49	4x49	CameraSettings,GroupCameraSettings	
+21092b57			Scalar4	size	48	4x48	Shop	
+0c516e20			Scalar4	size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+1d36fc75	CarriageFriction	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+1ecc77a5	RearDecoupleStrength	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+2b34d835	JumpFrontBoneName	sym	Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+42f9cfdb	CarriageLength	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+60781379			Scalar4	size	47	4x47	TrainCarriage,TrainEngine	
+73a2311c			Scalar4	size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+75dcd334	AirResistance	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+78a2871c	CanDecouple	sym	Bool	size	47	1x47	TrainCarriage,TrainEngine	FUN_00628c93,FUN_006299d0
+83f9ee88	JumpRearBoneName	sym	Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+898e5121	ConnectionFrontBoneName	sym	Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+927c72c2			Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+9a14e0a1	RearDecoupleBoneName	sym	Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+b2750515	EngineFriction	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+b4cbbff4			Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+d04c8234	ConnectionRearBoneName	sym	Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+e4ff20b3			Scalar4	size	47	4x47	TrainCarriage,TrainEngine	
+efaa0dc1	PlayerDecoupleRadius	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+f29d6ce3			Ref	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+f2eb51e9	CarriageRestitution	sym	Scalar4	decomp+size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+f5fe1b33			Scalar4	size	47	4x47	TrainCarriage,TrainEngine	FUN_006299d0
+07b13063			Scalar4	size	46	4x46	ScriptController	
+165c1fd7	Conv	exe	Scalar4	size	46	4x46	ScriptController	
+85b5e29f	Spawner	exe	Bytes	size	46	8x20,7x11,9x10,13x4,6x1	ScriptController	FUN_006dc1c0
+a77edaaa			Bool	size	46	1x46	ScriptController	
+ca6b9057	NameRef	exe	Scalar4	size	46	4x46	ScriptController	
+cacfd6aa	AttrPtBP	sym	Scalar4	size	46	4x46	ScriptController	
+ce629e7e			Scalar4	size	46	4x46	ScriptController	
+d6f4d903	ActivationRadius	sym	Scalar4	size	46	4x46	ScriptController	
+e4e34549			Scalar4	size	46	4x46	ScriptController	
+f6b4ff0e	ANIM	exe	Scalar4	size	46	4x46	ScriptController	
+1e0e24f7			Bool	size	45	1x45	Shop	
+47f0e728			Scalar4	size	45	4x45	Shop	
+48c1d679			Scalar4	size	45	4x45	Shop	
+51be0846			Scalar4	size	45	4x45	Shop	
+68fc1fda			Bool	size	45	1x45	Shop	
+84ad8afc			Scalar4	size	45	4x45	Shop	
+9471dc0f			Bool	size	45	1x45	Shop	
+98f2fdbc			Scalar4	size	45	4x45	Shop	
+aacdea48	GarageCar	exe	Scalar4	size	45	4x45	Shop	
+b3f09c37			Scalar4	size	45	4x45	Shop	
+b9bc4e39			Scalar4	size	45	4x45	Shop	
+f791e3ac			Scalar4	size	45	4x45	Shop	
+08a59e33			Scalar4	size	44	4x44	SeatAnimations	
+1cce9f3d			Scalar4	size	44	4x44	SeatAnimations	
+20c1c4f3			Scalar4	size	44	4x44	SeatAnimations	
+3a527ed5			Ref	decomp+size	44	4x44	Escalation	FUN_008acef0
+3ca594b0			Scalar4	size	44	4x44	SeatAnimations	
+6aa1a5ae			Scalar4	size	44	4x44	SeatAnimations	
+7a0c1851			Ref	decomp+size	44	4x44	Escalation	FUN_008acef0
+8148286d			Scalar4	size	44	4x44	SeatAnimations	
+89bcd2aa			Scalar4	size	44	4x44	Escalation	FUN_008acef0
+99f65298			Scalar4	size	44	4x44	Escalation	FUN_008acef0
+b4f87903			Scalar4	size	44	4x44	Escalation	FUN_008acef0
+b8b17403			Scalar4	size	44	4x44	SeatAnimations	
+f89dfe1c			Scalar4	size	44	4x44	SeatAnimations	
+2b6fe1ae			Scalar4	decomp+size	43	4x43	Highlight	FUN_0067de40
+9df1f45d			Bool	size	43	1x43	Highlight	
+ded701dd			Bool	size	43	1x43	Highlight	
+eb42bd07	pulses	sym	Scalar4	size	43	4x43	Highlight	
+03c5822e			Scalar4	size	42	4x42	AIController	
+26510ecf			Scalar4	size	42	4x42	AIController	
+316cc898			Scalar4	size	42	4x42	AIController	
+49e6bff9			Scalar4	size	42	4x42	AIController	
+87c3b66f			Scalar4	size	42	4x42	AIController	
+9627b5a7	RandomInitialNeeds	sym	Bool	size	42	1x42	AIController	
+9793ceaa			Scalar4	size	42	4x42	AIController	
+9fe58ef0			Scalar4	size	42	4x42	SeatAnimations	
+a851faef			Scalar4	size	42	4x42	SeatAnimations	
+f2f462b6			Scalar4	size	42	4x42	AIController	
+0de083a1			Scalar4	size	41	4x41	Shop	
+0fe5789b			Scalar4	size	41	4x41	Shop	
+1048f758			Scalar4	size	41	4x41	Shop	
+12ee91f9			Scalar4	size	41	4x41	Shop	
+1509866d			Scalar4	size	41	4x41	TrainCarriage	
+233c45af			Scalar4	size	41	4x41	Shop	
+2d0f5053			Scalar4	size	41	4x41	VerletBoneObject	
+2f028a30			Scalar4	size	41	4x41	SeatAnimations	
+46c99e0d			Bool	size	41	1x41	Shop	
+4a90f8ac			Scalar4	size	41	4x41	VerletBoneObject	
+5239a672			Scalar4	size	41	4x41	Shop	
+5fe81a40			Bool	size	41	1x41	Shop	
+73a9b1a7			Scalar4	size	41	4x41	Shop	
+74b02b89			Ref	decomp+size	41	4x41	TrainCarriage	FUN_006299d0
+7ad0f630			Scalar4	size	41	4x41	Shop	
+93c591d1			Scalar4	size	41	4x41	Shop	
+a3db42d4			Scalar4	size	41	4x41	VerletBoneObject	
+a5b6febb			Scalar4	size	41	4x41	SeatAnimations	
+b559a015			Scalar4	size	41	4x41	Shop	
+baafc694			Ref	decomp+size	41	4x41	TrainCarriage	FUN_006299d0
+e614ebdc			Scalar4	size	41	4x41	Shop	
+f54d4fbe			Scalar4	size	41	4x41	Shop	
+f9a0633d			Scalar4	decomp+size	41	4x41	TrainCarriage	FUN_006299d0
+03c22b27			Scalar4	size	40	4x40	Weapon	
+0cfcfece			Scalar4	size	40	4x40	SeatAnimations	
+21222c25			Scalar4	size	40	4x40	SeatAnimations	
+3228788a			Scalar4	size	40	4x40	SeatAnimations	
+4688a096			Scalar4	size	40	4x40	SeatAnimations	
+507df055			Bytes	size	40	8x40	SeatAnimations	
+6b1a32ed			Scalar4	size	40	4x40	SeatAnimations	
+88104f6e			Scalar4	size	40	4x40	SeatAnimations	
+9db73d8f	WTFInfluence	sym	Scalar4	size	40	4x40	Decal,LeafSpawner	
+a959e429			Scalar4	size	40	4x40	SeatAnimations	
+afa1af91			Bool	size	40	1x40	SeatAnimations	
+bf914715			Scalar4	size	40	4x40	SeatAnimations	
+ec0e252f			Scalar4	size	40	4x40	SeatAnimations	
+f53d04b8			Scalar4	size	40	4x40	SeatAnimations	
+f5dda8d4			Scalar4	size	40	4x40	Weapon	
+fcda2b6b			Scalar4	size	40	4x40	SeatAnimations	
+ff504486			Scalar4	size	40	4x40	SeatAnimations	
+34225fe1			Ref	decomp+size	39	4x39	Prop	FUN_004b6b89
+7172b7ae			Scalar4	size	39	4x39	Decal	
+7d096810			Scalar4	size	39	4x39	Prop	
+c6ec1e86	MaxSize	sym	Scalar4	size	39	4x39	Decal	
+d3485f14			Scalar4	size	39	4x39	Decal	
+d7d8d464			Scalar4	size	39	4x39	Decal	
+df3262f2	FlashColor	exe	Vec3	size	39	12x39	Decal	
+e7ba6724			Ref	decomp+size	39	4x39	Prop	FUN_004b6b89
+fa4c29b8	st	exe	Bytes	size	39	16x39	Decal	
+2f054d27			Scalar4	size	38	4x38	SeatAnimations	
+440e11d7			Scalar4	size	38	4x38	DetailObject	
+5a77102e			Bool	size	38	1x38	SeatAnimations	
+651aeafa			Scalar4	size	38	4x38	SeatAnimations	
+6da91cf2			Scalar4	size	38	4x38	DetailObject	
+807fec71			Scalar4	size	38	4x38	SeatAnimations	
+87dd9796			Bool	size	38	1x38	DetailObject	
+8a09514e			Bool	size	38	1x38	DetailObject	
+a90c7e48			Scalar4	size	38	4x38	DetailObject	
+b7a38021			Scalar4	size	38	4x38	DetailObject	
+e0193b96			Bool	size	38	1x38	DetailObject	
+f0fa376c			Scalar4	size	38	4x38	DetailObject	
+0ec2f55d	CoverStyle	sym	Scalar4	size	35	4x35	AICombatParams	
+16b61a99	WeaponPickup	sym	Bool	size	35	1x35	AICombatParams	
+18e0180b	UseGrenades	sym	Scalar4	size	35	4x35	AICombatParams	
+1b7809a1			Ref	decomp+size	35	4x35	AIAttractionPt	FUN_00483590
+362fc205	Aggression	sym	Scalar4	size	35	4x35	AICombatParams	
+468668d7	Fear	sym	Scalar4	size	35	4x35	AICombatParams	
+46d82bea			Scalar4	size	35	4x35	AICombatParams	
+4ebed1b7			Scalar4	size	35	4x35	AICombatParams	
+5ea66eea	Presence	sym	Scalar4	size	35	4x35	AICombatParams	
+65c9516f			Scalar4	size	35	4x35	SeatAnimations	
+65f9a245			Scalar4	size	35	4x35	SeatAnimations	
+72e6c7ed	AccuracyModifier	sym	Scalar4	size	35	4x35	AICombatParams	
+734f2ba0			Bool	size	35	1x35	AICombatParams	
+77b757b0	Actor	exe	Scalar4	size	35	4x35	Cinematics	
+8bb6ad21			Scalar4	size	35	4x35	AICombatParams	
+91deedfa			Scalar4	size	35	4x35	AICombatParams	
+96854078	CoverRate	sym	Scalar4	size	35	4x35	AICombatParams	
+a50fa6af	TargetObject	sym	Ref	decomp+size	35	4x35	AIAttractionPt	FUN_00483590
+a7e0d198			Scalar4	size	35	4x35	AIAttractionPt	FUN_00483590
+ae473955			Scalar4	size	35	4x35	SeatAnimations	
+af378531			Scalar4	size	35	4x35	SeatAnimations	
+b604efe4			Scalar4	size	35	4x35	SeatAnimations	
+bf3fba12	ImmediateHostile	sym	Bool	size	35	1x35	AICombatParams	
+c35b803e			Scalar4	size	35	4x35	SeatAnimations	
+c76af905			Scalar4	size	35	4x35	AICombatParams	
+c79442f1			Bool	size	35	1x35	Cinematics	
+e28c3040			Scalar4	size	35	4x35	SeatAnimations	
+e47c51b0	standTime	sym	Scalar4	size	35	4x35	AICombatParams	
+e5746957			Bool	size	35	1x35	Cinematics	
+e9869138	Intelligence	sym	Scalar4	size	35	4x35	AICombatParams	
+eafb1359			Scalar4	size	35	4x35	SeatAnimations	
+fa03eb28			Scalar4	size	35	4x35	AICombatParams	
+08775f0d			Scalar4	size	34	4x34	Bullet	
+15ba509e	Speed	exe	Scalar4	size	34	4x34	Bullet	
+15c3fc69			Scalar4	size	34	4x34	PhysicsParticle	
+231c955c			Bytes	size	34	8x34	Bullet	
+232bc103			Scalar4	size	34	4x34	Bullet	
+2381a9f4			Bytes	size	34	8x34	SeatAnimations	
+32fded30			Bool	size	34	1x34	Bullet	
+336e0ada			Scalar4	decomp+size	34	4x34	Bullet	FUN_0069fed0
+33d47464			Scalar4	size	34	4x34	Cinematics	
+4c2b3699			Scalar4	size	34	4x34	Bullet	
+4f7cb322			Scalar4	size	34	4x34	Bullet	
+5608bd5a	Effect	exe	Ref	decomp+size	34	4x34	PhysicsParticle	FUN_004b6b89
+5cd55dd3			Scalar4	size	34	4x34	SeatAnimations	
+5e6a93db			Bool	size	34	1x34	Bullet	
+73393c4a	Ricochet	exe	Scalar4	size	34	4x34	Bullet	
+785523d3			Bytes	size	34	8x34	Bullet	
+7bf6762f			Bytes	size	34	8x34	SeatAnimations	
+80b6a0e5			Scalar4	size	34	4x34	Bullet	
+81349ee6			Scalar4	size	34	4x34	Bullet	
+9f64b646			Scalar4	size	34	4x34	SeatAnimations	
+af0d6c64			Bytes	size	34	8x34	Bullet	
+ba52c3d5			Scalar4	size	34	4x34	Bullet	
+d01dcda0			Scalar4	size	34	4x34	SeatAnimations	
+d4f11960			Scalar4	size	34	4x34	Bullet	
+e47a9e34			Scalar4	size	34	4x34	Bullet	
+e9dbfbd0			Scalar4	decomp+size	34	4x34	Bullet	FUN_0069fed0
+eff83a31			Bytes	size	34	8x34	Bullet	FUN_0069fed0
+f2d66f4b			Bytes	size	34	8x34	Bullet	
+0dd6cdb2	Activity	exe	Scalar4	size	33	4x33	AIRoad	
+186f979a	TrainEngineName	dict	Scalar4	size	33	4x33	Train	
+276e1ef8	StreamDistance	dict	Scalar4	size	33	4x33	Train	
+5ebe4820	HighPriorityFence	dict	Bool	size	33	1x33	Train	
+66ccf719	CarriageNames	dict	Scalar4	size	33	4x33	Train	
+6991ca03	EngineJumpBackwards	dict	Bool	size	33	1x33	Train	
+830107da	Vehicles	exe	Scalar4	size	33	4x33	AIRoad	
+a74edc80	StreamAtTrackSpeed	dict	Bool	size	33	1x33	Train	
+b2a6f50d	EngineJumpForwards	dict	Bool	size	33	1x33	Train	
+c43322c3	Engine	dict	Scalar4	size	33	4x33	Train	
+19b0426a			Ref	decomp+size	31	4x31	CivilianProp	FUN_00474e90
+7794dacb			Bool	decomp+size	31	1x31	AIAttractionPt	FUN_00483590
+84046b05			Ref	decomp+size	31	4x31	AIAttractionPt	FUN_00483590
+a1f61387	version	exe	Scalar4	size	31	4x31	FlashMovie,ImageFolder,CommonUI_Persistent	
+e29d36b0			Scalar4	size	31	4x31	AIAttractionPt	
+0158d0d6			Scalar4	size	30	4x30	VirVehicleChassis	
+017b0e57			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+04d46017			Scalar4	size	30	4x30	VirVehicleSetup	
+05e9f647			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+061deb79			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+072cee8b			Scalar4	size	30	4x30	VirVehicleSetup	
+08e70678	maxAngularVelocity	exe	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+0b187235			Scalar4	size	30	4x30	VirVehicleSetup	
+0c2db3b4	managed	exe	Bool	size	30	1x30	FlashMovie,ImageFolder,Shop	
+0db4d4b9			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+11a6638d			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+14f5fc86	CamMaxFwdVehicleSpeed	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+1760fd25	CamMaxSpeed	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+1a481908	MaxSpeedReverse	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+1c0728f2			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+23b995ca			Scalar4	size	30	4x30	Perks	
+244fcf07	AccpointOffset	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+25b0d1fc			Scalar4	size	30	4x30	SeatAnimations	
+26482a17	TorqueDownhillRatio	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+28095ae3			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+2d0720bf	AnimationBank	sym	Scalar4	size	30	4x30	CivilianProp	FUN_00474e90
+2f735f57			Scalar4	size	30	4x30	SeatAnimations	
+33e76d53			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+346ba149	ExtraGravity	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+35cfe423			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+37ed9778			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+3bcf045e			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+3d499638			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+43d90911			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+468c8923			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+472edc3c			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+475d0968			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+47692aaa			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+4c8a9d51	angularDamping	exe	Vec3	decomp+size	30	12x30	VirVehicleChassis	FUN_00610430
+4d740e02			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+4e8750eb			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+4f1b0bc9			Scalar4	size	30	4x30	Perks	
+54867ddc			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+58b8d4b3	LifeSpan	sym	Scalar4	size	30	4x30	Rocket,PhysicalOrdnance	
+59dc921e			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+5a38e8be	TorqueUphillRatio	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+5c4c90bc			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+5d1c8360			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+5e93c871			Bool	decomp+size	30	1x30	CivilianProp	FUN_00474e90
+605388c1	Inertia	exe	Vec3	decomp+size	30	12x30	VirVehicleChassis	FUN_00610430
+60cef36f			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+613bbb29			Scalar4	size	30	4x30	Perks	
+62667431			Ref	decomp+size	30	4x30	TrainCarriage,TrainEngine	FUN_006299d0
+6349214f			Scalar4	size	30	4x30	Perks	
+63765d6d			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+642a0982			Ref	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+64dc408e			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+6552c489			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+675b62c0			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+6d3a2f40			Vec3	decomp+size	30	12x30	VirVehicleChassis	FUN_00610430
+6eb985ac			Vec3	size	30	12x30	VirVehicleChassis	
+6ec8d450			Scalar4	size	30	4x30	Perks	
+6f631d70	CamMaxDownSpeedOffset	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+702e82d0			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+706efa70			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+70957ca9			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+71f01184			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+7633b56c			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+76544987			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+76804733			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+77ed2684			Scalar4	size	30	4x30	Perks	
+786a89da			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+7a83c9c0			Bool	size	30	1x30	VirVehicleChassis	FUN_00610430
+7aa774f7			Ref	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+7d3baf33			Vec3	size	30	12x30	VirVehicleChassis	FUN_00610430
+7d8f30a2	CamMaxUpOffset	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+832ed2d8			Scalar4	size	30	4x30	Perks	
+83d7b1ab	HandBrakeInertia	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+86e1ddb8			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+8700d608			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+89ee518c			Bool	size	30	1x30	VirVehicleChassis	FUN_00610430
+8c4cdba1			Scalar4	size	30	4x30	CivilianProp	FUN_00474e90
+8d3c0b47			Scalar4	size	30	4x30	Perks	
+8e2a08be	Cog	sym	Vec3	decomp+size	30	12x30	VirVehicleChassis	FUN_00610430
+8e7b15d0			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+91d7a17a			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+92647fff			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+92bf990b			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+93c1b6e7			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+94240f3f			Scalar4	size	30	4x30	TrainCarriage,TrainEngine	
+94a81d1d			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+95f0719d	CamMaxDownOffset	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+988c4bbb			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+99b8ddda			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+9f1cfa3a	CamMaxYSpeed	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+a27e815c			Ref	decomp+size	30	4x30	TrainCarriage,TrainEngine	FUN_006299d0
+a3e9b945			Bool	size	30	1x30	VirVehicleChassis	FUN_00610430
+a722ea49			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+a9a80ebb			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+acae4cc3	CamExtraDownOffsetCap	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+ad3330ef			Bool	size	30	1x30	Perks	
+b0f94b6e			Scalar4	size	30	4x30	Perks	
+b2288949			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+b24a0d49			Scalar4	size	30	4x30	Perks	
+ba081798			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+bcb76e26			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+bea7c767			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+bf119194			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+c4bf279c			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+c5b6487e			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+ca20921d			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+cca6171f			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+cd0b7c7a			Scalar4	size	30	4x30	Perks	
+cd8cd7cf			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+ced3717b	SelfRight	exe	Bool	size	30	1x30	VirVehicleChassis	FUN_00610430
+cf892558	CamMaxFwdSpeed	sym	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+d02eca73			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+d4b31f1d			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+d4f77620			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+d7a09b85			Scalar4	decomp+size	30	4x30	TrainCarriage,TrainEngine	FUN_006299d0
+d80ddcce			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+d963361b			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+db67dd79			Scalar4	size	30	4x30	Perks	
+dcb9daa9			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+e05c53d9			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+e5943224			Scalar4	size	30	4x30	Perks	
+e5ed0e84	linearDamping	exe	Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+e8da4dd0			Scalar4	size	30	4x30	Perks	
+ec7f5d51	COGInAir	sym	Vec3	decomp+size	30	12x30	VirVehicleChassis	FUN_00610430
+ed2ce7df			Bytes	size	30	8x30	VirVehicleChassis	FUN_00610430
+f078a8b2			Scalar4	decomp+size	30	4x30	VirVehicleChassis	FUN_00610430
+71afa04e	MiniGameType	sym	Scalar4	size	29	4x29	MiniGame,AIAttractionPt	
+04479a17			Scalar4	size	28	4x28	SeatAnimationsPassenger	
+26ebecfc			Scalar4	size	28	4x28	SeatAnimationsPassenger	
+3003ec45			Bytes	size	28	8x28	CAR,TRUCK	FUN_005d53f6
+6018f238			Bool	size	28	1x28	Cinematics	
+9965e3d4	ActorList	sym	Scalar4	size	28	4x28	Cinematics	
+e34a94fb			Ref	decomp+size	28	4x28	CAR,TRUCK	FUN_005d53f6
+f21424f2			Bool	size	28	1x28	Cinematics	
+0a9f90da	ObjectAttachedLV	exe	Scalar4	size	27	4x27	Prop	FUN_00800a80
+36b39561			Vec3	size	27	12x27	Prop	FUN_00800a80
+8d7e074d			Scalar4	size	27	4x27	Prop	FUN_00800a80
+d8e0895a	VolumeOffset	sym	Vec3	size	27	12x27	Prop	FUN_00800a80
+0148b27f			Bytes	size	26	8x26	MiniGame	
+040245ea			Bool	size	26	1x26	MiniGame	
+0429a59b			Scalar4	size	26	4x26	MiniGame	
+0cc154bc			Scalar4	size	26	4x26	MiniGame	
+0fb423b0	IdleAnim	sym	Scalar4	size	26	4x26	MiniGame	
+1bf1dde7	SpeedMultiplier	sym	Scalar4	size	26	4x26	MiniGame	
+279d4b62	SuspicionType	sym	Scalar4	size	26	4x26	MiniGame	
+2c2e04f2	IconIndex	sym	Scalar4	size	26	4x26	MiniGame	
+2f28928b	ObjFailAnim	sym	Scalar4	size	26	4x26	MiniGame	
+31c25320	DamageIncreaseRate	sym	Scalar4	decomp+size	26	4x26	DamageSphere	FUN_0047ed50
+344bee18			Bool	size	26	1x26	MiniGame	
+35b4a4e2	CameraBlendTime	sym	Scalar4	size	26	4x26	MiniGame	
+3f955db8	DamageRate	sym	Scalar4	size	26	4x26	DamageSphere	FUN_0047ed50
+493400cd			Scalar4	size	26	4x26	MiniGame	
+4feaee29	CameraOffset	sym	Vec3	size	26	12x26	MiniGame	
+7617fd5b	ExpandRate	sym	Scalar4	size	26	4x26	DamageSphere	
+82b0a527			Bool	size	26	1x26	MiniGame	
+8d9b17f3			Scalar4	size	26	4x26	MiniGame	
+98625b98	ObjPassAnim	sym	Scalar4	size	26	4x26	MiniGame	
+9b78d64e	fuse	exe	Bool	size	26	1x26	MiniGame	
+9caa0adf			Scalar4	size	26	4x26	FlashMovie	
+a8de63d6	InputAdjustment	sym	Scalar4	size	26	4x26	MiniGame	
+ae865fe0	IntoAnim	sym	Scalar4	size	26	4x26	MiniGame	
+b66beb74	DegradeToZero	sym	Bool	size	26	1x26	MiniGame	
+bdf3deae	DegradeSpeed	sym	Scalar4	size	26	4x26	MiniGame	
+c55323e7	CanDisarm	sym	Bool	size	26	1x26	MiniGame	
+c6f1c2e3	OutOfAnim	sym	Scalar4	size	26	4x26	MiniGame	
+c76ddbf7	AutoIncrement	sym	Bool	size	26	1x26	MiniGame	
+e25d4494	CompletionTime	sym	Scalar4	size	26	4x26	MiniGame	
+e2612f04			Scalar4	size	26	4x26	MiniGame	
+e4fb3946	FailAnim	sym	Scalar4	size	26	4x26	MiniGame	
+e5d20954	InputThreshold	sym	Bytes	size	26	8x26	MiniGame	
+e60f34c5	PassAnim	sym	Scalar4	size	26	4x26	MiniGame	
+e832fb02			Scalar4	size	26	4x26	MiniGame	
+ee032533			Bool	size	26	1x26	MiniGame	
+ef03c774			Scalar4	size	26	4x26	MiniGame	
+f4eec45f			Bool	size	26	1x26	MiniGame	
+fe015046	LockOnComplete	sym	Bool	size	26	1x26	MiniGame	
+0439c312			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+0ec38247			Scalar4	size	25	4x25	WaterController,LightSettings	FUN_016171ec
+5f897978			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+7e17bfd9			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+7edfdeca			Bool	size	25	1x25	Item	
+afd82b61			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+bd8cb6c2			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+cea29f62			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+e6125ea7			Scalar4	size	25	4x25	SeatAnimationsPassenger	
+0c64b7b5			Bool	size	24	1x24	Shop	
+0e3abed0			Scalar4	decomp+size	24	4x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+317645ed			Bool	size	24	1x24	Shop	
+3e7d62f2			Scalar4	size	24	4x24	Shop	
+4edd8f8d			Bool	size	24	1x24	MiniGame	
+4ef5360b	TransitionTime	sym	Scalar4	decomp+size	24	4x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+55dd23a8			Vec3	decomp+size	24	12x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+5f7a4c17			Scalar4	size	24	4x24	Shop	
+62018e52			Scalar4	size	24	4x24	Shop	
+64ed6743			Scalar4	size	24	4x24	Shop	
+6f6c645f			Vec3	size	24	12x24	ElasticTransition,AnimatedTransition,GroupTransition	
+8197fa7f			Bool	size	24	1x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+864ac31b			Bool	size	24	1x24	MiniGame	
+9d8c8362			Scalar4	size	24	4x24	Shop	
+c5c50c7f	boneScale	sym	Scalar4	size	24	4x24	HumanSkeletonScale	
+c7ada7b4			Scalar4	size	24	4x24	Shop	
+d2e84c5f			Scalar4	size	24	4x24	Shop	
+d6ce2b66			Scalar4	size	24	4x24	Shop	
+d8e08fee			Scalar4	size	24	4x24	Shop	
+e16fedd2			Scalar4	size	24	4x24	Shop	
+e1ba3193	CounterPerk	exe	Scalar4	size	24	4x24	Perks	
+f73b0955			Vec3	size	24	12x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+f741ff8d			Scalar4	decomp+size	24	4x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+f823cd96			Vec3	size	24	12x24	ElasticTransition,AnimatedTransition,GroupTransition	FUN_004700f9
+fbca3acc			Scalar4	size	24	4x24	Shop	
+fdecffd2			Scalar4	size	24	4x24	Shop	
+1598d00c			Scalar4	size	23	4x23	HumanSkeletonScale	
+1b9b037d			Scalar4	decomp+size	23	4x23	WaterController	FUN_016171ec
+33175c7a			Scalar4	decomp+size	23	4x23	WaterController	FUN_016171ec
+35afa241			Scalar4	decomp+size	23	4x23	WaterController	FUN_016171ec
+3b2e2aa3			Scalar4	decomp+size	23	4x23	WaterController	FUN_016171ec
+5a8132a3	HeadScale	sym	Scalar4	size	23	4x23	HumanSkeletonScale	
+69435911	BodyScale	sym	Scalar4	size	23	4x23	HumanSkeletonScale	
+7f39f1bb			Scalar4	size	23	4x23	WaterController	FUN_016171ec
+95ff5441	Slot	exe	Scalar4	size	23	4x23	WaterController	
+a2300e26			Scalar4	size	23	4x23	WaterController	FUN_016171ec
+a491dfca			Scalar4	size	23	4x23	WaterController	FUN_016171ec
+b9969f89			Scalar4	decomp+size	23	4x23	WaterController	FUN_016171ec
+013a1caf			Scalar4	size	22	4x22	AIAttractionPt	
+239b1e1b			Bool	decomp+size	22	1x22	AIAttractionPt	FUN_004c03fb
+2a4802c1	SabotagePt	exe	Bool	size	22	1x22	AIAttractionPt	
+2d5b659b	DisableAfterSabotage	sym	Bool	size	22	1x22	AIAttractionPt	
+461faecc			Bool	decomp+size	22	1x22	AIAttractionPt	FUN_004c03fb
+4c4410d7			Scalar4	size	22	4x22	AIAttractionPt	FUN_0160ede0
+4d165b66	72b20	sym	Scalar4	size	22	4x22	WillToFight	
+530d6414	AutoDetonate	sym	Bool	size	22	1x22	AIAttractionPt	
+7a157568			Scalar4	size	22	4x22	AIAttractionPt	
+84c77e96	InventoryItem	sym	Scalar4	size	22	4x22	AIAttractionPt	
+923ba76b			Vec3	size	22	12x22	AIAttractionPt	
+9be6d196			Ref	decomp+size	22	4x22	Turret,TrainCarriage,CAR	FUN_005d53f6
+9fdc0ae6			Scalar4	size	22	4x22	AIAttractionPt	
+a0a39aa4			Scalar4	size	22	4x22	AIAttractionPt	
+c54e8cae			Bool	size	22	1x22	AIAttractionPt	
+cfafc788	VisibilityRange	sym	Scalar4	size	22	4x22	AIAttractionPt	
+e1291eae	SabotageDamage	sym	Scalar4	size	22	4x22	AIAttractionPt	
+0b8c43b8	TrainName	dict	Scalar4	size	21	4x21	TrainList	
+56a984de	ClothObject	exe	Ref	decomp+size	21	4x21	Prop	FUN_007fab90
+5af20fda			Bool	size	21	1x21	ClothObject	
+8f00fd1d			Vec3	size	21	12x21	Prop	FUN_007fab90
+9e1a591f			Scalar4	size	21	4x21	WillToFight	
+bff29f69			Ref	decomp+size	21	4x21	Prop	FUN_007fab90
+e4d97e65	ObjectAttachedCL	exe	Ref	decomp+size	21	4x21	Prop	FUN_007fab90
+f440d4e6			Vec3	size	21	12x21	Prop	FUN_007fab90
+00da288d			Scalar4	size	20	4x20	VirVehicleEngine	
+034c80ca	SpinSpeed	sym	Scalar4	size	20	4x20	Rocket	
+093c4eae			Scalar4	size	20	4x20	Rocket	
+0b80ac5c			Scalar4	size	20	4x20	VirVehicleEngine	
+1cab1fcc			Scalar4	size	20	4x20	VirVehicleEngine	
+2ff40ca1			Scalar4	size	20	4x20	Weapon	
+30812467			Bytes	size	20	29x20	APC,TRUCK,TANK	
+4eadb17f	optRPM	sym	Scalar4	size	20	4x20	VirVehicleEngine	
+577141f3			Scalar4	size	20	4x20	VirVehicleEngine	
+60cb691e			Scalar4	size	20	4x20	VirVehicleEngine	
+62474ad0	maxRPM	sym	Scalar4	size	20	4x20	VirVehicleEngine	
+69febea0			Bool	size	20	1x20	Rocket	
+6e19ba11			Scalar4	size	20	4x20	WillToFight	
+79b8a942			Scalar4	size	20	4x20	WillToFight	
+80dfa4ce	minRPM	sym	Scalar4	size	20	4x20	VirVehicleEngine	
+85adca56	spinAxis	sym	Vec3	size	20	12x20	Rocket	
+8ed55693	clutchSlipRPM	sym	Scalar4	size	20	4x20	VirVehicleEngine	
+924b903a	twirlStrength	sym	Bytes	size	20	8x20	Rocket	
+aa61ff67	Horsepower	sym	Vec3	size	20	12x20	VirVehicleEngine	
+b105ee15	Acceleration	exe	Scalar4	size	20	4x20	Rocket	
+b2a09c8c			Scalar4	size	20	4x20	VirVehicleEngine	
+c30f0d56			Scalar4	size	20	4x20	Rocket	
+d5638d90			Scalar4	size	20	4x20	AIChatterSet	
+d58e87d2	TwirlSpeed	sym	Bytes	size	20	8x20	Rocket	
+dec209db			Scalar4	size	20	4x20	VirVehicleEngine	
+e656ab64			Scalar4	size	20	4x20	Rocket	
+41097eb3			Scalar4	size	19	4x19	SeatAnimationsPassenger	
+bfc5652d	LENGTH	exe	Bytes	size	19	12x12,4x7	VerletBoneObject,Ricochet,CreditName	
+cc3c6108			Scalar4	size	19	4x19	SeatAnimationsPassenger	
+78855058			Scalar4	size	18	4x18	Ricochet	
+8283217f			Scalar4	size	18	4x18	Ricochet	
+11bf92aa			Scalar4	size	17	4x17	SeatAnimationsPassenger	
+2b93aa2f			Scalar4	size	17	4x17	VirVehicleTransmission	
+33cb60aa	ReverseRatio	sym	Scalar4	size	17	4x17	VirVehicleTransmission	
+3b546a89			Scalar4	size	17	4x17	SeatAnimationsPassenger	
+4dc0486e	downshiftRPM	sym	Scalar4	size	17	4x17	VirVehicleTransmission	
+62484192			Bool	size	17	1x17	SeatAnimationsPassenger	
+7e4ae637	Gears	sym	Scalar4	size	17	4x17	VirVehicleTransmission	
+a1296f81	Artillery	sym	Bool	size	17	1x17	Rocket	
+abb050d1	upshiftRPM	sym	Scalar4	size	17	4x17	VirVehicleTransmission	
+c63f11b4			Bool	size	17	1x17	Weapon	
+ec8a92bf			Bool	size	17	1x17	SeatAnimationsPassenger	
+f054bd6e			Scalar4	size	17	4x17	WillToFight	
+fbee681e			Scalar4	size	17	4x17	SeatAnimationsPassenger	
+06f0936c			Scalar4	size	16	4x16	Escalation	FUN_008acef0
+0732d70f			Bytes	size	16	8x16	SeatAnimations	
+36484015			Scalar4	size	16	4x16	SeatAnimations	
+458989db			Scalar4	size	16	4x16	Human	
+569a924a			Scalar4	size	16	4x16	SeatAnimations	
+723cffb0			Scalar4	size	16	4x16	Melee	
+8dc8b133			Scalar4	size	16	4x16	SeatAnimations	
+8e849cda			Bytes	size	16	8x16	SeatAnimations	
+98148916			Scalar4	size	16	4x16	SeatAnimations	
+9e6e5be9			Scalar4	size	16	4x16	SeatAnimations	
+aa7cede2			Ref	decomp+size	16	4x16	Escalation	FUN_008acef0
+aed9b020			Scalar4	size	16	4x16	Melee	
+af867032	InitiallyGrabbable	sym	Bool	size	16	1x16	Melee	FUN_0066e440
+b5ab2c03	AnimSpeed	sym	Scalar4	size	16	4x16	AnimatedObject	
+b901bba4			Scalar4	size	16	4x16	SeatAnimations	
+de5de80a			Scalar4	size	16	4x16	SeatAnimations	
+e00e1d57			Scalar4	size	16	4x16	Escalation	FUN_008acef0
+e04fc10a	GrabTimeMult	sym	Scalar4	decomp+size	16	4x16	Melee	FUN_0066e440
+e3b96771	CameraFOVTension	sym	Scalar4	size	16	4x16	CameraSettings	FUN_0046e350
+e4091e54	BlockArc	sym	Scalar4	decomp+size	16	4x16	Melee	FUN_0066e440
+e8020177			Scalar4	size	16	4x16	Escalation	FUN_008acef0
+e8f80346			Bytes	size	16	8x16	SeatAnimations	
+ea355018			Scalar4	size	16	4x16	Escalation	FUN_008acef0
+f6cc7b9a			Bytes	size	16	8x16	SeatAnimations	
+0248c942	AttackTime	sym	Bytes	size	15	8x15	Melee	FUN_0066e440
+0424dd32	lowWTF	exe	Bool	size	15	1x15	ScriptController	
+199c9c74	StrongAttack	sym	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440
+25f1f7d0			Scalar4	size	15	4x15	SeatAnimations	
+2f1820cc			Scalar4	decomp+size	15	4x15	ScriptController	FUN_00768840
+30be46c0	AttackRandom	sym	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440
+3136e3e8	BlockDuringReady	sym	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440
+5aab6ead	ReadyTime	sym	Bytes	size	15	8x15	Melee	FUN_0066e440
+5f90681e	Param2	exe	Scalar4	size	15	4x15	Rumble	
+631a1d4b			Scalar4	size	15	4x15	WillToFight	
+6794f1e4			Scalar4	size	15	4x15	Rumble	
+6e4a81d9	Function	exe	Scalar4	size	15	4x15	Rumble	
+6ed40ae1	WeakAttack	exe	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440,FUN_0074ee80
+81975969	Param1	exe	Scalar4	size	15	4x15	Rumble	
+864a458b	blockTime	sym	Bytes	size	15	8x15	Melee	FUN_0066e440
+8adb7bc5	BlockRandom	sym	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440
+8d89fad9			Bool	size	15	1x15	AIAttractionPt	
+97ee12c6	HighWTF	sym	Bool	size	15	1x15	ScriptController	
+9ac1788c	Trains	dict	Scalar4	size	15	4x15	TrainList	
+9fd572bb	BlockDuringAttack	sym	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440
+aa2917ab	CircleToBack	sym	Bool	decomp+size	15	1x15	Melee	FUN_0066e440
+bbcdfcdb			Scalar4	size	15	4x15	SeatAnimations	
+bcfe6314	path	exe	Bytes	size	15	5x15	ScriptController	
+c072e94a			Scalar4	size	15	4x15	ScriptController	
+cf5205ea	BlockDuringBlock	sym	Scalar4	decomp+size	15	4x15	Melee	FUN_0066e440
+d79c2be9			Scalar4	size	15	4x15	ScriptController	
+efafa027	TimeBetweenGrabs	sym	Scalar4	size	15	4x15	Melee	
+f0e6ba5f			Scalar4	size	15	4x15	Rumble	
+2c652af7			Scalar4	size	14	4x14	AIAttractionPt	
+2cb865cd			Scalar4	size	14	4x14	WillToFight	
+4785f2a3			Ref	decomp+size	14	4x14	AIAttractionPt	FUN_0048f5c0
+506de042			Scalar4	size	14	4x14	AIAttractionPt	
+507a477f			Bool	size	14	1x14	AIAttractionPt	
+733ed3b2			Ref	decomp+size	14	4x14	AIAttractionPt	FUN_0048f5c0
+7a3e99b4	CamPos	exe	Ref	decomp+size	14	4x14	AIAttractionPt	FUN_0048f5c0
+92d0a9ba			Scalar4	size	14	4x14	AIAttractionPt	
+a3fbc25c	ShedSuspicion	sym	Bool	size	14	1x14	AIAttractionPt	
+c6e0f627			Bytes	size	14	8x14	AIAttractionPt	
+d27568ad			Scalar4	size	14	4x14	AIAttractionPt	
+e7b1d609	CivilianProp	exe	Scalar4	size	14	4x14	AIAttractionPt	
+e9cacff7	SpotLight	exe	Bool	decomp+size	14	1x14	AIAttractionPt	FUN_0048f5c0
+ea73db2f			Bool	decomp+size	14	1x14	AIAttractionPt	FUN_0048f5c0
+f01f08a8			Ref	decomp+size	14	4x14	AIAttractionPt	FUN_0048f5c0
+f8afe581	VisibleAtEscalation	sym	Scalar4	size	14	4x14	AIAttractionPt	FUN_0048f5c0
+07e2752a			Scalar4	size	13	4x13	Escalation	FUN_008acef0
+18a92078			Bool	decomp+size	13	1x13	Escalation	FUN_008acef0
+1b4c6669			Scalar4	size	13	4x13	Foliage	
+1d5dd1c0			Scalar4	size	13	4x13	Escalation	FUN_008acef0
+32e4b778			Scalar4	size	13	4x13	SeatAnimations	
+342f95f3			Scalar4	size	13	4x13	Foliage	FUN_006d8b50
+41ce3c45			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+4c77aa6b			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+5651715a			Scalar4	size	13	4x13	Foliage	FUN_006d8b50
+5a32105c			Scalar4	size	13	4x13	Foliage	FUN_006d8b50
+5b5da35c			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+62780ba3			Scalar4	decomp+size	13	4x13	Escalation	FUN_008acef0
+6a759b0e			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+7305c643			Scalar4	decomp+size	13	4x13	Escalation	FUN_008acef0
+7ed37781			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+83944318			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+87c95cd3			Scalar4	size	13	4x13	SeatAnimations	
+8c1c4a5b			Bool	decomp+size	13	1x13	Escalation	FUN_008acef0
+9cf94678			Scalar4	decomp+size	13	4x13	Escalation	FUN_008acef0
+aaade1a8			Bool	decomp+size	13	1x13	Escalation	FUN_008acef0
+ad96c3cd			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+b858c765			Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+ba16485f	Ammo	exe	Scalar4	size	13	4x13	Human	FUN_0049a060,FUN_00505010
+bd40121f			Bool	decomp+size	13	1x13	Escalation	FUN_008acef0
+e04daeeb			Bool	size	13	1x13	Escalation	FUN_008acef0
+f55bb92d	MaxRenderDist	sym	Scalar4	decomp+size	13	4x13	Foliage	FUN_006d8b50
+057212cc			Vec3	size	12	12x12	VerletBoneObject	
+208048a2			Scalar4	size	12	4x12	Ricochet	
+37fc008d			Scalar4	size	12	4x12	ScriptController	
+53379c55	DamagedByCharacters	sym	Bool	size	12	1x12	Prop,Human	
+5dd0a17e			Scalar4	size	12	4x12	VerletBoneObject	
+6a9ab174			Scalar4	size	12	4x12	ScriptController	
+722c0953	actors	exe	Scalar4	size	12	4x12	ScriptController	
+78568468			Scalar4	size	12	4x12	VerletBoneObject	
+a3dbf09d			Bool	size	12	1x12	ScriptController	
+b9d5d4ad	damping	exe	Vec3	size	12	12x12	VerletBoneObject	
+09c34242	Zones	exe	Scalar4	size	11	4x11	Shop	
+20f8d2ec			Scalar4	size	11	4x11	Shop	
+224b1c35	DamagedByFire	sym	Bool	size	11	1x11	Prop,Turret	
+453dc7f1			Scalar4	size	11	4x11	Shop	
+61a1cb2a			Scalar4	size	11	4x11	Shop	
+652b734c	BlendInExp	sym	Scalar4	size	11	4x11	CameraSettings,GroupCameraSettings	
+706c9b59			Scalar4	size	11	4x11	Foliage	FUN_006d8b50
+7e84ed89			Scalar4	size	11	4x11	Shop	
+90be10a0			Scalar4	size	11	4x11	Shop	
+92ab1f71			Scalar4	size	11	4x11	Shop	
+c756ac89			Scalar4	size	11	4x11	Shop	
+c91b045e	DamagedByCollisions	sym	Bool	size	11	1x11	Prop	
+c9e8306a			Scalar4	size	11	4x11	Shop	
+d43131f3	BlendOutExp	sym	Scalar4	size	11	4x11	CameraSettings,GroupCameraSettings	
+d78ddc8c			Scalar4	size	11	4x11	Shop	
+e94c3343			Scalar4	size	11	4x11	Shop	
+05d171ea			Scalar4	size	10	4x10	PhysicalOrdnance	
+0b33f994			Scalar4	size	10	4x10	PhysicalOrdnance	FUN_0069fed0
+25cbe05c			Scalar4	size	10	4x10	WillToFight	
+27b2ebee			Bool	decomp+size	10	1x10	Turret	FUN_005dc1a0,FUN_005dc930,FUN_005e7080,FUN_005e7380
+28c035ac			Scalar4	size	10	4x10	PhysicalOrdnance	FUN_0069fed0
+2d595f06	chargeTime	sym	Scalar4	size	10	4x10	PhysicalOrdnance	
+2d7dd5db			Ref	decomp+size	10	4x10	PhysicalOrdnance	FUN_0069fed0
+3211be0b			Scalar4	size	10	4x10	WillToFight	
+385c07af			Scalar4	size	10	4x10	WillToFight	
+4e03a742			Bytes	size	10	8x10	PhysicalOrdnance	
+4ea8cb12			Scalar4	size	10	4x10	WillToFight	
+58d3a5d8			Ref	decomp+size	10	4x10	PhysicalOrdnance	FUN_0069fed0
+6945c955			Scalar4	size	10	4x10	PhysicalOrdnance	FUN_0069fed0
+6d93689c	Bounciness	sym	Scalar4	size	10	4x10	PhysicalOrdnance	
+7bf01635			Bool	size	10	1x10	PhysicalOrdnance	
+812c819e			Scalar4	size	10	4x10	WillToFight	
+982222a6	CenterLight	sym	Scalar4	size	10	4x10	Foliage	FUN_006d8b50
+c5a6fa42			Scalar4	size	10	4x10	PhysicalOrdnance	
+c87f672a	DamageRegion	exe	Scalar4	size	10	4x10	PhysicalOrdnance	
+d6663c5e			Scalar4	size	10	4x10	PhysicalOrdnance	FUN_0069fed0
+e52e6a81			Scalar4	size	10	4x10	PhysicalOrdnance	
+2b39f30e			Scalar4	decomp+size	9	4x9	Foliage	FUN_006d8b50
+471b8e6c			Scalar4	size	9	4x9	TrainEngine	
+4fb98566	CabBoneName	sym	Scalar4	size	9	4x9	TrainEngine	
+5f7e3483			Scalar4	size	9	4x9	Foliage	FUN_006d8b50
+749a20d1			Scalar4	size	9	4x9	TrainEngine	
+835ba097			Scalar4	size	9	4x9	Foliage	FUN_006d8b50
+8ac3d33f	MinSpawnBox	sym	Vec3	size	9	12x9	Foliage	FUN_006d8b50
+91624232			Scalar4	size	9	4x9	TrainEngine	
+9cc86fe3	FlashMovie	exe	Scalar4	size	9	4x9	Weapon	FUN_00945320
+ae3bc776	CabActivationTime	sym	Scalar4	size	9	4x9	TrainEngine	
+b2ae0289	FadeinTime	sym	Scalar4	size	9	4x9	CameraSettings,GroupCameraSettings	FUN_006ee240
+b6ab9c02	MaxWheelBraking	sym	Scalar4	size	9	4x9	TrainEngine	
+bae22f2e			Bool	size	9	1x9	AICombatParams	
+ce22ce65			Scalar4	size	9	4x9	TrainEngine	
+e1f9ccd5	MaxSpawnBox	sym	Vec3	size	9	12x9	Foliage	FUN_006d8b50
+fd1ad1df	CabRadius	sym	Scalar4	size	9	4x9	TrainEngine	
+0107c0d3			Scalar4	size	8	4x8	TANK,CAR	
+049038ea			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+08d78fd0	PhiHz	sym	Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+105dd4fd			Scalar4	size	8	4x8	Foliage	
+1a080e0b			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+1a446ab1			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+1b9993d5			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+215f258e			Ref	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+25ca9693			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+28ec4c13			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+3e2755dd			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+40359952	ForceType	sym	Ref	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+4644453b			Scalar4	size	8	4x8	SeatAnimationsPassenger	
+47a03d28			Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+4e77e9bd			Bytes	size	8	8x8	TANK,CAR	FUN_005dc930
+50c3b0b7	MagnitudeHz	sym	Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+511ede3f			Ref	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+536af4ea			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+56d60972			Scalar4	size	8	4x8	EscHWTF	
+5ee42ccd			Scalar4	size	8	4x8	SeatAnimationsGunner	
+6c885b34			Scalar4	size	8	4x8	SeatAnimationsGunner	
+6ce6c69a			Bytes	size	8	8x8	TANK,CAR	FUN_005dc930
+6dcdf8f7			Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+6ebf2c31			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+773c9118	DamagedByBullets	sym	Bool	size	8	1x8	Prop,Turret	
+7aacb067			Ref	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+7c0cf3aa			Scalar4	size	8	4x8	EscHWTF	
+810318db	ThetaMax	sym	Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+89faeac2			Scalar4	size	8	4x8	EscHWTF	
+90ac6cab			Scalar4	size	8	4x8	SeatAnimationsDriver	
+952f679e			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+a1cc5e48			Ref	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+ab971252			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+aed17721			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+b96888a2			Scalar4	size	8	4x8	Foliage	
+babdb8b0			Scalar4	size	8	4x8	SeatAnimationsPassenger	
+c047d9a5	SecondaryWeapon	sym	Ref	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+c37246f2	DistrictName	exe	Scalar4	size	8	4x8	EscHWTF	
+cedabf19			Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+cf679010			Scalar4	size	8	4x8	SeatAnimationsDriver	
+cf9a64e9			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+cfc8f59f			Scalar4	size	8	4x8	SeatAnimationsGunner	
+cff89665	ThetaMin	sym	Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+d88d5899	ThetaHz	sym	Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+d9a213bf			Scalar4	size	8	4x8	EscHWTF	
+da6b4d87			Scalar4	size	8	4x8	EscHWTF	
+e0aa99d6			Scalar4	decomp+size	8	4x8	ClothForce	FUN_007f6d50
+f661bd0b			Bytes	size	8	8x8	EscHWTF	
+f705a3aa			Scalar4	size	8	4x8	EscHWTF	
+f79298ae			Scalar4	decomp+size	8	4x8	TANK,CAR	FUN_005dc930
+2543907b			Bool	size	7	1x7	MeleeWeapon	
+47b9df6f			Scalar4	size	7	4x7	MeleeWeapon	
+4f33d5ed			Scalar4	size	7	4x7	Highlight	
+84173143	ColorA	sym	Scalar4	size	7	4x7	Highlight	
+9d607d66			Scalar4	decomp+size	7	4x7	VirVehicleChassis	FUN_00610430
+a1010d2b			Scalar4	decomp+size	7	4x7	VirVehicleChassis	FUN_00610430
+cd2c4d82			Scalar4	size	7	4x7	Highlight	
+e7f9ea87			Scalar4	size	7	4x7	MeleeWeapon	
+ea1a106c	ColorB	sym	Scalar4	size	7	4x7	Highlight	
+00b9682b			Scalar4	size	6	4x6	FxBoneStateList	
+07f3d480	BoneA	exe	Scalar4	size	6	4x6	VerletBoneObject	
+0bb693a3	CameraSettings	exe	Scalar4	size	6	4x6	GroupCameraSettings	
+11d097c4			Scalar4	size	6	4x6	FxBoneStateList	
+1a00cfd7			Scalar4	size	6	4x6	RadialBlur	
+28ae3225	GroupCenterTension	sym	Vec3	size	6	12x6	GroupCameraSettings	
+2f2d4561	FlameEffect	sym	Scalar4	size	6	4x6	FlameOrdnance	
+2fb357e5			Scalar4	size	6	4x6	FxBoneStateList	
+30103344			Scalar4	size	6	4x6	FxBoneStateList	
+31f1d807	BoneB	exe	Scalar4	size	6	4x6	VerletBoneObject	
+359daef0	RenderMode	sym	Scalar4	size	6	4x6	Foliage	
+437f66ec	Spread	sym	Scalar4	size	6	4x6	Ricochet	FUN_006ee240
+49448c98			Scalar4	size	6	4x6	RadialBlur	
+4a67f77f			Scalar4	size	6	4x6	FxBoneStateList	
+4ca89d6e			Bool	size	6	1x6	Sound	
+58d76311			Scalar4	size	6	4x6	Ricochet	
+59a665bc	Bone_LowerLip_Left	exe	Scalar4	size	6	4x6	FxBoneStateList	
+59c1c47c	Increment	sym	Bool	size	6	1x6	WillToFightNode	
+62b99207			Scalar4	size	6	4x6	FxBoneStateList	
+64c4150a			Scalar4	size	6	4x6	FxBoneStateList	
+651d5404	ExplosionRadius	sym	Scalar4	size	6	4x6	Explosion	
+65e6cc07			Bool	size	6	1x6	RadialBlur	
+69062f4a			Scalar4	size	6	4x6	FxBoneStateList	
+6a0804c0			Scalar4	size	6	4x6	GroupCameraSettings	
+6a2d0d06			Scalar4	size	6	4x6	FxBoneStateList	
+6be4bdfb	PeakTime	sym	Scalar4	size	6	4x6	RadialBlur	
+6c9d228b			Scalar4	size	6	4x6	GroupCameraSettings	
+705c4508	Bone_Head	exe	Scalar4	size	6	4x6	FxBoneStateList	FUN_0162bea0
+75770e10			Scalar4	size	6	4x6	FxBoneStateList	
+790a0a7b	Time Clamp	sym	Scalar4	size	6	4x6	WillToFightNode	
+7c933ec3			Scalar4	size	6	4x6	FxBoneStateList	
+7eee4ae7			Scalar4	size	6	4x6	FxBoneStateList	
+80c93f04			Scalar4	size	6	4x6	FxBoneStateList	
+826bbc66			Scalar4	size	6	4x6	FxBoneStateList	
+84c839c8	Velocity	exe	Scalar4	size	6	4x6	FlameOrdnance	
+85ef4def			Scalar4	size	6	4x6	Foliage	FUN_006d8b50
+88533aa0			Scalar4	size	6	4x6	GroupCameraSettings	
+8cbda906			Scalar4	size	6	4x6	FxBoneStateList	
+907a0795			Scalar4	size	6	4x6	FxBoneStateList	
+95e011b8			Scalar4	size	6	4x6	FxBoneStateList	
+96407291			Scalar4	size	6	4x6	Ricochet	
+9a249e9f			Scalar4	size	6	4x6	Ricochet	
+9ab50943			Scalar4	size	6	4x6	FxBoneStateList	
+9b1cab9f	Bone_HeadBase	exe	Scalar4	size	6	4x6	FxBoneStateList	
+9c30a261			Scalar4	size	6	4x6	FxBoneStateList	
+a338f0a3			Scalar4	size	6	4x6	FxBoneStateList	
+a850fe37			Scalar4	size	6	4x6	FxBoneStateList	
+a95eff50			Scalar4	size	6	4x6	FxBoneStateList	
+ac6206a8			Scalar4	size	6	4x6	Ricochet	
+addebdca			Scalar4	size	6	4x6	Weapon	FUN_006b8d30
+afa72b2e			Scalar4	size	6	4x6	RadialBlur	
+b1d46d66			Scalar4	size	6	4x6	FxBoneStateList	
+b32727cc			Scalar4	size	6	4x6	FxBoneStateList	
+b91af09e			Scalar4	size	6	4x6	Weapon	FUN_006b8d30
+c187105b	Bone_Neck	exe	Scalar4	size	6	4x6	FxBoneStateList	
+c5f9ce77	Rank	sym	Scalar4	size	6	4x6	FxBoneStateList	
+c6cf7d28			Scalar4	size	6	4x6	Ricochet	
+c6f33e78	DeAcceleration	sym	Scalar4	size	6	4x6	FlameOrdnance	
+cdf0ac8d	DamagedByExplosions	sym	Bool	size	6	1x6	Prop,Turret	
+d0f118e9			Scalar4	size	6	4x6	FxBoneStateList	
+d3ae67af	Life	exe	Scalar4	size	6	4x6	RadialBlur	
+d44e722a			Scalar4	size	6	4x6	FxBoneStateList	
+dc07c4c3	ElasticTransition	exe	Scalar4	size	6	4x6	AnimatedTransition,GroupTransition,ScopeTransition	
+dda96923			Scalar4	size	6	4x6	FxBoneStateList	
+df7ed3f7			Scalar4	size	6	4x6	FxBoneStateList	
+e61cf0fb	Bone_LowerLip_Right	sym	Scalar4	size	6	4x6	FxBoneStateList	
+e813e0ca			Scalar4	size	6	4x6	FxBoneStateList	
+ee442eec			Scalar4	size	6	4x6	FxBoneStateList	
+f582d3de			Scalar4	size	6	4x6	FxBoneStateList	
+fa34ba6e	Strength	exe	Scalar4	size	6	4x6	RadialBlur	
+fa7dce39			Scalar4	size	6	4x6	Ricochet	
+fb9970a6			Scalar4	size	6	4x6	VerletBoneObject	
+fb9e20ae			Scalar4	decomp+size	6	4x6	TANK	FUN_005dc930,FUN_005e7080,FUN_005e7380
+fcede148			Scalar4	size	6	4x6	FxBoneStateList	
+0f6bbc58			Scalar4	size	5	4x5	Bird	
+11abea46			Bool	size	5	1x5	SeatAnimationsDriver	
+14282b50	DEBRIS	exe	Ref	decomp+size	5	4x5	Explosion	FUN_00489700,FUN_004b6b89
+1b8abd66			Scalar4	size	5	4x5	Bird	
+1d9ced08			Scalar4	size	5	4x5	SeatAnimationsDriver	
+1ee86c0e			Ref	decomp+size	5	4x5	AnimatedObject	FUN_0044af50
+285807c8			Scalar4	size	5	4x5	Bird	
+28bbfbf2	SizeX	sym	Scalar4	size	5	4x5	PlayerCollision,VehicleCollision	
+3229d516	LightHaloBluePrint	exe	Ref	decomp+size	5	4x5	LightHalo	FUN_007dfcf0
+397b6a20	AttrPtPlus	sym	Bool	size	5	1x5	AIAttractionPt	
+3cdedbed			Bool	size	5	1x5	Bird	
+4abe700f	SizeY	sym	Scalar4	size	5	4x5	PlayerCollision,VehicleCollision	
+588ebc7f			Bool	decomp+size	5	1x5	Prop	FUN_004b6b89
+6bec5cb4			Ref	decomp+size	5	4x5	AnimatedObject	FUN_0044af50
+7741d08c			Scalar4	size	5	4x5	Bird	
+7ae6cab3			Scalar4	size	5	4x5	SeatAnimationsDriver	
+7d09fbf0	MaxVelocityChange	sym	Scalar4	size	5	4x5	Bird	
+8415c708			Bytes	size	5	8x5	Bird	
+92d3dd4c			Ref	decomp+size	5	4x5	AnimatedObject	FUN_0044af50
+9fc92eba			Bool	size	5	1x5	Bird	
+aad8ccd8			Bytes	size	5	8x5	Bird	
+ac11b453			Scalar4	size	5	4x5	Bird	
+b9e614a4			Bool	size	5	1x5	SeatAnimationsDriver	
+bd4a934e	DesiredSpeed	sym	Scalar4	size	5	4x5	Bird	
+be10a70d			Scalar4	size	5	4x5	Weapon	
+c0c16868	SizeZ	sym	Scalar4	size	5	4x5	PlayerCollision,VehicleCollision	
+cd922f16			Scalar4	size	5	4x5	Bird	
+d19d14c4			Ref	decomp+size	5	4x5	AnimatedObject	FUN_0044af50
+d235da20	MaxSlots	sym	Scalar4	size	5	4x5	AIAttractionPt	
+e30917de			Ref	decomp+size	5	4x5	LightHalo	FUN_007dfcf0
+e8fbab1f			Scalar4	size	5	4x5	Bird	
+00ef2c26			Scalar4	size	4	4x4	SeatAnimationsDriver	
+01eb8596			Scalar4	size	4	4x4	Difficulty	
+0d6a9a3c			Scalar4	size	4	4x4	SeatAnimationsDriver	
+0dbff4d9			Scalar4	size	4	4x4	WillToFight	
+0f26918e			Scalar4	size	4	4x4	WillToFight	
+1045459a			Scalar4	size	4	4x4	Difficulty	
+1267a7f8	trap	exe	Bool	size	4	1x4	SabotageTarget	
+18d7b670	Image	exe	Scalar4	size	4	4x4	SabotageTarget	
+19461a2c			Bytes	size	4	8x4	WaterTexture	
+1c985c43			Scalar4	size	4	4x4	Difficulty	
+20a3e58b			Scalar4	size	4	4x4	WaterTexture	
+224ad76d			Scalar4	size	4	4x4	Difficulty	
+253c24a4			Scalar4	size	4	4x4	SeatAnimationsDriver	
+2c40a12b	CheckVisibility	sym	Bool	decomp+size	4	1x4	AISpawner	FUN_00833ad0
+3208d523			Scalar4	size	4	4x4	Difficulty	
+3bac73f3			Scalar4	size	4	4x4	WaterTexture	
+3e5c3cf1			Bytes	size	4	8x4	WaterTexture	
+428217d7			Bytes	size	4	8x4	WaterTexture	
+43b9013b			Ref	decomp+size	4	4x4	AISpawner	FUN_00833ad0
+4686ad1f			Bytes	size	4	8x4	WaterTexture	
+46a65ff4			Scalar4	size	4	4x4	WaterTexture	
+54586368			Scalar4	size	4	4x4	Difficulty	
+56c68cee			Scalar4	size	4	4x4	WaterTexture	
+61dee14d	AutoSpawn	sym	Bool	decomp+size	4	1x4	AISpawner	FUN_00833ad0
+68479d3d			Bytes	size	4	8x4	WaterTexture	
+6c72031f			Ref	decomp+size	4	4x4	TrainCarriage	FUN_006299d0
+6ca5a28e			Scalar4	size	4	4x4	Difficulty	
+6d0c6486	MaxNumAlive	sym	Scalar4	size	4	4x4	AISpawner	FUN_00833ad0
+7389f1ca			Ref	decomp+size	4	4x4	TrainCarriage	FUN_006299d0
+752146fb	Deactivate	sym	Bool	size	4	1x4	SabotageTarget	
+7e1f64c8	MinTimeBetweenSpawns	sym	Scalar4	decomp+size	4	4x4	AISpawner	FUN_00833ad0
+7f1a3641			Scalar4	size	4	4x4	Difficulty	
+80235c30			Scalar4	size	4	4x4	Difficulty	
+808cd68f			Scalar4	decomp+size	4	4x4	TrainCarriage	FUN_006299d0
+819045c6			Scalar4	size	4	4x4	SeatAnimationsDriver	
+860e70a3			Scalar4	size	4	4x4	Difficulty	
+8645ecd5			Scalar4	size	4	4x4	WaterTexture	
+9181e4af			Bytes	size	4	8x4	WaterTexture	
+958e8d00			Scalar4	size	4	4x4	TrainCarriage	
+974b74bd	TrainItemBlueprint	exe	Ref	decomp+size	4	4x4	TrainCarriage	FUN_006299d0
+97d09c0e			Scalar4	decomp+size	4	4x4	TrainCarriage	FUN_006299d0
+981366e5			Scalar4	size	4	4x4	WaterTexture	
+987ba44c			Bytes	size	4	8x4	WaterTexture	
+a09f5951			Scalar4	size	4	4x4	SeatAnimationsDriver	
+a0a8ac87			Scalar4	size	4	4x4	WaterTexture	
+a892b18b			Scalar4	size	4	4x4	Difficulty	
+a90ecbbb	MaxNumSpawns	sym	Scalar4	size	4	4x4	AISpawner	FUN_00833ad0
+a9fd3561	bomb	exe	Bool	size	4	1x4	SabotageTarget	
+b0d67841			Scalar4	size	4	4x4	Difficulty	
+b168f19c			Bytes	size	4	8x4	WaterTexture	
+bb2d4cfa			Scalar4	size	4	4x4	WaterTexture	
+bd154836	Burn	sym	Bool	size	4	1x4	SabotageTarget	
+c3496538	SpawnOneWhenDead	sym	Bool	decomp+size	4	1x4	AISpawner	FUN_00833ad0
+cc919414			Scalar4	size	4	4x4	Difficulty	
+ce12b9bb	PriorityClass	sym	Scalar4	size	4	4x4	AIAttractionPt,Prop	
+d1aa035a			Bytes	size	4	8x4	WaterTexture	
+d1ff6630			Scalar4	size	4	4x4	WaterTexture	
+d7c38e8d			Scalar4	size	4	4x4	Difficulty	
+d8de19e6			Bytes	size	4	8x4	WaterTexture	
+dd62ba1a	Sound	exe	Bytes	size	4	11x3,5x1	Explosion	FUN_00489700,FUN_006600f0,FUN_0094af60
+dfb27b14			Scalar4	size	4	4x4	Difficulty	
+eb4dfb24			Scalar4	size	4	4x4	AnimatedTransition,GroupTransition	
+f64d6840			Scalar4	size	4	4x4	WaterTexture	
+f68557de			Ref	decomp+size	4	4x4	TrainCarriage	FUN_006299d0
+fb86121b			Scalar4	size	4	4x4	TrainCarriage	
+0464ca46			Scalar4	size	3	4x3	SlowMotionCamera	
+060ea5ed			Scalar4	size	3	4x3	SlowMotionCamera	
+062f0d37	rate	exe	Scalar4	size	3	4x3	Highlight	
+07e20a15	AnimatedPropPushData	sym	Ref	decomp+size	3	4x3	Prop	FUN_004b6b89
+088788cc			Scalar4	size	3	4x3	SlowMotionCamera	
+0f7cacf8			Bytes	size	3	8x3	Prop	FUN_004b6b89
+0fd41e7f	apOffset	sym	Vec3	decomp+size	3	12x3	Prop	FUN_004b6b89
+15dda3f3	endTime	sym	Bytes	size	3	8x3	LightSettings	
+187b88f6			Bytes	size	3	11x3	CAR	
+196eb060			Scalar4	size	3	4x3	SlowMotionCamera	
+1aa62a96			Scalar4	size	3	4x3	SlowMotionCamera	
+1c41b160	intensity	exe	Scalar4	size	3	4x3	LightSettings	FUN_009110b0,FUN_00911440,FUN_009117c0
+1c7ba4ff			Ref	decomp+size	3	4x3	TrainEngine	FUN_006299d0
+1cdb86c3			Scalar4	size	3	4x3	SeatAnimationsDriver	
+1edb3a4c			Ref	decomp+size	3	4x3	Prop	FUN_004b6b89
+22d6955b			Scalar4	size	3	4x3	RadialBlur	
+26cc0a2d			Bool	size	3	1x3	Prop	FUN_004b6b89
+2d9e75c6			Scalar4	size	3	4x3	Weapon	
+327e0260			Scalar4	size	3	4x3	SlowMotionCamera	
+341ffd9c			Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+376e711a			Scalar4	size	3	4x3	SlowMotionCamera	
+3afd68b5			Scalar4	size	3	4x3	SlowMotionCamera	
+3bc2a2fe			Scalar4	size	3	4x3	SlowMotionCamera	
+3be62163			Scalar4	size	3	4x3	SlowMotionCamera	
+46f29e57			Scalar4	size	3	4x3	SlowMotionCamera	
+46f71b85			Scalar4	size	3	4x3	SlowMotionCamera	
+48df574e			Scalar4	size	3	4x3	SlowMotionCamera	
+50e3e114			Scalar4	size	3	4x3	SlowMotionCamera	
+512c8538			Scalar4	size	3	4x3	SlowMotionCamera	
+5572f2b0			Scalar4	size	3	4x3	SlowMotionCamera	
+57baa790			Scalar4	size	3	4x3	SlowMotionCamera	
+5910ee2e			Ref	decomp+size	3	4x3	SearchTurret	FUN_005d53f6
+5927aa10			Ref	decomp+size	3	4x3	TrainEngine	FUN_006299d0
+5cf4ff90			Scalar4	size	3	4x3	SlowMotionCamera	
+5e8dacdc			Scalar4	size	3	4x3	SlowMotionCamera	
+64b9769a			Scalar4	size	3	4x3	Prop	FUN_004b6b89
+6833f52b			Ref	decomp+size	3	4x3	TrainEngine	FUN_006299d0
+6fae76bf			Scalar4	size	3	4x3	Prop	
+7b61ea98			Scalar4	size	3	4x3	SeatAnimationsDriver	
+804d355b			Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+87ee875a			Scalar4	size	3	4x3	SlowMotionCamera	
+8d8de708			Scalar4	size	3	4x3	Perks	
+9068dded			Scalar4	size	3	4x3	SlowMotionCamera	
+94207504			Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+97005d09			Scalar4	size	3	4x3	SlowMotionCamera	
+9a4ed549			Ref	decomp+size	3	4x3	TrainEngine	FUN_006299d0
+9d4695f9			Scalar4	size	3	4x3	Perks	
+9f9ed756			Scalar4	size	3	4x3	SearchTurret	
+a419d2aa			Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+a7121c17			Vec3	decomp+size	3	12x3	Prop	FUN_004b6b89
+aae6ad59			Scalar4	size	3	4x3	SlowMotionCamera	
+b2ef75e8			Ref	decomp+size	3	4x3	SearchTurret	FUN_005f08f0
+b32f2b8c	StartTime	sym	Bytes	size	3	8x3	LightSettings	
+b4e28aaf			Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+bc74ad8f			Scalar4	size	3	4x3	SearchTurret	
+be9903ca			Scalar4	size	3	4x3	SlowMotionCamera	
+bed88577			Scalar4	decomp+size	3	4x3	Prop	FUN_004b6b89
+c5c16f0c			Scalar4	size	3	4x3	SlowMotionCamera	
+c870b201			Scalar4	size	3	4x3	SlowMotionCamera	
+c8823ff8			Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+c9709cbc	TimerPerk	exe	Scalar4	size	3	4x3	Perks	
+c980220e			Scalar4	decomp+size	3	4x3	Prop	FUN_004b6b89
+c9bde34a			Ref	decomp+size	3	4x3	TrainEngine	FUN_006299d0
+ca60b9a9			Scalar4	size	3	4x3	SlowMotionCamera	
+ca6212ef			Scalar4	size	3	4x3	SlowMotionCamera	
+cb00fa4d			Scalar4	size	3	4x3	SlowMotionCamera	
+cbf774b6			Scalar4	size	3	4x3	SlowMotionCamera	
+d3330089	SearcherMotorStrengthFactor	sym	Scalar4	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+d5c76750	AllHumans	sym	Bool	size	3	1x3	PlayerCollision	
+d6acea7c			Scalar4	size	3	4x3	ImageFolder	
+dee6b121	DualTriggerPerk	exe	Scalar4	size	3	4x3	Perks	
+e4d991e9			Ref	decomp+size	3	4x3	SearchTurret	FUN_005e7080
+e5a03149			Scalar4	size	3	4x3	SlowMotionCamera	
+ea588fb9			Scalar4	size	3	4x3	Perks	
+f25092a4			Scalar4	decomp+size	3	4x3	Prop	FUN_004b6b89
+f2823446			Ref	decomp+size	3	4x3	TrainEngine	FUN_006299d0
+f7f34f74			Scalar4	size	3	4x3	SearchTurret	
+f89f5ca4			Bool	size	3	1x3	Prop	FUN_004b6b89
+fc130e75			Scalar4	size	3	4x3	SlowMotionCamera	
+fe8dd9cc			Bool	size	3	1x3	Perks	
+0397834f	Layout	exe	Scalar4	size	2	4x2	Foliage	
+04b4f442			Scalar4	decomp+size	2	4x2	ScopeTransition	FUN_00470d70
+0903d3e8	SwimExitDepth	sym	Scalar4	size	2	4x2	GlobalHumanParams	
+0a192b5e			Scalar4	size	2	4x2	SeatAnimations	
+18aa5ad1	BareHandsMeleeCamera3	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+1cfa0467			Scalar4	decomp+size	2	4x2	Player	FUN_0046c520
+1ea825ac	BareHandsMeleeCamera2	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+1edfee31			Vec3	size	2	12x2	AnimatedTransition	
+21fd66de			Scalar4	decomp+size	2	4x2	Player	FUN_0046c520
+23e80197	HitDamage	exe	Bool	size	2	1x2	VehicleCollision	
+26d1eef3			Scalar4	size	2	4x2	SeatAnimations	
+28774735	TightShootingCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+2c662e84	HideCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+34afd6b6			Bool	size	2	1x2	DetailObject	
+39e594eb	SightedInCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+3eacd53a	BareHandsMeleeCamera4	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+4430d1d2			Scalar4	size	2	4x2	CommonUI_Persistent	
+477b3ff1	FlyCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+49bb3158			Scalar4	decomp+size	2	4x2	VirVehicleChassis	FUN_00610430
+5570ef5a			Scalar4	size	2	4x2	AnimatedTransition	
+5afe85fa			Scalar4	size	2	4x2	CommonUI_Persistent	
+5d069a80			Scalar4	decomp+size	2	4x2	ScopeTransition	FUN_00470d70
+5fd829af	WallCoverCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+6540aea9			Scalar4	decomp+size	2	4x2	Foliage	FUN_006d8b50
+6c6a0db8	QueueMaxLength	sym	Scalar4	size	2	4x2	AIAttractionPt	
+6e15ffff	IdleDurationMax	sym	Scalar4	size	2	4x2	AIAttractionPt	
+7310c1e4	JumpCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+7846b1f5	RoofTopCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+7922c257	SwimmingCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+7a5f2528	HangCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+7c2247eb	VerticalBeamCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+7f79c5d1	IdleDurationMin	sym	Scalar4	size	2	4x2	AIAttractionPt	
+80f7099e	timed	exe	Bool	size	2	1x2	MiniGame	
+8157cc9c			Scalar4	size	2	4x2	CommonUI_Persistent	
+8303620e	SabotageExplosion	sym	Scalar4	size	2	4x2	Item	FUN_0069dc40
+871e5513			Scalar4	size	2	4x2	WillToFight	
+8b0ff68d			Scalar4	size	2	4x2	SeatAnimations	
+8d701079			Ref	decomp+size	2	4x2	TANK	FUN_005d53f6
+8daf7bb0	BareHandsSprintCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+9553ee07	ShootingCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+9d78b6a5			Scalar4	size	2	4x2	WillToFight	
+a132c615			Bytes	size	2	8x2	ScopeTransition	FUN_00470d70
+a140b48b	LeftWallCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+a87c312f	RightCornerCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+ab273060	BareHandsCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+acd1e254			Bool	size	2	1x2	Player	FUN_0046c520
+acdfc789			Bytes	size	2	12x1,11x1	LightSettings	
+b0e7e218			Scalar4	size	2	4x2	SeatAnimations	
+b2e2ada5			Vec3	size	2	12x2	ScopeTransition	FUN_00470d70
+b5c6777d	ConversationCamera	dict	Scalar4	size	2	4x2	Player	
+b6041786			Ref	decomp+size	2	4x2	TANK	FUN_005d53f6
+b8a54683	BareHandsMeleeCamera1	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+b9e56dfb			Scalar4	decomp+size	2	4x2	Player	FUN_0046c520
+beb8563d			Bytes	size	2	8x2	Player	FUN_0046c520
+c0535c22			Scalar4	size	2	4x2	Shop	
+ce4c0f41	ScriptName	sym	Bytes	size	2	9x1,28x1	AIAttractionPt	
+d77f10af			Scalar4	size	2	4x2	CommonUI_Persistent	
+d990f6d4	LeftCornerCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+d9da3dc3			Scalar4	decomp+size	2	4x2	Foliage	FUN_006d8b50
+dca8a50e			Scalar4	size	2	4x2	SeatAnimations	
+dcbc9254			Scalar4	size	2	4x2	RadialBlur	
+deb5154b			Scalar4	size	2	4x2	CommonUI_Persistent	
+e15acedf	BareHandsStealthKillCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+e529cc72			Scalar4	decomp+size	2	4x2	ScopeTransition	FUN_00470d70
+e9b2af5c	RightWallCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+eac9d1d3	LowCoverCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+ebfd18f8	LadderCamera	dict	Ref	decomp+size	2	4x2	Player	FUN_0046c520
+f10c031b			Scalar4	size	2	4x2	AIAttractionPt	
+f585234e			Bytes	size	2	8x2	SeatAnimations	
+f66b2194	CameraSet	dict	Ref	decomp+size	2	4x2	Player	FUN_005a6fe0
+f7f2c6bc	EngineEffect	sym	Ref	decomp+size	2	4x2	TANK	FUN_005d53f6
+00ab9a20			Scalar4	size	1	4x1	PerkFactors	
+01d6ca73	SlideForwardDist	sym	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+03155ead			Scalar4	size	1	4x1	WaterParticleFx	
+0434677b			Scalar4	size	1	4x1	GlobalHumanParams	
+04bc825c			Scalar4	size	1	4x1	VehicleWheelFx	
+0574a76b			Scalar4	size	1	4x1	GlobalHumanParams	
+05a9a969			Scalar4	size	1	4x1	PerkFactors	
+069650ee			Scalar4	size	1	4x1	CameraSettingsMisc	
+06be1abf	Health	dict	Ref	decomp+size	1	4x1	Player	FUN_005a6fe0
+07153895			Scalar4	size	1	4x1	PerkFactors	
+082c9dea	FadeoutTime	sym	Scalar4	size	1	4x1	BridgeController	
+0c8091c3			Scalar4	size	1	4x1	FoliageFx	
+0c8f30d1	CarJumpLength	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+0db140d4	FallDamageMinSpeed	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+0e536df8			Scalar4	size	1	4x1	VehicleWheelFx	
+0eb616d3	SwimSlowSpeed	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+12aabdbb			Scalar4	size	1	4x1	FoliageFx	
+12fd7382			Scalar4	size	1	4x1	GlobalHumanParams	
+13adec46			Scalar4	size	1	4x1	WaterParticleFx	
+14bd1bbd	gravity	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+14e198f5			Scalar4	size	1	4x1	LeafSpawner	
+171967f9			Vec3	size	1	12x1	HumanSkeletonScale	
+1771697d	DyingIdleTime	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+17a7af80	GiveGrenade	sym	Bool	size	1	1x1	Human	
+18095a8f	GrabDist	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+1a768b82	WaterDragMul	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+1b78f12e	AffectedGroup	sym	Scalar4	size	1	4x1	AIAttractionPt	
+1eb46739	MaxMeleeTargetPull	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+1f6b653b			Scalar4	size	1	4x1	CommonUI_Persistent	
+1f6fe269			Scalar4	size	1	4x1	CommonUI_Persistent	
+20bdcce5			Scalar4	size	1	4x1	BridgeController	
+223d30d9			Scalar4	size	1	4x1	VehicleWheelFx	
+22d75e37			Scalar4	size	1	4x1	PerkFactors	
+23518b03			Scalar4	size	1	4x1	AIAttractionPt	
+2387d0ad			Scalar4	size	1	4x1	CameraSettingsMisc	
+245fcba5			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+24df19fc			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+28eca5be			Scalar4	size	1	4x1	WillToFight	
+2b5e9fbf			Scalar4	size	1	4x1	PerkFactors	
+2b81c6d2			Scalar4	size	1	4x1	BridgeController	
+2b9b7b11			Scalar4	size	1	4x1	CameraSettingsMisc	
+2e2ba7c4			Scalar4	size	1	4x1	PerkFactors	
+2ff6676a	RagdollCollisionSpeedGain	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+30057699			Bytes	size	1	5x1	BridgeController	
+3016f5bf			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+30e514cb			Scalar4	size	1	4x1	Player	
+30ecf5dc			Scalar4	size	1	4x1	Difficulty	
+3146d71c	HardLandVelocity	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+31baf546	AutoCamBlendDuration	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+34d0fd44			Scalar4	size	1	4x1	VehicleWheelFx	
+361dfe33			Scalar4	size	1	4x1	PerkFactors	
+369f0571			Scalar4	size	1	4x1	Melee	
+37a1da8a			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+38c95b83			Scalar4	size	1	4x1	PerkFactors	
+393d8ee5	WallPush	dict	Bool	size	1	1x1	Player	FUN_005a6fe0
+39716ab8	MaxSprintJumpVelocityChange	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+398561d0	SwimEnterDepth	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+3b650848			Scalar4	size	1	4x1	PerkFactors	
+3bd59983			Scalar4	size	1	4x1	PerkFactors	
+3db0b46d	AutoCamDelayStopLooking	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+41754a65			Scalar4	size	1	4x1	BridgeController	
+41b4ace8			Scalar4	size	1	4x1	AIAttractionPt	
+43183cb4			Scalar4	size	1	4x1	PerkFactors	FUN_009d5820
+43d513ea			Scalar4	size	1	4x1	GlobalHumanParams	
+44885a78	Is3d	sym	Bool	size	1	1x1	ScriptController	FUN_00767bf0
+44fa72c8			Scalar4	size	1	4x1	PerkFactors	
+459dee09			Scalar4	size	1	4x1	PerkFactors	
+45c52d5c			Bool	size	1	1x1	BridgeController	
+46d714e4			Bool	size	1	1x1	GlobalHumanParams	
+49212e5a			Scalar4	size	1	4x1	EscHWTF	
+49cd57f2	MinJumpHeight	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+4ad025e7			Scalar4	size	1	4x1	PerkFactors	
+4ca29fd3			Scalar4	size	1	4x1	CameraSettingsMisc	
+4e094a92			Scalar4	size	1	4x1	VehicleWheelFx	
+4e1ac660	CombatEnabled	sym	Bool	size	1	1x1	AIAttractionPt	
+51c72ace			Scalar4	size	1	4x1	BridgeController	
+537f205a			Scalar4	size	1	4x1	BridgeController	
+5930d9fa			Scalar4	size	1	4x1	VehicleWheelFx	
+5ac3ce4b			Scalar4	size	1	4x1	LightSettings	
+5ad12d52			Scalar4	size	1	4x1	Shop	
+5b344d5b			Scalar4	size	1	4x1	GlobalHumanParams	
+5b46e91f	HandPinDist	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+5e139320			Scalar4	size	1	4x1	GlobalHumanParams	
+5e69205a	FallDamageRagdoll	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+5ef3826e	BufferedMoveExpire	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+5f353262			Scalar4	size	1	4x1	ToneMapping	
+61b679b5	SideJumpHeightClamber	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+61f41981			Scalar4	size	1	4x1	CameraSettingsMisc	
+620638f7			Scalar4	size	1	4x1	GlobalHumanParams	
+6212644c			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+6220e0aa			Scalar4	size	1	4x1	Shop	
+62bcec63			Scalar4	size	1	4x1	PerkFactors	
+63534a45	SeanMeleeDamageMult	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+6447fb46			Scalar4	size	1	4x1	PerkFactors	
+664de09a			Scalar4	size	1	4x1	FoliageFx	
+69c018dd			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+69f626e3	SprintDirMaxDeltaMag	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+6a2053b0	AutoCamStartBlending	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+6a342cfd	WallScurryRunVel	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+6a582e8f			Scalar4	size	1	4x1	BridgeController	
+6b0c9ef7			Scalar4	size	1	4x1	GlobalHumanParams	
+6b118329	NumTilesInRow	sym	Scalar4	size	1	4x1	Foliage	
+6b5c5a52	FallingGravityMult	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+6c72334b	TextID	exe	Scalar4	size	1	4x1	CreditName	
+6d32b59f			Scalar4	size	1	4x1	BridgeController	
+6d696ee4			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+6e6c1e76			Scalar4	size	1	4x1	GlobalHumanParams	
+6f15fbe7			Scalar4	size	1	4x1	PerkFactors	
+7154dc63	RainStopDist	sym	Scalar4	decomp+size	1	4x1	ScriptController	FUN_00767bf0
+7266a3e0	ExtraHardLandVelocity	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+734725b4			Scalar4	size	1	4x1	GlobalHumanParams	
+7387df05			Scalar4	size	1	4x1	PerkFactors	
+75522f59			Scalar4	size	1	4x1	PerkFactors	
+75ded125			Bytes	size	1	8x1	CameraSettingsMisc	
+78db0d8c			Scalar4	size	1	4x1	ToneMapping	
+78fa748e			Scalar4	size	1	4x1	WaterParticleFx	
+795b115a			Scalar4	size	1	4x1	PerkFactors	
+796c0168	MaxJumpVelocityChange	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+79ff37d8			Scalar4	size	1	4x1	GlobalHumanParams	
+7a2aa5ef	LightningStartDist	sym	Scalar4	decomp+size	1	4x1	ScriptController	FUN_00767bf0
+7a916ee9	MinUpJumpHeightClamber	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+7c3e6766			Scalar4	size	1	4x1	Player	
+7c9c3fca	DyingSlowdownDamageMult	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+7d2fcdc5			Bool	size	1	1x1	Prop	
+7e049e2a			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+7edca8e7			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+80ab81eb			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+80c277eb	HandHangHeight	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+825d0915			Scalar4	size	1	4x1	CAR	
+833b81b2			Scalar4	size	1	4x1	GlobalHumanParams	
+838a501b			Scalar4	size	1	4x1	VehicleWheelFx	
+84d48179	FallDamageDeath	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+869fff7a	FallScreamVel	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+87107d9e			Scalar4	size	1	4x1	CameraSettingsMisc	
+87143759	AirResistanceMultiplier	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+87b59751			Scalar4	size	1	4x1	ToneMapping	
+87d58629			Scalar4	size	1	4x1	VehicleWheelFx	
+888f7a10	Placeholder	sym	Bool	size	1	1x1	AICrowdBlocker	
+88e6a6ca			Scalar4	size	1	4x1	CameraSettingsMisc	
+89814dc5			Scalar4	size	1	4x1	WaterParticleFx	
+8cd58a95	SprintInputSecs	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+8dd3c3d6			Scalar4	size	1	4x1	Player	
+8e499cbd			Scalar4	size	1	4x1	FoliageFx	
+8e908ec4	RagdollCollisionRadius	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+9275ab49	BackJumpHeightClamber	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+92a71e3a	BackJumpLengthClamber	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+930f51b6			Bytes	size	1	8x1	CameraSettingsMisc	
+94726dca			Scalar4	size	1	4x1	GlobalHumanParams	
+94b6e1de	TimeUntilCharge	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+968646df			Scalar4	size	1	4x1	PerkFactors	FUN_009d5820
+98bc3287			Scalar4	size	1	4x1	ToneMapping	
+992fa377	AutoCamDelayStopAiming	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+99568063	MaxJumpGravityMult	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+99d71ef2	RagdollCollisionSpeedLoss	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+9ad419a5			Scalar4	size	1	4x1	BridgeController	
+9bda60ca			Scalar4	size	1	4x1	BridgeController	
+9c7b628a			Scalar4	size	1	4x1	PerkFactors	
+9cfa471a			Scalar4	size	1	4x1	PerkFactors	
+9d776488			Scalar4	size	1	4x1	CommonUI_Persistent	
+9db45444			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+9dc09a87			Scalar4	size	1	4x1	BridgeController	
+9edb6bd9			Scalar4	size	1	4x1	AIAttractionPt	
+9efc134b			Scalar4	size	1	4x1	VehicleWheelFx	
+9ff6b667			Scalar4	size	1	4x1	Shop	
+a014bf31			Scalar4	size	1	4x1	GlobalHumanParams	
+a02760fd	KissRadius	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+a06b069d			Scalar4	size	1	4x1	PerkFactors	
+a0af0c71			Scalar4	size	1	4x1	PerkFactors	
+a1d01048			Scalar4	size	1	4x1	PerkFactors	
+a21776ac			Scalar4	size	1	4x1	PerkFactors	
+a2282dc8			Scalar4	size	1	4x1	Shop	
+a3a2b043	FootHoldMaxDepth	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+a3f3eb1f			Scalar4	size	1	4x1	WaterParticleFx	
+a5fcd9d6	WallScurryWalkDist	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+a6e31ca5			Scalar4	size	1	4x1	BridgeController	
+a7617930			Bytes	size	1	8x1	GlobalHumanParams	
+a7d41104			Scalar4	size	1	4x1	PerkFactors	
+a83e5fcb			Scalar4	size	1	4x1	PerkFactors	
+a86ba949	Max	exe	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+a873a763	SlideAcrossDist	sym	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+a87f3101	Map	exe	Scalar4	size	1	4x1	Shop	FUN_007a21a0
+a8b31ede			Scalar4	size	1	4x1	Melee	
+a8e66f6b			Scalar4	size	1	4x1	PerkFactors	
+aa5854f8	SwimFastSpeed	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+aaa9955e	LookForwardMultiplier	sym	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+ab0b996f	CameraSets	dict	Scalar4	size	1	4x1	Player	FUN_005a6fe0
+ab94964c			Scalar4	size	1	4x1	CAR	
+ac6a5e5f	DyingSlowdownDamageTimer	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+ace10817			Bytes	size	1	8x1	GlobalHumanParams	
+ae350719	LightningStopDist	sym	Scalar4	decomp+size	1	4x1	ScriptController	FUN_00767bf0
+ae85a3e9	DyingSlowdownHealth	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+ae8f3e25	RunSpeed	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+aea0fb1d	WallScurryExtraDist	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b0241374	WallScurryRunDist	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b0925545	AimAnimMaxDeviationY	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b0f78533			Scalar4	size	1	4x1	CameraSettingsMisc	
+b13cc96e	SprintSpeed	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b283e894			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+b2c82ee0			Bytes	size	1	8x1	Player	FUN_005a6fe0
+b2f9fb2f	Layers	sym	Scalar4	size	1	4x1	Foliage	
+b3b1347f	WaterDragMinDepth	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b41f263e	NaziMeleeDamageMult	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b58687d2	ImpactDamageMult	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b6f6601c	MaxFallDamageRestTime	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+b781f21f			Scalar4	size	1	4x1	ToneMapping	
+b80ac9d9			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+b99955c4			Scalar4	size	1	4x1	CameraSettingsMisc	
+ba097275			Scalar4	size	1	4x1	GlobalHumanParams	
+ba56cf32	DyingSlowdownTimescale	dict	Bytes	size	1	8x1	Player	FUN_005a6fe0
+ba71c11c	Default	exe	Scalar4	decomp+size	1	4x1	Player	FUN_0048e4b0,FUN_005a6fe0,FUN_006abae0,FUN_009117c0
+bb64c692			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+bb650b6b			Scalar4	size	1	4x1	WaterParticleFx	
+bcf8745d			Scalar4	size	1	4x1	ToneMapping	
+bd2ed957	FootHoldHeight	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+bd9a1ccd	RagdollCollisionSpeedThresh	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+be1bbcad	ImpactDamageMinSpeed	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+bf0ac069	WaterDragMaxDepth	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+bf1332e7			Scalar4	size	1	4x1	VehicleWheelFx	
+c1d0622b			Scalar4	size	1	4x1	AIAttractionPt	
+c2177c0e			Scalar4	size	1	4x1	VehicleWheelFx	
+c22609b3			Scalar4	size	1	4x1	PerkFactors	
+c2e499fb	CornerLook	dict	Bool	size	1	1x1	Player	FUN_005a6fe0
+c39fcc1e			Scalar4	size	1	4x1	Player	
+c3d37fd0			Scalar4	size	1	4x1	ToneMapping	
+c3d9dce4			Scalar4	size	1	4x1	FoliageFx	
+c41759b1			Scalar4	size	1	4x1	GlobalHumanParams	
+c4a44419			Scalar4	size	1	4x1	GlobalHumanParams	
+c4b9f2b0			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+c4c412cd	RainStartDist	sym	Scalar4	decomp+size	1	4x1	ScriptController	FUN_00767bf0
+c520b7b1			Scalar4	size	1	4x1	Spore	
+c5e15743	WalkSpeed	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+c6903950	AimAnimMaxDeviationX	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+c7ad8a63	FallDamageMult	exe	Scalar4	size	1	4x1	GlobalHumanParams	
+c8cf19b8	MarioCam	dict	Bool	size	1	1x1	Player	FUN_005a6fe0
+c92de8d1			Scalar4	size	1	4x1	VehicleWheelFx	
+c9519c52			Scalar4	size	1	4x1	PerkFactors	
+c978cc1c			Scalar4	size	1	4x1	GlobalHumanParams	
+c98a63c7	min	exe	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+cba576f8	ImpactDamageMinSpeedBelow	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+cc74dad8	AutoCamDelayStartMoving	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+cca9f9fc			Scalar4	size	1	4x1	Foliage	FUN_006d8b50
+ccdd79cf			Scalar4	size	1	4x1	PerkFactors	
+cd25c380	SprintInputMag	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+cd81c34b	JumpRunSpeedDrag	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+cdd597dd			Scalar4	size	1	4x1	CameraSettingsMisc	
+ce27c791	Car	exe	Scalar4	size	1	4x1	Shop	
+cf1ab351			Scalar4	size	1	4x1	PerkFactors	
+cf408f7d			Scalar4	size	1	4x1	VehicleWheelFx	
+d074ec86			Scalar4	size	1	4x1	WaterParticleFx	
+d125dadf			Scalar4	size	1	4x1	VehicleWheelFx	
+d1b414e6			Scalar4	size	1	4x1	LightSettings	
+d4279d41			Scalar4	size	1	4x1	PerkFactors	
+d4889548			Scalar4	size	1	4x1	Shop	
+d653701a			Scalar4	size	1	4x1	PerkFactors	
+d6878a86			Scalar4	size	1	4x1	VehicleWheelFx	
+d730d0e1	InvincibleRange	sym	Scalar4	size	1	4x1	ScriptController	
+d81fd9ca	TrainBlueprint	exe	Scalar4	size	1	4x1	BridgeController	
+dba4f972	DeathSound	dict	Scalar4	size	1	4x1	Prop	
+dc9e11a2			Scalar4	size	1	4x1	PerkFactors	
+dcdc8bca			Scalar4	size	1	4x1	BridgeController	
+dd0719f5			Scalar4	size	1	4x1	CameraSettingsMisc	
+dd8b4524	CoverRadius	sym	Scalar4	size	1	4x1	Melee	
+de72b5fa			Scalar4	size	1	4x1	BridgeController	
+deddac67			Scalar4	size	1	4x1	VehicleWheelFx	
+dfa39497			Scalar4	size	1	4x1	PerkFactors	
+e060c605	AmountToRecharge	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+e0ba07fa	MinCarJumpHeight	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+e1b7a252			Scalar4	size	1	4x1	GlobalHumanParams	
+e2669be2			Scalar4	size	1	4x1	PerkFactors	
+e33015e8			Scalar4	size	1	4x1	FoliageFx	
+e505c244			Scalar4	size	1	4x1	PerkFactors	
+e60187cb			Scalar4	size	1	4x1	PerkFactors	
+e62074ea			Scalar4	size	1	4x1	VehicleWheelFx	
+e69a8743			Scalar4	size	1	4x1	PerkFactors	
+e69dd9f2			Scalar4	size	1	4x1	VehicleWheelFx	
+e6a76edd			Scalar4	size	1	4x1	PerkFactors	
+e6e5d038			Scalar4	size	1	4x1	ToneMapping	
+e6ff4730			Scalar4	size	1	4x1	LightSettings	
+e773fc1f			Bool	size	1	1x1	AIAttractionPt	
+e7cf3f77			Scalar4	size	1	4x1	VehicleWheelFx	
+e7d25889	LerpValue	sym	Scalar4	size	1	4x1	ToneMapping	
+e7f416d3	CamLookForwardMultiplier	sym	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+e9d1bea2			Scalar4	size	1	4x1	VehicleWheelFx	
+ea229e08			Scalar4	size	1	4x1	ToneMapping	
+ecf2e7ae			Scalar4	size	1	4x1	AIAttractionPt	
+ed233e1a			Scalar4	size	1	4x1	ToneMapping	
+ed5e15b6	SideJumpLengthClamber	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+ee7814da			Scalar4	size	1	4x1	Foliage	FUN_006d8b50
+eea4fef6			Scalar4	size	1	4x1	PerkFactors	
+ef42c1c8			Scalar4	size	1	4x1	PerkFactors	
+f0bb8f39			Scalar4	size	1	4x1	PerkFactors	
+f14855bc	AutoCamDelayFinishAnim	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+f15282d0	CinematicNode	exe	Scalar4	size	1	4x1	BridgeController	
+f1e93440			Scalar4	size	1	4x1	GlobalHumanParams	
+f2aeab3e			Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+f3ce9025			Scalar4	size	1	4x1	VehicleWheelFx	
+f41f8b7c	DyingMoveTime	dict	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+f4219f95			Scalar4	size	1	4x1	CameraSettingsMisc	
+f4badfdb	RainDelta	sym	Scalar4	decomp+size	1	4x1	ScriptController	FUN_00767bf0
+f577da5f	MinAirResistanceSpeed	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+f878cea0	EffectRadius	sym	Scalar4	size	1	4x1	AIAttractionPt	
+fa3b5f67			Scalar4	size	1	4x1	PerkFactors	
+fa3c7dcb	WallScurryWalkVel	sym	Scalar4	size	1	4x1	GlobalHumanParams	
+fad12345	MinAngleDiff	sym	Scalar4	decomp+size	1	4x1	Player	FUN_005a6fe0
+fb10c187			Scalar4	size	1	4x1	PerkFactors	
+fd68f11e			Scalar4	size	1	4x1	CommonUI_Persistent	
+fd961ce3			Scalar4	size	1	4x1	Player	
+fd96d0b6			Scalar4	size	1	4x1	PerkFactors	
+fe2a72e3	MeleeTurnSpeed	sym	Scalar4	size	1	4x1	GlobalHumanParams	

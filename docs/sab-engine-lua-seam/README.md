@@ -178,10 +178,14 @@ mental model. **The orphan gap that dominated this list is closed** — all 898 
    return column. ([01 Q1](01-registration-and-dispatch.md#open-questions))
 5. **Is the old `lua_State` closed on reload?** `lua_close` has `callers=[]`. If nothing closes it, every
    level reload leaks a full VM. ([04 Q1](04-vm-lifecycle-and-script-objects.md#open-questions))
-6. **How does `GetHandleByName` resolve a string?** VA known (`0x00758b30`), mechanism not. [03
-   §7](03-handle-and-object-model.md) argues it is *not* `pandemic_hash` — but doc 10's verifier found that
-   census only checked *direct* callers, and the name→handle path reaches `pandemic_hash` one indirection
-   deeper via `FUN_00db7c10`. The tension is real, not speculative.
+6. **~~How does `GetHandleByName` resolve a string?~~** **RESOLVED 2026-07-29 — in doc 10's favour.**
+   The tension recorded here (03 §7's "not `pandemic_hash`" versus doc 10's finding that the census
+   only checked *direct* callers, the path reaching `pandemic_hash` one indirection deeper via
+   `FUN_00db7c10`) is settled from the data: EditNodes objects are keyed by `pandemic_hash` of their
+   full editor path, and **1 632** path literals in `LuaScripts.luap` — the very strings Lua passes to
+   `Util.GetHandleByName` — reproduce a retail object tag, 0 colliding with the container namespace
+   ([editnodes.md](../formats/editnodes.md)). 03 §7 is corrected; the handle *value* is still not a
+   hash. Residual: the instruction path inside `0x00758b30`.
 7. **What is `vtable+0x1c`?** The proposed `GetTargetRef()` rests on usage alone. Reading slot 7 of a known
    RTTI class's vtable is cheap and would firm up [03 §4](03-handle-and-object-model.md).
 8. **Where is `DAT_0143db28` written?** 279 reads, no surviving store. Finding it pins the handle map's

@@ -310,14 +310,29 @@ The round trip closes: `Util.GetNameFromHandle` (`data/lua_bindings.txt:275`, us
 `docs/saboteur-luacd/src/Experimental/Checkpoint.lua:99`) recovers a name from a handle, so the registry
 retains the name→ID association in both directions.
 
-**On `pandemic_hash`:** the handle is **not** a name hash, and the name→handle path does not appear to run
-through `FUN_00dc1e20` (the confirmed `pandemic_hash`, see [lua_scripts.md](../formats/lua_scripts.md)).
-`FUN_00dc1e20` has only ten callers and none of them is in the `0x0070f000`–`0x0076xxxx` binding block or
-touches `DAT_0143db28`. This matters for the open question recorded in
-[lua_scripts.md](../formats/lua_scripts.md) about what the `+0x00` field of the LuaScripts chunk header
-hashes — whatever the script-name lookup uses, it is a *different* mechanism from the object handle map,
-and this doc supplies no evidence for the "runtime lookup name" hypothesis recorded there. **Confidence:
-confirmed** that the handle is not a hash; **open** as to how `GetHandleByName` maps a string to an ID.
+**On `pandemic_hash`:** the handle **is not a name hash** — that stands, and §1 is why: the ID is
+light userdata built from a free-ring index plus a generation counter, with nothing content-derived in
+either half.
+
+> **Correction (2026-07-29).** This section previously added that "the name→handle path does not appear
+> to run through `FUN_00dc1e20`". That second claim is **retracted**. The *lookup key* is
+> `pandemic_hash`: EditNodes objects are keyed by `pandemic_hash` of their full editor path, and
+> **1 632** path literals in `LuaScripts.luap` reproduce a retail object tag exactly — 0 of them
+> colliding with the container namespace, and 1 620/1 620 resolving into precisely the container their
+> path predicts. Those are the same strings mission Lua hands to `Util.GetHandleByName`, so
+> `GetHandleByName(r"Missions\...\main\Giselle")` hashes the string it is given and the object's tag
+> *is* its name. See [editnodes.md](../formats/editnodes.md#object-nodes-the-tag-is-pandemic_hash-of-a-path-).
+
+The old argument was that `FUN_00dc1e20` has only ten callers, none in the `0x0070f000`–`0x0076xxxx`
+binding block and none touching `DAT_0143db28`. That is a *static call-graph* argument and it
+under-counts: [16](16-family-world-zone-interior.md) finds the same hash reached one level of
+indirection deeper for damage-group names, and [10 §"handle"](10-family-actor-human.md) had already
+flagged the negative claim as too strong for named world objects — reaching `pandemic_hash` via
+`FUN_00db7c10` rather than by a direct call, which is exactly what a direct-caller census misses.
+
+**Confidence: confirmed** that the handle value is not a hash, and **confirmed** that name resolution
+is keyed by `pandemic_hash`. Still **open**: the instruction path inside `0x00758b30` — that the key is
+a `pandemic_hash` is established from the data both sides agree on, not from tracing the callee.
 
 ## 8. Cross-links
 
@@ -344,11 +359,14 @@ confirmed** that the handle is not a hash; **open** as to how `GetHandleByName` 
    at first use rather than a compile-time constant.
 3. **`vtable+0x1c` is unnamed.** The proposal in §4 rests on usage, not on a vtable read or an assertion
    string. Reading the vtable of a known RTTI class in the 0x1c slot would settle it and is cheap.
-4. **How does `GetHandleByName` resolve a string?** The binding could not be located: none of
-   `GetHandleByName`, `GetNameFromHandle`, `GetIntFromHandle`, `IsHandleValid`,
-   `IsObjectHandleValid`, `GetMeleeHandleByName` appears as a literal string in the decomp, so these
-   bindings carry no assertion and must be found through the registration table instead.
-   `GetNameFromHandle` proves a reverse map exists; neither direction is located.
+4. **How does `GetHandleByName` resolve a string?** **Partly answered (2026-07-29)** — the key is
+   `pandemic_hash(name)`, see §7. Two pieces remain. (a) The binding could not be located by string:
+   none of `GetHandleByName`, `GetNameFromHandle`, `GetIntFromHandle`, `IsHandleValid`,
+   `IsObjectHandleValid`, `GetMeleeHandleByName` appears as a literal in the decomp, so these carry no
+   assertion and must be found through the registration table — though `0x00758b30` is now known from
+   [00](00-seam-overview.md). (b) `GetNameFromHandle` proves a reverse map exists, and *that* direction
+   is genuinely interesting now: the name is not stored in EditNodes, so either the registry keeps the
+   string at spawn time or the reverse map is lossy.
 5. **`GetIntFromHandle`** (`data/lua_bindings.txt:267`) is suggestive — it may expose the raw 32-bit ID to
    script. If so, it is the cheapest possible confirmation of §2 from a live game: print it and check the
    top byte increments as objects of the same slot are destroyed and respawned.

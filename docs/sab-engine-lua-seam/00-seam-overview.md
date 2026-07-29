@@ -347,7 +347,7 @@ cheat sheet below corrects it.
 | `FUN_006f8470` = "frame setup" ([05 §2](05-engine-to-lua-callbacks.md), and the brief) vs. "state→wrapper lookup" ([02 §4](02-marshalling-abi.md)) | **02 wins** — it read the body: a 1-slot linear search at `mgr+0x124` for the wrapper whose field 0 == `L`. §7.1 corroborates (`FUN_006f6690(*param_2)` passes `wrapper[0]` where `luaL_register` wants `L`). |
 | `DAT_0142d324` "not an s_name slot, otherwise unidentified" ([01](01-registration-and-dispatch.md)) | Answered by [04 §3](04-vm-lifecycle-and-script-objects.md): the **script manager singleton**, `0x15c90` bytes — which also corrects `symbol_map/task-managers.md`'s "world object" / `WSContext::GetGlobal` reading. |
 | "Is the callback invoked under `lua_pcall` or bare `lua_call`?" — [05's highest-value open question](05-engine-to-lua-callbacks.md#open-questions), which could not find `lua_pcall` | [04 §2](04-vm-lifecycle-and-script-objects.md) pins `lua_pcall = FUN_00408310` and the wrapper `FUN_016395d0` = `lua_pcall(L, nargs, LUA_MULTRET, 0)`. So the `_G[obj][method]` path **is** protected, with no traceback. Whether the `FUN_0070a180`-stored callback name path uses that same invoker is **inferred, not confirmed**. |
-| `GetHandleByName`/`GetSelf` "cannot be located, they carry no assertion string" ([03 Q4](03-handle-and-object-model.md#open-questions), [04 Q5](04-vm-lifecycle-and-script-objects.md#open-questions)) | In the map: `Util.GetHandleByName` impl `0x00758b30`; `Actor.GetSelf` impl `0x007126c0`; `Util.GetIntFromHandle` `0x0074c720`; `Util.IsHandleValid` `0x00758cd0`. All `jmp` family. *How* `GetHandleByName` maps a string to an ID remains open. |
+| `GetHandleByName`/`GetSelf` "cannot be located, they carry no assertion string" ([03 Q4](03-handle-and-object-model.md#open-questions), [04 Q5](04-vm-lifecycle-and-script-objects.md#open-questions)) | In the map: `Util.GetHandleByName` impl `0x00758b30`; `Actor.GetSelf` impl `0x007126c0`; `Util.GetIntFromHandle` `0x0074c720`; `Util.IsHandleValid` `0x00758cd0`. All `jmp` family. *How* `GetHandleByName` maps a string to an ID: the key is `pandemic_hash(name)` (2026-07-29, [03 §7](03-handle-and-object-model.md)); the instruction path inside `0x00758b30` is still untraced. |
 | Resolution rates: 663/898 ([05](05-engine-to-lua-callbacks.md)) vs 898/898 ([01](01-registration-and-dispatch.md)) | Not a contradiction — different methods. 05 walked name-string→vftable and missed the `inlined` shapes; 01 walked RTTI→COL→vtable→stub→thunk and closed. |
 
 ---
@@ -364,8 +364,12 @@ Ranked by value:
    deliberately-erroring callback answers it.
 3. **Is the old `lua_State` closed on reload?** `lua_close` has `callers=[]`. If nothing closes it, every
    level reload leaks a full VM ([04 Q1](04-vm-lifecycle-and-script-objects.md#open-questions)).
-4. **How does `GetHandleByName` resolve a string to an ID?** The VA is now known (`0x00758b30`); the
-   mechanism is not. It is *not* `pandemic_hash` ([03 §7](03-handle-and-object-model.md)).
+4. **~~How does `GetHandleByName` resolve a string to an ID?~~** **Largely ANSWERED 2026-07-29.** The
+   lookup key *is* `pandemic_hash` of the name string — 1 632 path literals in `LuaScripts.luap`
+   reproduce a retail EditNodes object tag, 0 colliding with the container namespace
+   ([editnodes.md](../formats/editnodes.md), [03 §7](03-handle-and-object-model.md)). The earlier
+   "it is *not* `pandemic_hash`" is retracted. What remains open is narrower: the instruction path
+   inside `0x00758b30`, and whether non-EditNodes objects register under the same keying.
 5. **What is `vtable+0x1c`?** The proposed `GetTargetRef()` rests on usage only. Reading slot 7 of a
    known RTTI class's vtable is cheap.
 6. **Where is `DAT_0143db28` written?** Finding the store pins the handle map's owner class by RTTI

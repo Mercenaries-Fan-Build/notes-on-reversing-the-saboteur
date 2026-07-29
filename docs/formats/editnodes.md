@@ -100,7 +100,7 @@ for the reason in the next section.
 
 ### Object nodes: the tag is `pandemic_hash` of a PATH ★
 
-> **Correction (2026-07-26).** This section previously concluded that an object's tag was an opaque
+> **Correction (2026-07-29).** This section previously concluded that an object's tag was an opaque
 > "per-instance unique id, not `pandemic_hash` of anything". That was wrong. It *is* a hash — of a
 > path that does not appear anywhere in the file, which is why hashing the file's own strings never
 > reproduced it. The evidence below was all correct; the conclusion drawn from it was not.
@@ -144,23 +144,39 @@ This also explains the earlier evidence, all of which stands:
   individually addressable*, since `GetHandleByName` cannot distinguish them.
 * Values spread across the whole `u32` range, as hashes do.
 
-Also note the two name-ish fields are **inverted** from the intuitive reading:
+There are **three** name-ish things on an object, and the addressable one is never plain text:
 
 ```
-tag_cdaf6f95           {7 children}      <- object, tag = instance id
-  Type          str 'Spore'              <- the CLASS
-  ClassName     str 'Spore_RS_Jules'     <- the INSTANCE NAME
-  Position      vec3 (2955.72, 140.557, -2917.07)
+tag_42f5cd35           {11 children}     <- the NAME, as a hash (see below)
+  Type          str 'Spore'              <- the broad engine class
+  ClassName     str 'Spore_RS_Jules'     <- the TEMPLATE/archetype -- NOT the instance name
+  Position      vec3 (1069.56, 15.5119, -2053.57)
   XAxis/YAxis/ZAxis   vec3 …             <- rotation basis
-  LuaTable      u32 0x5404f779
 ```
+
+Worked example, verified end-to-end against retail. That object sits in the entry
+
+```
+pandemic_hash(r"France\EditNodes\Missions\act_1\characters\farm_jules.wsd") == 0x51a96dc4
+```
+
+and Lua addresses it as `Util.GetHandleByName(r"Missions\act_1\characters\farm_jules\jules")`, which
+hashes to `0x42f5cd35` — the tag above. The instance name `jules` appears nowhere in the file.
+`ClassName` is `Spore_RS_Jules` here *and* on unrelated placements elsewhere, so it identifies the
+template, not the object.
+
+> An earlier revision of this section called these two fields "inverted" and read `ClassName` as the
+> instance name. That followed from the retracted opaque-id model and is **wrong**: `ClassName` and
+> the addressable name coincide for only ~6.9% of objects.
 
 **Consequence for authoring.** Cloning an object *with its tag intact* is legal — retail contains 13
 such pairs — but the copy then shares its template's Lua name and neither is individually reachable
 through `GetHandleByName`. To make a clone addressable, **retag it**:
 `pandemic_hash(r"<container path without .wsd>\<new name>")`. There is no name field to edit; the tag
-*is* the name. `sab_formats::editnodes` exposes this as [`object_tag`] /
-[`Entry::duplicate_object_as`], which also refuses a name already present in the entry.
+*is* the name. `sab_formats::editnodes` exposes this as
+[`object_tag`](../../tools/sab_formats/src/editnodes.rs) /
+[`Entry::duplicate_object_as`](../../tools/sab_formats/src/editnodes.rs), which also refuses a name
+already present in the entry.
 
 Because the inspector's keys are byte-order inconsistent, a few tags appear in it **twice, once per
 byte order, with different names** — and only one of the two is a real preimage. `3ce51772` is the
@@ -532,8 +548,9 @@ keep falling through to base.
 | entry root = EditNode `{u32 ver=0, u32 count, Nodes}` | **CONFIRMED** (767/767 embedded + 3/3 DLC roots are version 0) |
 | node = `{u32 tag, u32 n, data}`; `n` = byte-len (leaf) or child-count (container) | **CONFIRMED (framing)** — exact-consume proves the split is resolved correctly on all retail nodes |
 | `tag == pandemic_hash(paramName)` little-endian, for PARAMETER nodes | **CONFIRMED** (250/264 dictionary names hash-verify; the `NodeNN`/`FenceNN` families reproduce 113 pack tags from the exe's own `sprintf` templates) |
-| ~~an OBJECT node's tag is a per-instance unique id, NOT a name hash~~ | **RETRACTED 2026-07-26** — it is `pandemic_hash` of the object's full path; see the row above. The observations were right, the conclusion was wrong: hashing only strings *stored in the file* could never find it |
-| `Type` is the class and `ClassName` is the instance name (inverted) | **CONFIRMED** (retail data: `Type='Spore'` / `ClassName='Spore_RS_Jules'`) |
+| ~~an OBJECT node's tag is a per-instance unique id, NOT a name hash~~ | **RETRACTED 2026-07-29** — it is `pandemic_hash` of the object's full path; see the row above. The observations were right, the conclusion was wrong: hashing only strings *stored in the file* could never find it |
+| `Type` is the broad engine class; `ClassName` is the TEMPLATE/archetype | **CONFIRMED** (retail data: `Type='Spore'` / `ClassName='Spore_RS_Jules'`) |
+| ~~`ClassName` is the object's instance name~~ | **RETRACTED 2026-07-29** — a corollary of the retracted opaque-id model. `ClassName` equals the addressable name for only ~6.9% of objects; the instance name is not stored at all (row below) |
 | cloning an object with its tag intact is legal but leaves the copy un-addressable | **CONFIRMED** — retail has 13 such collisions; both objects answer to one `GetHandleByName` name. Retag via `object_tag` to make a clone addressable |
 | framing is positional: root count = objects, object count = params, param count = BYTES | **CONFIRMED** (`FUN_00a005a0` advances `p = data + n` unconditionally; depth census finds 0 containers below depth 0 in 152 276 nodes) |
 | the entry body is NOT a recursive tree | **CONFIRMED** — exactly one level of nesting |

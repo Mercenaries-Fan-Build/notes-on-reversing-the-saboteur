@@ -240,6 +240,15 @@ with the size histogram measured over all 10 761 templates; the rest rest on the
 authoritative, per [`editnodes.md`](editnodes.md)'s account of a value-based classifier that became a
 live parse bug.
 
+**`size` is a skip length, which makes width load-bearing for editors.** The pair loop
+`FUN_004614a0` calls the class's virtual `SetProperty(key, cursor)`; when it returns false — an
+unknown key — it advances the cursor by `size` and carries on. So the engine tolerates keys it does
+not know, which is why leaving an unrecognised pair untouched is safe. The corollary is the
+authoring rule: **an edit must preserve the pair's byte width**, because a one-byte flag written back
+four bytes wide shifts every later pair in that record. Only `Str` may legitimately resize.
+`sab_workshop`'s `encode_value` enforces this and refuses the edit otherwise; 177,413 of the 644,154
+retail pairs are not 4 bytes wide.
+
 **Known limit.** `Scalar4` vs `Ref` is not always separable. Ghidra emits inverted guards —
 `if (param_2 != 0xKEY) { …another key's body… }` with the key's own reader *after* the closing
 brace — so attributing readers by a forward window from a `!=` site mis-types. Attribution is

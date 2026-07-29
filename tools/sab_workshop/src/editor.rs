@@ -35,7 +35,7 @@
 //!    Rather than make the modder pick a type before seeing anything, every reading is shown at once
 //!    and the likeliest is lit.
 
-use sab_formats::gametemplates::{Entry, GameTemplates};
+use sab_formats::gametemplates::{Entry, GameTemplates, PropType};
 use sab_formats::gametext::GameText;
 use sab_formats::pandemic_hash;
 
@@ -139,7 +139,22 @@ enum Op {
         text: String,
     },
     AddString { lang: usize, dotted: String, text: String },
-    SetPair { entry: usize, pair: usize, bytes: Vec<u8> },
+    /// `was` is the pair's exact original bytes. It has to be the raw bytes, not `Change::before`:
+    /// `before` is a *display* string, and reverting used to re-encode it with `parse_u32_any`,
+    /// which silently resized any pair that was not 4 bytes wide (and simply failed, doing nothing,
+    /// for one that had no u32 reading at all).
+    ///
+    /// `serde(default)` is load-bearing, not tidiness: without it a pre-v3 document containing any
+    /// `SetPair` fails to deserialize as a WHOLE, so the migration never runs and the user loses
+    /// their string edits along with the object ones. With it, an old `SetPair` arrives with an
+    /// empty `was` and `ModDoc::load` drops just that change, which is the documented behaviour.
+    SetPair {
+        entry: usize,
+        pair: usize,
+        bytes: Vec<u8>,
+        #[serde(default)]
+        was: Vec<u8>,
+    },
     /// Reserve a texture NAME so template properties can point at its hash before the DTEX exists.
     ReserveTexture { name: String },
 }
@@ -202,7 +217,11 @@ impl ModDoc {
     ///     templates), so the same index now means a different template. A v1 document's object
     ///     edits cannot be carried forward and are dropped on load rather than silently re-pointed
     ///     at whatever now sits at that index.
-    const CURRENT: u32 = 2;
+    /// 3 — `SetPair` carries the pair's original bytes in `was`. A v2 `SetPair` has no `was`, and
+    ///     its `before` display string cannot reconstruct one for a pair that is not 4 bytes wide,
+    ///     so v2 object edits are dropped for the same reason v1's were: better than reverting to
+    ///     bytes we would have to invent.
+    const CURRENT: u32 = 3;
 
     fn load(slot: &str) -> ModDoc {
         let mut doc = ModDoc::load_from(&ModDoc::path(slot));
@@ -348,6 +367,103 @@ enum PropRow {
     Item(usize),
 }
 
+/// Render a pair's value for display, according to its derived type.
+fn show_value(ty: PropType, data: &[u8]) -> String {
+    match ty {
+        PropType::Bool if !data.is_empty() => {
+            if data[0] != 0 { "true".into() } else { "false".into() }
+        }
+        PropType::Vec3 if data.len() == 12 => {
+            let f = |i: usize| f32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+            format!("{:.3}, {:.3}, {:.3}", f(0), f(4), f(8))
+        }
+        PropType::Str => {
+            let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+            String::from_utf8_lossy(&data[..end]).into_owned()
+        }
+        PropType::Ref => data
+            .try_into()
+            .map(|b| format!("0x{:08X}", u32::from_le_bytes(b)))
+            .unwrap_or_else(|_| hex_of(data)),
+        PropType::Scalar4 if data.len() == 4 => {
+            readable(u32::from_le_bytes(data.try_into().unwrap()))
+        }
+        _ => hex_of(data),
+    }
+}
+
+fn hex_of(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Parse an edited value back to bytes, **preserving the pair's on-disk width**.
+///
+/// Width is not cosmetic. `size` in the pair header is what the engine's skip-unknown path in
+/// `FUN_004614a0` advances by, so a one-byte flag that comes back four bytes wide shifts every
+/// later pair in that record. The previous editor always emitted `u32::to_le_bytes`, which silently
+/// resized any pair that was not already 4 bytes — 177,413 of the 644,154 retail pairs.
+///
+/// `Str` is the one type whose width may legitimately change, since it is NUL-terminated text.
+fn encode_value(ty: PropType, old: &[u8], s: &str) -> Result<Vec<u8>, String> {
+    let s = s.trim();
+    match ty {
+        PropType::Bool => {
+            let v = match s.to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => 1u8,
+                "0" | "false" | "no" | "off" => 0u8,
+                _ => return Err("expected true/false".into()),
+            };
+            let mut out = old.to_vec();
+            if out.is_empty() {
+                out.push(0);
+            }
+            out[0] = v;
+            Ok(out)
+        }
+        PropType::Vec3 => {
+            if old.len() != 12 {
+                return Err(format!("Vec3 needs 12 bytes, this pair has {}", old.len()));
+            }
+            let parts: Vec<&str> = s.split(&[',', ' '][..]).filter(|p| !p.is_empty()).collect();
+            if parts.len() != 3 {
+                return Err("expected three numbers: x, y, z".into());
+            }
+            let mut out = Vec::with_capacity(12);
+            for p in parts {
+                let f: f32 = p.parse().map_err(|_| format!("{p:?} is not a number"))?;
+                out.extend_from_slice(&f.to_le_bytes());
+            }
+            Ok(out)
+        }
+        PropType::Str => {
+            let mut out = s.as_bytes().to_vec();
+            out.push(0);
+            Ok(out)
+        }
+        PropType::Scalar4 | PropType::Ref => {
+            if old.len() != 4 {
+                return Err(format!("a 4-byte reading needs 4 bytes, this pair has {}", old.len()));
+            }
+            Ok(parse_u32_any(s)?.to_le_bytes().to_vec())
+        }
+        PropType::Bytes => {
+            let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            if hex.len() % 2 != 0 {
+                return Err("hex needs an even number of digits".into());
+            }
+            let out: Vec<u8> = hex
+                .as_bytes()
+                .chunks(2)
+                .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+                .collect();
+            if out.len() != old.len() {
+                return Err(format!("must stay {} bytes, got {}", old.len(), out.len()));
+            }
+            Ok(out)
+        }
+    }
+}
+
 /// Template list, grouped by type and flattened. Pure so the "no cap" invariant is testable:
 /// `take(400)` here used to hide 3,113 templates.
 fn group_rows(gt: &sab_formats::gametemplates::GameTemplates, needle: &str) -> (Vec<ObjRow>, usize) {
@@ -415,6 +531,8 @@ struct ObjectsState {
     /// pair index -> edit buffer, for the pair currently being typed into
     edit_pair: Option<usize>,
     edit_buf: String,
+    /// Why the last edit was refused — a width or parse complaint, shown next to the field.
+    edit_err: Option<String>,
     /// set when a texture-valued property asked the Icons page for a value
     wiring: Option<(usize, usize)>,
 }
@@ -967,14 +1085,12 @@ impl Editor {
                     gt.records.retain(|r| r.asset_id != id);
                 }
             }
-            Op::SetPair { entry, pair, .. } => {
-                // `before` is the display form; re-encode from the raw we stored alongside it.
+            Op::SetPair { entry, pair, was, .. } => {
+                // Exact bytes, so a revert restores the original width as well as the value.
                 if let Some(gt) = self.obj_load.ready_mut() {
                     if let Some(Entry::Template(t)) = gt.entries.get_mut(*entry) {
                         if let Some(p) = t.pairs.get_mut(*pair) {
-                            if let Ok(b) = parse_u32_any(&c.before) {
-                                p.data = b.to_le_bytes().to_vec();
-                            }
+                            p.data = was.clone();
                         }
                     }
                 }
@@ -1026,7 +1142,7 @@ impl Editor {
     fn reapply_objects(&mut self) {
         let Some(gt) = self.obj_load.ready_mut() else { return };
         for c in &self.changes {
-            if let Op::SetPair { entry, pair, bytes } = &c.op {
+            if let Op::SetPair { entry, pair, bytes, .. } = &c.op {
                 if let Some(Entry::Template(t)) = gt.entries.get_mut(*entry) {
                     if let Some(p) = t.pairs.get_mut(*pair) {
                         p.data = bytes.clone();
@@ -1140,7 +1256,7 @@ impl Editor {
             .changes
             .iter()
             .filter_map(|c| match &c.op {
-                Op::SetPair { entry, pair, bytes } => Some((*entry, *pair, bytes.clone())),
+                Op::SetPair { entry, pair, bytes, .. } => Some((*entry, *pair, bytes.clone())),
                 _ => None,
             })
             .collect();
@@ -2320,11 +2436,13 @@ impl Editor {
 
                 if let Some((pi, bytes, before, after)) = act {
                     let tname = t.name.clone();
+                    // `was` is the pair's bytes as they stand now, so revert is exact.
+                    let was = t.pairs[pi].data.clone();
                     self.stage(
                         format!("{tname} · pair {pi}"),
                         before,
                         after,
-                        Op::SetPair { entry: idx, pair: pi, bytes },
+                        Op::SetPair { entry: idx, pair: pi, bytes, was },
                     );
                 }
                 if let Some(pi) = wire {
@@ -2357,7 +2475,15 @@ impl Editor {
         let edited = staged.is_some();
         let val = p.as_u32();
         let known = sab_formats::gametemplates::known_property_name(p.hash).is_some();
-        let is_ref = known && Self::is_ref_property(name);
+        // The derived type decides the editor. A key absent from the retail table (an authored one)
+        // falls back on its width, which is what the old code assumed for everything.
+        let ty = sab_formats::gametemplates::property_type(p.hash).unwrap_or(match p.data.len() {
+            1 => PropType::Bool,
+            4 => PropType::Scalar4,
+            12 => PropType::Vec3,
+            _ => PropType::Bytes,
+        });
+        let is_ref = ty == PropType::Ref || (known && Self::is_ref_property(name));
         // What this value points at, if we can tell.
         let resolved = val.and_then(|v| self.resolve_hash(v));
         // A texture reference gets the picker; anything else that resolves just gets named.
@@ -2422,6 +2548,28 @@ impl Editor {
                                 *wire = Some(pi);
                             }
                         });
+                    } else if ty == PropType::Bool {
+                        // 143,455 retail pairs are one byte wide. They used to render as
+                        // "<1 bytes>" and could not be edited at all — the editor only ever emitted
+                        // a u32, which would have resized the pair.
+                        let mut on = p.data.first().copied().unwrap_or(0) != 0;
+                        if ui.checkbox(&mut on, "").changed() {
+                            if let Ok(b) =
+                                encode_value(ty, &p.data, if on { "true" } else { "false" })
+                            {
+                                *act = Some((
+                                    pi,
+                                    b,
+                                    show_value(ty, &p.data),
+                                    if on { "true".into() } else { "false".into() },
+                                ));
+                            }
+                        }
+                        ui.label(theme::data_text(
+                            if on { "true" } else { "false" },
+                            11.0,
+                            theme::TX,
+                        ));
                     } else {
                         // editable value
                         let is_open = self.objects.edit_pair == Some(pi);
@@ -2432,36 +2580,40 @@ impl Editor {
                                     .font(egui::FontId::new(11.5, theme::data())),
                             );
                             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                if let Ok(v) = parse_u32_any(&self.objects.edit_buf) {
-                                    let before = val.map(|v| format!("{v}")).unwrap_or_default();
-                                    *act = Some((
-                                        pi,
-                                        v.to_le_bytes().to_vec(),
-                                        before,
-                                        format!("{v}"),
-                                    ));
-                                    self.objects.edit_pair = None;
+                                match encode_value(ty, &p.data, &self.objects.edit_buf) {
+                                    Ok(b) => {
+                                        let after = show_value(ty, &b);
+                                        *act =
+                                            Some((pi, b, show_value(ty, &p.data), after));
+                                        self.objects.edit_pair = None;
+                                        self.objects.edit_err = None;
+                                    }
+                                    // Refusing is the point: the message names the width the pair
+                                    // has to keep, instead of quietly writing a different one.
+                                    Err(e) => self.objects.edit_err = Some(e),
                                 }
                             }
+                            if let Some(e) = &self.objects.edit_err {
+                                ui.label(theme::data_text(e.clone(), 9.5, theme::RED));
+                            }
                         } else {
-                            // A reference shows as a hash, never as a float — and if we can say
-                            // what it points at, that comes first.
-                            let shown = match (val, is_ref) {
-                                (Some(v), true) => format!("0x{v:08X}"),
-                                (Some(v), false) => readable(v),
-                                (None, _) => format!("<{} bytes>", p.data.len()),
-                            };
+                            let shown = show_value(ty, &p.data);
                             if ui
                                 .add(
                                     egui::Label::new(theme::data_text(shown, 11.5, theme::TX))
                                         .sense(egui::Sense::click()),
                                 )
-                                .on_hover_text("click to edit")
+                                .on_hover_text(match ty {
+                                    PropType::Vec3 => "click to edit — x, y, z",
+                                    PropType::Str => "click to edit — text",
+                                    PropType::Bytes => "click to edit — hex, same length",
+                                    _ => "click to edit",
+                                })
                                 .clicked()
                             {
                                 self.objects.edit_pair = Some(pi);
-                                self.objects.edit_buf =
-                                    val.map(|v| v.to_string()).unwrap_or_default();
+                                self.objects.edit_buf = show_value(ty, &p.data);
+                                self.objects.edit_err = None;
                             }
                             if let Some((kind, label)) = &resolved {
                                 ui.label(theme::disp_text(*kind, 9.0, theme::FAINT));
@@ -2811,11 +2963,19 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 let tname = self.template_name(e).unwrap_or_default();
+                let was = self
+                    .obj_load
+                    .ready()
+                    .and_then(|g| match g.entries.get(e) {
+                        Some(Entry::Template(t)) => t.pairs.get(p).map(|x| x.data.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
                 self.stage(
                     format!("{tname} · pair {p}"),
                     before,
                     name,
-                    Op::SetPair { entry: e, pair: p, bytes: hash.to_le_bytes().to_vec() },
+                    Op::SetPair { entry: e, pair: p, bytes: hash.to_le_bytes().to_vec(), was },
                 );
             }
         }
@@ -3609,7 +3769,12 @@ mod tests {
                 target: "tmpl 7 pair 2".into(),
                 before: "1".into(),
                 after: "2".into(),
-                op: Op::SetPair { entry: 7, pair: 2, bytes: vec![2, 0, 0, 0] },
+                op: Op::SetPair {
+                    entry: 7,
+                    pair: 2,
+                    bytes: vec![2, 0, 0, 0],
+                    was: vec![1, 0, 0, 0],
+                },
             },
             Change {
                 target: "tex MyIcon".into(),
@@ -3627,7 +3792,10 @@ mod tests {
         assert_eq!(doc.changes[0].before, "CHECKPOINT");
         assert!(matches!(doc.changes[0].op, Op::SetString { asset_id: 0x1111_1111, lang: 0, .. }));
         assert!(matches!(&doc.changes[1].op, Op::AddString { dotted, .. } if dotted == "MyMod_Text.MyKey"));
-        assert!(matches!(&doc.changes[2].op, Op::SetPair { entry: 7, pair: 2, bytes } if bytes == &[2,0,0,0]));
+        assert!(
+            matches!(&doc.changes[2].op, Op::SetPair { entry: 7, pair: 2, bytes, was }
+                if bytes == &[2,0,0,0] && was == &[1,0,0,0])
+        );
         assert!(matches!(&doc.changes[3].op, Op::ReserveTexture { name } if name == "MyIcon"));
 
         // A corrupt document opens the app empty rather than not at all.
@@ -3779,6 +3947,91 @@ mod tests {
             ],
         }));
         assert_eq!(build_xref(&gt).get(&7), Some(&vec![0usize]));
+    }
+
+    /// The invariant that makes typed editing safe: an edit must not change a pair's WIDTH.
+    ///
+    /// `size` in the pair header is what the engine's skip-unknown path (`FUN_004614a0`) advances
+    /// by, so a one-byte flag written back four bytes wide shifts every later pair in that record.
+    /// The old editor always emitted `u32::to_le_bytes` regardless of the pair's real width, which
+    /// covered only 466,741 of the 644,154 retail pairs; the other 177,413 would have been resized.
+    /// `Str` is the sole exception, being NUL-terminated text.
+    #[test]
+    fn an_edit_never_changes_a_pairs_width() {
+        // (type, original bytes, an edit that should be accepted)
+        let cases: &[(PropType, &[u8], &str)] = &[
+            (PropType::Bool, &[0], "true"),
+            (PropType::Bool, &[1], "false"),
+            (PropType::Scalar4, &[1, 0, 0, 0], "12345"),
+            (PropType::Ref, &[0xAA, 0xBB, 0xCC, 0xDD], "0x1E59E605"),
+            (PropType::Vec3, &[0; 12], "1.5, -2, 0.25"),
+            (PropType::Bytes, &[1, 2, 3, 4, 5], "aa bb cc dd ee"),
+        ];
+        for (ty, old, input) in cases {
+            let out = encode_value(*ty, old, input)
+                .unwrap_or_else(|e| panic!("{ty:?} rejected {input:?}: {e}"));
+            assert_eq!(
+                out.len(),
+                old.len(),
+                "{ty:?} changed width {} -> {} on {input:?}",
+                old.len(),
+                out.len()
+            );
+        }
+
+        // A Vec3 round-trips through its own display form.
+        let v = encode_value(PropType::Vec3, &[0; 12], "1.5, -2, 0.25").unwrap();
+        assert_eq!(show_value(PropType::Vec3, &v), "1.500, -2.000, 0.250");
+
+        // Wrong widths are refused, not silently coerced.
+        assert!(encode_value(PropType::Scalar4, &[0], "1").is_err(), "4-byte write onto 1 byte");
+        assert!(encode_value(PropType::Vec3, &[0; 4], "1,2,3").is_err(), "12-byte write onto 4");
+        assert!(
+            encode_value(PropType::Bytes, &[0; 4], "aa bb").is_err(),
+            "a shorter hex string must be refused"
+        );
+        assert!(encode_value(PropType::Bool, &[0], "maybe").is_err(), "not a bool");
+
+        // Str is allowed to resize, and always terminates.
+        let s = encode_value(PropType::Str, b"old ", "a longer name").unwrap();
+        assert_eq!(s.last(), Some(&0));
+        assert_eq!(show_value(PropType::Str, &s), "a longer name");
+    }
+
+    /// Every retail pair must be representable by its derived type, and re-encoding its own
+    /// displayed value must reproduce the original bytes exactly. This is the corpus-wide check
+    /// that the type table and the editors agree with the data.
+    #[test]
+    fn every_retail_pair_round_trips_through_its_editor() {
+        let Some(game) = install() else { return };
+        let gt = crate::assets::load_gametemplates(&game).expect("templates");
+        let mut checked = 0usize;
+        let mut skipped = 0usize;
+        for (_, t) in gt.templates() {
+            for p in &t.pairs {
+                let ty = sab_formats::gametemplates::property_type(p.hash).unwrap_or(PropType::Bytes);
+                // Floats do not survive a 3-decimal display, and Scalar4's display is a heuristic
+                // "most likely reading" rather than a lossless encoding; those are exercised above.
+                if matches!(ty, PropType::Scalar4 | PropType::Vec3) {
+                    skipped += 1;
+                    continue;
+                }
+                let shown = show_value(ty, &p.data);
+                match encode_value(ty, &p.data, &shown) {
+                    Ok(b) => {
+                        assert_eq!(
+                            b, p.data,
+                            "{} 0x{:08X} ({ty:?}) did not round-trip through {shown:?}",
+                            t.name, p.hash
+                        );
+                        checked += 1;
+                    }
+                    Err(e) => panic!("{} 0x{:08X} ({ty:?}) {shown:?}: {e}", t.name, p.hash),
+                }
+            }
+        }
+        eprintln!("{checked} pairs round-tripped exactly, {skipped} float/scalar pairs skipped");
+        assert!(checked > 100_000, "expected the Bool/Ref/Bytes bulk, got {checked}");
     }
 
     /// Both lists were capped — `take(400)` on a type group, `take(60)` on the unnamed properties —

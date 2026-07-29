@@ -15,8 +15,6 @@
 //! A 4-byte `data` may itself be a `pandemic_hash` — a sibling-template ref, `"none"`, or a **texture**
 //! (`data == pandemic_hash(textureName)`, the ALBS/WSTX key; see the format doc §Texture references).
 
-use crate::pandemic_hash;
-
 const MAGIC: &[u8; 4] = b"AULB";
 const MARKER: [u8; 12] = [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
@@ -228,6 +226,7 @@ pub fn property_type(hash: u32) -> Option<PropType> {
 #[cfg(test)]
 mod prop_table_tests {
     use super::*;
+    use crate::pandemic_hash;
 
     /// The whole safety story for the generated table. `pandemic_hash` is a perfect oracle here: a
     /// name either reproduces its key or it does not, so nothing in the table can be a guess. This

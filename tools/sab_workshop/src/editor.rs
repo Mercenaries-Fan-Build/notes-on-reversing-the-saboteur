@@ -338,7 +338,64 @@ struct StringsState {
 enum ObjRow {
     Head(String, usize),
     Item(usize, String),
-    More(usize),
+}
+
+/// The selected template's properties, flattened for `show_rows` — same trick as [`ObjRow`]: one
+/// row tall per variant, grouping by position. A template can carry 1,683 pairs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PropRow {
+    Head(&'static str),
+    Item(usize),
+}
+
+/// Template list, grouped by type and flattened. Pure so the "no cap" invariant is testable:
+/// `take(400)` here used to hide 3,113 templates.
+fn group_rows(gt: &sab_formats::gametemplates::GameTemplates, needle: &str) -> (Vec<ObjRow>, usize) {
+    let mut by_type: std::collections::BTreeMap<&str, Vec<(usize, &str)>> = Default::default();
+    let mut total = 0usize;
+    for (i, e) in gt.entries.iter().enumerate() {
+        if let Entry::Template(t) = e {
+            total += 1;
+            // Match without building a haystack: two case-insensitive passes, no allocation.
+            if !needle.is_empty() && !contains_ci(&t.name, needle) && !contains_ci(&t.ttype, needle)
+            {
+                continue;
+            }
+            by_type.entry(t.ttype.as_str()).or_default().push((i, t.name.as_str()));
+        }
+    }
+    let mut rows = Vec::new();
+    for (ty, items) in by_type {
+        rows.push(ObjRow::Head(ty.to_string(), items.len()));
+        for (i, name) in items.iter() {
+            rows.push(ObjRow::Item(*i, name.to_string()));
+        }
+    }
+    (rows, total)
+}
+
+/// One template's pairs, named first, flattened for `show_rows`. Pure for the same reason as
+/// [`group_rows`]: `take(60)` here used to truncate the unnamed section on 3,110 templates.
+fn prop_rows(t: &sab_formats::gametemplates::Template) -> Vec<PropRow> {
+    let mut rows: Vec<PropRow> = Vec::with_capacity(t.pairs.len() + 2);
+    for (pi, p) in t.pairs.iter().enumerate() {
+        if sab_formats::gametemplates::known_property_name(p.hash).is_some() {
+            if rows.is_empty() {
+                rows.push(PropRow::Head("Named properties"));
+            }
+            rows.push(PropRow::Item(pi));
+        }
+    }
+    let split = rows.len();
+    for (pi, p) in t.pairs.iter().enumerate() {
+        if sab_formats::gametemplates::known_property_name(p.hash).is_none() {
+            if rows.len() == split {
+                rows.push(PropRow::Head("Unnamed properties"));
+            }
+            rows.push(PropRow::Item(pi));
+        }
+    }
+    rows
 }
 
 #[derive(Default)]
@@ -352,6 +409,9 @@ struct ObjectsState {
     /// Template count, cached with the rows — `templates().count()` walks all 11,072 entries.
     total: usize,
     selected: Option<usize>,
+    /// The pair whose detail (the four readings) the context panel is showing. Separate from
+    /// `edit_pair`: selecting a row to inspect it is not the same as typing into it.
+    sel_pair: Option<usize>,
     /// pair index -> edit buffer, for the pair currently being typed into
     edit_pair: Option<usize>,
     edit_buf: String,
@@ -718,11 +778,9 @@ impl Editor {
                         .auto_shrink([false, false])
                         .show(ui, |ui| self.strings_central(ui));
                 }
-                EdPage::Objects => {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| self.objects_central(ui));
-                }
+                // Objects adds its own ScrollArea around the property list so it can virtualise; a
+                // wrapping one here would defeat that, same as for Icons.
+                EdPage::Objects => self.objects_central(ui),
                 EdPage::Icons => self.icons_central(ui),
             });
     }
@@ -2042,32 +2100,7 @@ impl Editor {
         // type into a map — tens of thousands of allocations at frame rate, which is what made the
         // window feel like it was struggling to load. Nothing about it was the load.
         if self.objects.rows_key.as_deref() != Some(needle.as_str()) {
-            let mut by_type: std::collections::BTreeMap<&str, Vec<(usize, &str)>> =
-                Default::default();
-            let mut total = 0usize;
-            for (i, e) in gt.entries.iter().enumerate() {
-                if let Entry::Template(t) = e {
-                    total += 1;
-                    // Match without building a haystack: two case-insensitive passes, no allocation.
-                    if !needle.is_empty()
-                        && !contains_ci(&t.name, &needle)
-                        && !contains_ci(&t.ttype, &needle)
-                    {
-                        continue;
-                    }
-                    by_type.entry(t.ttype.as_str()).or_default().push((i, t.name.as_str()));
-                }
-            }
-            let mut rows = Vec::new();
-            for (ty, items) in by_type {
-                rows.push(ObjRow::Head(ty.to_string(), items.len()));
-                for (i, name) in items.iter().take(400) {
-                    rows.push(ObjRow::Item(*i, name.to_string()));
-                }
-                if items.len() > 400 {
-                    rows.push(ObjRow::More(items.len() - 400));
-                }
-            }
+            let (rows, total) = group_rows(gt, &needle);
             self.objects.rows = rows;
             self.objects.rows_key = Some(needle);
             self.objects.total = total;
@@ -2142,13 +2175,6 @@ impl Editor {
                                 }
                             });
                         }
-                        ObjRow::More(n) => {
-                            ui.label(theme::data_text(
-                                format!("… {n} more — narrow the filter"),
-                                9.5,
-                                theme::FAINT,
-                            ));
-                        }
                     }
                 }
             },
@@ -2156,6 +2182,8 @@ impl Editor {
         if let Some(i) = pick {
             self.objects.selected = Some(i);
             self.objects.edit_pair = None;
+            // A pair index means nothing against a different template.
+            self.objects.sel_pair = None;
         }
         
         self.obj_load = loaded; // hand the model back
@@ -2244,44 +2272,50 @@ impl Editor {
                 ui.label(theme::poster_text(&t.name, 21.0, theme::TX));
                 ui.add_space(10.0);
 
-                // known first — they get a real label
-                let mut known: Vec<usize> = Vec::new();
-                let mut unknown: Vec<usize> = Vec::new();
-                for (pi, p) in t.pairs.iter().enumerate() {
-                    if sab_formats::gametemplates::known_property_name(p.hash).is_some() {
-                        known.push(pi)
-                    } else {
-                        unknown.push(pi)
-                    }
-                }
+                // Named first — they get a real label. Flattened into one row list so the whole
+                // thing can virtualise: `take(60)` used to cut the unnamed section, which silently
+                // hid properties on 3,110 of the 10,761 templates (the worst, an APC half-track,
+                // carries 1,683 pairs — so ~96% of it was invisible).
+                let rows = prop_rows(t);
 
                 let mut act: Option<(usize, Vec<u8>, String, String)> = None; // (pair, bytes, before, after)
                 let mut wire: Option<usize> = None;
+                let mut pick_pair: Option<usize> = None;
 
-                if !known.is_empty() {
-                    theme::eyebrow(ui, "Named properties");
-                    ui.add_space(4.0);
-                    for pi in known {
-                        let p = &t.pairs[pi];
-                        let name = sab_formats::gametemplates::known_property_name(p.hash).unwrap();
-                        self.prop_row(ui, idx, pi, name, p, &mut act, &mut wire);
-                    }
-                }
-                if !unknown.is_empty() {
-                    ui.add_space(10.0);
-                    theme::eyebrow(ui, "Unnamed properties");
-                    ui.add_space(2.0);
-                    ui.label(theme::data_text(
-                        "the property name is a hash we can't spell yet — every reading of the value is shown so the real one is recognisable",
-                        10.0,
-                        theme::FAINT,
-                    ));
-                    ui.add_space(4.0);
-                    for pi in unknown.into_iter().take(60) {
-                        let p = &t.pairs[pi];
-                        let label = format!("0x{:08X}", p.hash);
-                        self.prop_row(ui, idx, pi, &label, p, &mut act, &mut wire);
-                    }
+                // Virtualised for the same reason the template list is: `show()` lays out every row
+                // and only clips the paint. Every variant is one row tall, which is what
+                // `show_rows` needs — the four readings moved to the context panel to keep it so.
+                egui::ScrollArea::vertical()
+                    .id_source("obj_props")
+                    .auto_shrink([false, false])
+                    .show_rows(ui, 24.0, rows.len(), |ui, range| {
+                        for k in range {
+                            match rows[k] {
+                                PropRow::Head(label) => {
+                                    theme::eyebrow(ui, label);
+                                }
+                                PropRow::Item(pi) => {
+                                    let p = &t.pairs[pi];
+                                    match sab_formats::gametemplates::known_property_name(p.hash) {
+                                        Some(name) => self.prop_row(
+                                            ui, idx, pi, name, p, &mut act, &mut wire,
+                                            &mut pick_pair,
+                                        ),
+                                        None => {
+                                            let label = format!("0x{:08X}", p.hash);
+                                            self.prop_row(
+                                                ui, idx, pi, &label, p, &mut act, &mut wire,
+                                                &mut pick_pair,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                if let Some(pi) = pick_pair {
+                    self.objects.sel_pair = Some(pi);
                 }
 
                 if let Some((pi, bytes, before, after)) = act {
@@ -2314,6 +2348,7 @@ impl Editor {
         p: &sab_formats::gametemplates::Pair,
         act: &mut Option<(usize, Vec<u8>, String, String)>,
         wire: &mut Option<usize>,
+        pick: &mut Option<usize>,
     ) {
         let staged = self
             .changes
@@ -2331,18 +2366,45 @@ impl Editor {
             _ => None,
         };
 
+        let inspecting = self.objects.sel_pair == Some(pi);
+        // Margins are tuned to the 26px row `show_rows` reserves — a taller row would overlap the
+        // next one, since virtualisation assumes a uniform height.
         egui::Frame::none()
-            .fill(if edited { theme::EMBER_SOFT } else { theme::G2 })
-            .stroke(egui::Stroke::new(1.0, if edited { theme::EMBER_DK } else { theme::LINE }))
-            .inner_margin(egui::Margin::symmetric(9.0, 6.0))
-            .outer_margin(egui::Margin { bottom: 4.0, ..Default::default() })
+            .fill(if edited {
+                theme::EMBER_SOFT
+            } else if inspecting {
+                theme::G3
+            } else {
+                theme::G2
+            })
+            .stroke(egui::Stroke::new(
+                1.0,
+                if edited {
+                    theme::EMBER_DK
+                } else if inspecting {
+                    theme::COLD_DK
+                } else {
+                    theme::LINE
+                },
+            ))
+            .inner_margin(egui::Margin::symmetric(9.0, 3.0))
+            .outer_margin(egui::Margin { bottom: 2.0, ..Default::default() })
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(theme::disp_text(
-                        name,
-                        11.0,
-                        if edited { theme::EMBER } else { theme::DIM },
-                    ));
+                    if ui
+                        .add(
+                            egui::Label::new(theme::disp_text(
+                                name,
+                                11.0,
+                                if edited { theme::EMBER } else { theme::DIM },
+                            ))
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("inspect this value")
+                        .clicked()
+                    {
+                        *pick = Some(pi);
+                    }
                     ui.add_space(4.0);
 
                     if let Some(tn) = &tex {
@@ -2365,7 +2427,7 @@ impl Editor {
                         let is_open = self.objects.edit_pair == Some(pi);
                         if is_open {
                             let r = ui.add_sized(
-                                [160.0, 20.0],
+                                [160.0, 18.0],
                                 egui::TextEdit::singleline(&mut self.objects.edit_buf)
                                     .font(egui::FontId::new(11.5, theme::data())),
                             );
@@ -2426,21 +2488,52 @@ impl Editor {
                         }
                     }
                 });
-
-                // The four readings are for values whose TYPE is unknown. A named reference already
-                // knows what it is, so showing four guesses there would be noise.
-                if tex.is_none() && !is_ref {
-                    if let Some(v) = val {
-                        if !known {
-                            four_readings(ui, v);
-                        }
-                    }
-                }
             });
     }
 
     fn objects_context(&mut self, ui: &mut egui::Ui) {
         let sel = self.objects.selected;
+
+        // The selected property's value, in every reading at once. This used to render inline under
+        // each row, which made rows variable-height and blocked virtualisation of a 1,683-pair
+        // template. One row at a time is also simply easier to read.
+        if let (Some(ei), Some(pi)) = (sel, self.objects.sel_pair) {
+            let loaded = std::mem::replace(&mut self.obj_load, Load::Loading);
+            if let Load::Ready(gt) = &loaded {
+                if let Some(Entry::Template(t)) = gt.entries.get(ei) {
+                    if let Some(p) = t.pairs.get(pi) {
+                        let name = sab_formats::gametemplates::known_property_name(p.hash)
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("0x{:08X}", p.hash));
+                        theme::card(ui, "Value", None, |ui| {
+                            ui.label(theme::data_text(&name, 11.5, theme::TX));
+                            ui.label(theme::data_text(
+                                format!("{} byte(s)", p.data.len()),
+                                9.5,
+                                theme::FAINT,
+                            ));
+                            ui.add_space(4.0);
+                            match p.as_u32() {
+                                Some(v) => four_readings(ui, v),
+                                None => {
+                                    // Not 4 bytes wide, so there is no u32 to read four ways. 27% of
+                                    // the retail pairs are this shape and none of them is editable
+                                    // yet — see the plan's Bytes(n) work.
+                                    ui.label(theme::data_text(
+                                        "not a 4-byte value — no editor for this width yet",
+                                        10.0,
+                                        theme::FAINT,
+                                    ));
+                                }
+                            }
+                        });
+                        ui.add_space(6.0);
+                    }
+                }
+            }
+            self.obj_load = loaded;
+        }
+
         theme::card(ui, "Referenced by", None, |ui| {
             match sel {
                 None => {
@@ -3686,6 +3779,68 @@ mod tests {
             ],
         }));
         assert_eq!(build_xref(&gt).get(&7), Some(&vec![0usize]));
+    }
+
+    /// Both lists were capped — `take(400)` on a type group, `take(60)` on the unnamed properties —
+    /// and neither cap was visible in the UI beyond one grey "narrow the filter" row. Against the
+    /// real DB they hid 3,113 templates and truncated the property list on 3,110 of 10,761
+    /// templates. This pins that every row is offered, on the worst real cases.
+    #[test]
+    fn the_lists_are_not_capped() {
+        let Some(game) = install() else { return };
+        let gt = crate::assets::load_gametemplates(&game).expect("templates");
+
+        // ---- template list: every member of every type group ----
+        let (rows, total) = group_rows(&gt, "");
+        let items = rows.iter().filter(|r| matches!(r, ObjRow::Item(..))).count();
+        assert_eq!(items, total, "every template must get a row, not the first 400 of its group");
+
+        // Each Head declares its group size; the Items that follow must match it.
+        let mut i = 0usize;
+        let mut groups = 0usize;
+        let mut biggest = 0usize;
+        while i < rows.len() {
+            let ObjRow::Head(ty, n) = &rows[i] else { panic!("row {i} is not a group head") };
+            let run = rows[i + 1..].iter().take_while(|r| matches!(r, ObjRow::Item(..))).count();
+            assert_eq!(run, *n, "group {ty} declares {n} but offers {run} rows");
+            biggest = biggest.max(run);
+            groups += 1;
+            i += 1 + run;
+        }
+        assert!(biggest > 400, "expected a group past the old cap, biggest was {biggest}");
+
+        // ---- property list: every pair of the widest template ----
+        let (widest_i, widest) = gt
+            .templates()
+            .max_by_key(|(_, t)| t.pairs.len())
+            .expect("a template");
+        let prows = prop_rows(widest);
+        let pitems = prows.iter().filter(|r| matches!(r, PropRow::Item(_))).count();
+        assert_eq!(
+            pitems,
+            widest.pairs.len(),
+            "{} ({}) has {} pairs but only {pitems} rows",
+            widest.name,
+            widest.ttype,
+            widest.pairs.len()
+        );
+        assert!(
+            widest.pairs.len() > 60,
+            "expected a template past the old 60-pair cap, widest was {}",
+            widest.pairs.len()
+        );
+        // Every pair index appears exactly once, so the split into named/unnamed loses nothing.
+        let mut seen: Vec<usize> =
+            prows.iter().filter_map(|r| match r { PropRow::Item(p) => Some(*p), _ => None }).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..widest.pairs.len()).collect::<Vec<_>>());
+
+        eprintln!(
+            "{groups} type groups, biggest {biggest}; widest template {} ({}) entry {widest_i} with {} pairs",
+            widest.name,
+            widest.ttype,
+            widest.pairs.len()
+        );
     }
 
     /// The list rebuild and the xref are what made the page struggle once it had the real DB behind

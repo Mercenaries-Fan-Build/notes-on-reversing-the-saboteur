@@ -40,7 +40,7 @@ Entry body. The root is one of:
   Container  (defensive; not seen in retail):  u32 tag(≠0), u32 child_count, child_count × <root>
 
 Object                              -- exactly ONE level of nesting; not a recursive tree
-  u32   instance_id    -- per-instance unique id, NOT a name hash (see below)
+  u32   object_tag     -- pandemic_hash(r"<container path w/o .wsd>\<editor name>") (see below)
   u32   param_count    -- a CHILD count
   param_count × Param
 
@@ -98,20 +98,51 @@ and `iD2`, which are the same tags as `Position`, `Flags`, `Width`, `ID2`. And t
 matched only **131 of the 13 669 distinct tags** in the pack — which is not a gap in the dictionary,
 for the reason in the next section.
 
-### Object nodes: the tag is an instance ID, not a name hash ★
+### Object nodes: the tag is `pandemic_hash` of a PATH ★
 
-A node whose children include a `ClassName` is an **object**, and its own tag is a **per-instance
-unique id** — not `pandemic_hash` of anything. Evidence:
+> **Correction (2026-07-26).** This section previously concluded that an object's tag was an opaque
+> "per-instance unique id, not `pandemic_hash` of anything". That was wrong. It *is* a hash — of a
+> path that does not appear anywhere in the file, which is why hashing the file's own strings never
+> reproduced it. The evidence below was all correct; the conclusion drawn from it was not.
 
-* 13 426 objects, **13 397 distinct object tags** — they account for essentially all of the 13 669
-  distinct tags, which is why only 131 tags are "named". The dictionary is not 1% complete; the other
-  99% are not names.
-* **640 `ClassName` values map to more than one tag**, and no repeated name maps to a stable tag —
-  so the tag cannot be a function of the name. `Spore_RS_Jules` alone appears under `0xe638fe83`,
-  `0x6bdead06`, `0xcdaf6f95`, `0xefacd7aa`. Hashing the name, the class, and 14 name/class/path
-  combinations reproduces none of them.
-* The ids are spread across the whole `u32` range (`0x0007efc8…0xfffc64e9`, median gap ~224 000), so
-  they are hash-like or random, not a counter.
+A node whose children include a `ClassName` is an **object**, and its tag is:
+
+```
+object tag = pandemic_hash( <container path, .wsd dropped> \ <object's editor name> )
+
+  Util.GetHandleByName(r"Missions\freeplay\country\mis_giselle_rescue\main\Giselle")
+    hashes exactly that string -> the tag of the Giselle object
+```
+
+Note this is hashed **differently from its own container** (previous section): a container carries
+the `France\EditNodes\` prefix *and* the `.wsd`; an object carries **neither**.
+
+**Verified against retail.** `LuaScripts.luap` stores uncompressed LuaQ 5.1 bytecode, so its string
+constants are plain ASCII in the file. Of the path-like literals extracted from it, **1 632 reproduce
+an object tag** in the embedded pack — and **0 collide with a directory hash**, so the two namespaces
+are cleanly separated. Better, the relationship *composes*: for every one of those whose container is
+in the base pack, dropping the last path component and hashing it as a container names the entry the
+object actually lives in — **1 620 / 1 620, zero exceptions**. The remaining 12 name DLC or cut
+containers.
+
+**★ The editor name is not stored in the pack.** Only ~6.7% of objects have a `ClassName` equal to
+their addressable name, and no other string param ever supplies it (brute-forced across every string
+param of every object in a path-known entry). The name exists only inside the hash and in Lua. So it
+**cannot be recovered** from an EditNodes file alone — but it can be *recomputed*, which is what lets
+an editor mint an addressable clone.
+
+This also explains the earlier evidence, all of which stands:
+
+* 13 426 objects, **13 397 distinct tags** — nearly unique because each object's *path* is unique,
+  not because the ids are arbitrary. This is why only 131 of 13 669 distinct tags are "named" by the
+  parameter dictionary: the rest are path hashes, not parameter names.
+* **640 `ClassName` values map to more than one tag** — the same NPC name in different mission
+  containers yields different paths, so different hashes. `Spore_RS_Jules` appearing under four tags
+  is four *placements*, not four ids for one thing.
+* The 13 tags used more than once are **genuine collisions by identical preimage**: same name, same
+  container — objects copy-pasted in the editor and never renamed. They are legal but *not
+  individually addressable*, since `GetHandleByName` cannot distinguish them.
+* Values spread across the whole `u32` range, as hashes do.
 
 Also note the two name-ish fields are **inverted** from the intuitive reading:
 
@@ -124,11 +155,12 @@ tag_cdaf6f95           {7 children}      <- object, tag = instance id
   LuaTable      u32 0x5404f779
 ```
 
-**Consequence for authoring:** retail itself reuses an id across identical copy-pasted objects — 13
-ids are used more than once, always within one entry and always for objects sharing a `ClassName`
-(six copies of `Spore_WPop_MiddleClass` share one id). So **cloning an object node with its tag
-intact is what the shipping data does**, and a clone-based "add an NPC" workflow does not need to
-mint a fresh id.
+**Consequence for authoring.** Cloning an object *with its tag intact* is legal — retail contains 13
+such pairs — but the copy then shares its template's Lua name and neither is individually reachable
+through `GetHandleByName`. To make a clone addressable, **retag it**:
+`pandemic_hash(r"<container path without .wsd>\<new name>")`. There is no name field to edit; the tag
+*is* the name. `sab_formats::editnodes` exposes this as [`object_tag`] /
+[`Entry::duplicate_object_as`], which also refuses a name already present in the entry.
 
 Because the inspector's keys are byte-order inconsistent, a few tags appear in it **twice, once per
 byte order, with different names** — and only one of the two is a real preimage. `3ce51772` is the
@@ -500,15 +532,17 @@ keep falling through to base.
 | entry root = EditNode `{u32 ver=0, u32 count, Nodes}` | **CONFIRMED** (767/767 embedded + 3/3 DLC roots are version 0) |
 | node = `{u32 tag, u32 n, data}`; `n` = byte-len (leaf) or child-count (container) | **CONFIRMED (framing)** — exact-consume proves the split is resolved correctly on all retail nodes |
 | `tag == pandemic_hash(paramName)` little-endian, for PARAMETER nodes | **CONFIRMED** (250/264 dictionary names hash-verify; the `NodeNN`/`FenceNN` families reproduce 113 pack tags from the exe's own `sprintf` templates) |
-| an OBJECT node's tag is a per-instance unique id, NOT a name hash | **CONFIRMED** — 13 397 distinct ids over 13 426 objects; 640 `ClassName` values map to >1 tag; no name/class/path combination reproduces one |
+| ~~an OBJECT node's tag is a per-instance unique id, NOT a name hash~~ | **RETRACTED 2026-07-26** — it is `pandemic_hash` of the object's full path; see the row above. The observations were right, the conclusion was wrong: hashing only strings *stored in the file* could never find it |
 | `Type` is the class and `ClassName` is the instance name (inverted) | **CONFIRMED** (retail data: `Type='Spore'` / `ClassName='Spore_RS_Jules'`) |
-| cloning an object node with its tag intact is safe | **STRONG** — retail reuses ids across identical copy-pasted objects (13 ids used more than once) |
+| cloning an object with its tag intact is legal but leaves the copy un-addressable | **CONFIRMED** — retail has 13 such collisions; both objects answer to one `GetHandleByName` name. Retag via `object_tag` to make a clone addressable |
 | framing is positional: root count = objects, object count = params, param count = BYTES | **CONFIRMED** (`FUN_00a005a0` advances `p = data + n` unconditionally; depth census finds 0 containers below depth 0 in 152 276 nodes) |
 | the entry body is NOT a recursive tree | **CONFIRMED** — exactly one level of nesting |
 | a big-endian (console) variant of the layout exists | **CONFIRMED** — every scalar load in `FUN_00a005a0` has a byte-reversing twin behind one flag |
 | `Position` expands to `w=1.0`, `XAxis`/`YAxis`/`ZAxis` to `w=0.0` | **CONFIRMED** (`FUN_00a005a0`) |
 | leaf VALUE decoding (string / vec3 / LuaParam / raw) | **HEURISTIC** — value-based, but display-only now that framing is positional; cannot corrupt a rewrite |
-| directory `hash` key's preimage | **UNKNOWN** — kept verbatim; a `.wsd` resource name is the live lead |
+| directory `hash` = `pandemic_hash(r"France\EditNodes\" + path + ".wsd")` | **CONFIRMED** — 97/106 `.wsd` literals in `LuaScripts.luap` reproduce a retail directory hash |
+| object tag = `pandemic_hash(r"<container path w/o .wsd>\<editor name>")` | **CONFIRMED** — 1 632 Lua literals reproduce an object tag, 0 collide with a directory hash, and 1 620/1 620 resolve into exactly the container their path predicts |
+| the object's editor name is NOT stored in the pack | **CONFIRMED** — only ~6.7% equal `ClassName`; no other string param ever supplies it |
 | `XAxis`/`YAxis`/`ZAxis` are a rotation basis, Y-up, yaw in XZ | **STRONG** — the inspector's yaw helper writes exactly this and the results place correctly in-game |
 | the per-tag schema (which tag means what, and its type) | **PARTIAL** — `FUN_00a005a0`'s switch names ~20 tags for the streaming-object class; other `.wsd` classes have their own switches, not yet read |
 | what each object does at runtime (Lua enable/spawn semantics) | **OUT OF SCOPE HERE** — this doc is the container; see the mission Lua |

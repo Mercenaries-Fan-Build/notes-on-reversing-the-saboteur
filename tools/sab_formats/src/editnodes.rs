@@ -46,6 +46,8 @@
 //! `object_with_four_params_is_not_mistaken_for_a_leaf`. Both retail packs round-trip
 //! byte-identically. See `docs/formats/editnodes.md`.
 
+use crate::pandemic_hash;
+
 const MAGIC: &[u8; 4] = b"00ED";
 
 // ------------------------------------------------------------------ model
@@ -301,6 +303,47 @@ fn vec3_bytes(v: [f32; 3]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
+/// The prefix the engine prepends to a container path before hashing it. Lua never writes it.
+pub const CONTAINER_PREFIX: &str = r"France\EditNodes\";
+
+fn strip_wsd(path: &str) -> &str {
+    path.strip_suffix(".wsd").or_else(|| path.strip_suffix(".WSD")).unwrap_or(path)
+}
+
+/// Directory hash of a container, from the path Lua spawns it with.
+///
+/// ```text
+/// Util.SpawnEditNode(r"Missions\freeplay\country\mis_giselle_rescue\main.wsd")
+///   -> pandemic_hash(r"France\EditNodes\Missions\freeplay\country\mis_giselle_rescue\main.wsd")
+/// ```
+///
+/// Lua omits the `France\EditNodes\` prefix; the engine prepends it. Accepts the path with or
+/// without `.wsd` and always hashes the `.wsd` form. Verified: **97 of the 106** `.wsd` path literals
+/// in `LuaScripts.luap` reproduce a directory hash in the retail pack (the rest are DLC or cut).
+pub fn container_hash(path: &str) -> u32 {
+    pandemic_hash(&format!("{CONTAINER_PREFIX}{}.wsd", strip_wsd(path)))
+}
+
+/// An object's tag, from its container's path and its **editor name**.
+///
+/// ```text
+/// Util.GetHandleByName(r"Missions\freeplay\country\mis_giselle_rescue\main\Giselle")
+///   -> pandemic_hash(that same string)
+/// ```
+///
+/// Note the two are hashed **differently**: a container carries the `France\EditNodes\` prefix and
+/// the `.wsd` extension, an object carries **neither** — it is the container path with `.wsd`
+/// dropped, a separator, then the name. Verified: 1 632 path literals in `LuaScripts.luap` reproduce
+/// an object tag, and **1 620 / 1 620** of those whose container is in the base pack are found inside
+/// exactly the container their path predicts (the other 12 name DLC/cut containers).
+///
+/// ⚠️ The editor name is **not stored in the pack** — only ~6.7% of objects happen to have a
+/// `ClassName` equal to it. The name exists only in this hash and in Lua, so it cannot be recovered
+/// from an EditNodes file alone; but it *can* be recomputed, which is what makes a clone addressable.
+pub fn object_tag(container_path: &str, object_name: &str) -> u32 {
+    pandemic_hash(&format!("{}\\{object_name}", strip_wsd(container_path)))
+}
+
 impl Pack {
     pub fn entry(&self, hash: u32) -> Option<&Entry> {
         self.entries.iter().find(|e| e.hash == hash)
@@ -364,15 +407,41 @@ impl Entry {
 
     /// Clone object `index` and insert the copy directly after it, returning the new index.
     ///
-    /// **The instance id (the object's tag) is copied too**, which is deliberate: retail itself
-    /// reuses an id across identical copy-pasted objects, so this matches shipping practice and
-    /// there is no id to mint. Rename the copy via [`Node::set_class_name`] and move it with
-    /// [`Node::set_position`].
+    /// **The tag is copied verbatim**, so the copy has the same Lua-addressable name as its
+    /// template — `Util.GetHandleByName` cannot tell them apart. Retail does contain such pairs (13
+    /// tags are used more than once, always same-container and same-`ClassName`: objects copied in
+    /// the editor and never renamed), so this is legal, but it is rarely what you want.
+    ///
+    /// Prefer [`Entry::duplicate_object_as`], which gives the copy its own name.
     pub fn duplicate_object(&mut self, index: usize) -> Result<usize, String> {
         let objects = self.objects_mut().ok_or("entry has no object list")?;
         let copy = objects.get(index).ok_or_else(|| format!("no object at index {index}"))?.deep_clone();
         objects.insert(index + 1, copy);
         Ok(index + 1)
+    }
+
+    /// Clone object `index` and give the copy its **own name**, so Lua can address it individually.
+    ///
+    /// The name is not written into the object — it exists only as the tag,
+    /// `object_tag(container_path, new_name)` — so after this the copy answers to
+    /// `Util.GetHandleByName(r"<container_path without .wsd>\<new_name>")`.
+    ///
+    /// `container_path` must be the path of the entry this object lives in, as Lua spells it (no
+    /// `France\EditNodes\` prefix). Errors if the resulting tag already exists in this entry, which
+    /// would make both objects unaddressable.
+    pub fn duplicate_object_as(
+        &mut self,
+        index: usize,
+        container_path: &str,
+        new_name: &str,
+    ) -> Result<usize, String> {
+        let tag = object_tag(container_path, new_name);
+        if self.objects().iter().any(|o| o.tag() == tag) {
+            return Err(format!("{container_path}\\{new_name} already exists in this entry ({tag:08x})"));
+        }
+        let j = self.duplicate_object(index)?;
+        self.objects_mut().expect("checked above")[j].set_tag(tag);
+        Ok(j)
     }
 
     pub fn remove_object(&mut self, index: usize) -> Result<Node, String> {
@@ -391,6 +460,14 @@ impl Node {
             Node::Container { tag, children } => {
                 Node::Container { tag: *tag, children: children.iter().map(Node::deep_clone).collect() }
             }
+        }
+    }
+
+    /// Retag a node. For an object the tag **is** its Lua-addressable name (see [`object_tag`]), so
+    /// this is how an object is renamed — there is no name field to edit.
+    pub fn set_tag(&mut self, tag: u32) {
+        match self {
+            Node::Leaf { tag: t, .. } | Node::Container { tag: t, .. } => *t = tag,
         }
     }
 
@@ -720,6 +797,51 @@ mod tests {
         assert_eq!(objs[1].class_name().as_deref(), Some("Guard_A_Copy"));
         assert_eq!(objs[1].position(), Some([50.0, 0.0, 50.0]));
         assert_eq!(objs[0].class_name().as_deref(), Some("Guard_A"), "the template is untouched");
+    }
+
+    /// Container and object hashes, pinned against values recovered from the retail pack by hashing
+    /// the path literals in `LuaScripts.luap`.
+    #[test]
+    fn container_and_object_hashes_reproduce_retail() {
+        // `Util.SpawnEditNode(r"Missions\Act_3\Mission_2\main.wsd")`
+        assert_eq!(container_hash(r"Missions\Act_3\Mission_2\main.wsd"), 0xffff_6df6);
+        assert_eq!(container_hash(r"Missions\Act_3\Mission_2\main"), 0xffff_6df6, ".wsd is optional");
+        assert_eq!(container_hash(r"CountrySide\centre\chateaudeisenbourg\aurora.wsd"), 0xa100_b035);
+
+        // `Util.GetHandleByName(...)` — the object path is the SAME string that is hashed.
+        assert_eq!(object_tag(r"Missions\act_1\barfight\main.wsd", "LOC_EnterSpot"), 0x32f8_35cb);
+        assert_eq!(
+            object_tag(r"CountrySide\centre\chateaudeisenbourg\aurora.wsd", "VH_CV_CR_Aurora_01"),
+            0x1d7c_ae7e
+        );
+        // The two schemes differ: a container gets the prefix AND the extension, an object neither.
+        assert_ne!(
+            object_tag(r"Missions\act_1\barfight\main", "x"),
+            container_hash(r"Missions\act_1\barfight\main\x")
+        );
+    }
+
+    /// Renaming an object means retagging it — there is no name field.
+    #[test]
+    fn duplicate_as_gives_the_copy_its_own_lua_name() {
+        const PATH: &str = r"Missions\test\main.wsd";
+        let mut pack = Pack {
+            entries: vec![Entry {
+                hash: container_hash(PATH),
+                root: Root::EditNode { objects: vec![sample_object(object_tag(PATH, "Guard"), "Guard_A")] },
+            }],
+        };
+        let e = pack.entry_mut(container_hash(PATH)).unwrap();
+        let j = e.duplicate_object_as(0, PATH, "Guard_Clone").unwrap();
+        assert_eq!(e.objects()[j].tag(), object_tag(PATH, "Guard_Clone"));
+        assert_ne!(e.objects()[j].tag(), e.objects()[0].tag(), "the copy is addressable on its own");
+
+        // A second copy under the same name would make both unreachable.
+        let Err(err) = e.duplicate_object_as(0, PATH, "Guard_Clone") else { panic!("must reject a dupe") };
+        assert!(err.contains("already exists"), "{err}");
+
+        let bytes = pack.write();
+        assert_eq!(Pack::parse(&bytes).unwrap().write(), bytes);
     }
 
     /// The publish step: ship only the touched entries, so the rest fall through to base.

@@ -38,12 +38,20 @@ pub fn run(args: &[String]) {
         return;
     }
 
+    // `--csv <path>`: emit a sidecar keyed by wem id, to join against a bulk extraction's
+    // manifest.csv (`saboteur_audio`) and give the ID-named .wem files their meaning back.
+    // Keys are deduped by wem id: several subtitle keys can resolve to the same stream (a line
+    // reused across missions), so the extra keys are kept in `also_keys` rather than dropped.
+    let csv_out = flag(args, "--csv");
+
     let mut resolved = 0usize;
     let mut examples = Vec::new();
+    let mut by_wem: std::collections::BTreeMap<u32, Vec<String>> = std::collections::BTreeMap::new();
     for k in &keys {
         match pack.wem_for_key(k) {
             Some(w) => {
                 resolved += 1;
+                by_wem.entry(w).or_default().push(k.clone());
                 if examples.len() < 8 {
                     examples.push(format!("  {:<46} -> wem {w:08x}", trunc(k, 46)));
                 }
@@ -56,11 +64,38 @@ pub fn run(args: &[String]) {
     for e in examples {
         println!("{e}");
     }
+
+    if let Some(path) = csv_out {
+        let mut out = String::from("wem_id,key,speaker,event,also_keys\n");
+        for (w, ks) in &by_wem {
+            let key = &ks[0];
+            let spk = sab_formats::gametext::speaker(key).unwrap_or_default();
+            let also = ks[1..].join(" ");
+            out.push_str(&format!(
+                "{:08x},{},{},{},{}\n",
+                w, csv_esc(key), csv_esc(&spk), csv_esc(&sab_formats::wwise::event_name(key)), csv_esc(&also)
+            ));
+        }
+        match std::fs::write(path, out) {
+            Ok(()) => println!("sidecar -> {path} ({} distinct wems)", by_wem.len()),
+            Err(e) => eprintln!("write {path}: {e}"),
+        }
+    }
 }
 
 fn usage() {
-    eprintln!("sab_probe audio <Sound/<Lang>.pck> <GameText.dlg> [--key <vo_key>]");
+    eprintln!("sab_probe audio <Sound/<Lang>.pck> <GameText.dlg> [--key <vo_key>] [--csv <out.csv>]");
     eprintln!("  resolve VO/subtitle keys to their Wwise .wem source id + report coverage");
+    eprintln!("  --csv  write a wem_id -> key/speaker sidecar to join against a manifest.csv");
+}
+
+/// Minimal RFC4180 quoting — keys and speakers are tame, but never let one corrupt the row.
+fn csv_esc(s: &str) -> String {
+    if s.contains([',', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {

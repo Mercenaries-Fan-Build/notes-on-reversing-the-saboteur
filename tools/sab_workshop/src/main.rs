@@ -151,7 +151,7 @@ fn print_help() {
          USAGE:\n  sab_workshop [OPTIONS]\n\n\
          The game install is the ONLY thing this needs. Everything below is an override.\n\n\
          OPTIONS:\n\
-         \x20 --game  <dir>    game install root   (default: the saved setting, else auto-detected)\n\
+         \x20 --game  <dir>    game install root   (default: the saved setting; set it in the app's Settings page)\n\
          \x20 --boot  <token>  character to open with, by mesh name (default: SeanDevlin)\n\
          \x20 --mesh  <path>   inspect a loose SMSH instead of the install (needs --skel)\n\
          \x20 --skel  <path>   the rig for --mesh (flat .skel text)\n\
@@ -159,7 +159,7 @@ fn print_help() {
          \x20 --pack  <path>   Animations.pack     (default: <game>/Animations.pack)\n\
          \x20 --help           show this help\n\n\
          PATHS:\n\
-         \x20 <game>   from settings.json, or auto-detected (GOG / Galaxy / Steam / Pandemic layouts)\n\n\
+         \x20 <game>   from settings.json (set it once in the app's Settings page); never guessed\n\n\
          CONTROLS (in the window):\n\
          \x20 LMB drag  orbit    |  MMB drag  pan    |  wheel  zoom\n\
          \x20 left panel: search + click a clip to play; bottom panel: play/pause, loop, speed, scrubber"

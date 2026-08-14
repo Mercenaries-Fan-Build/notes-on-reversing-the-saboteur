@@ -105,16 +105,13 @@ impl Settings {
     }
 
     /// Read settings from an explicit path. A missing or unreadable file is not an error — it is
-    /// first run, and we fall back to auto-detection so the app is usable before anyone opens
-    /// Settings at all.
+    /// first run, and `game_dir` is left EMPTY. No install location is ever guessed: the app opens
+    /// on the Settings page and the user points it at their own folder (the only way it is set).
     pub fn load_from(path: &std::path::Path) -> Settings {
         let mut s: Settings = std::fs::read_to_string(path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        if s.game_dir.is_empty() {
-            s.game_dir = detect_install().unwrap_or_default();
-        }
         s.clamp();
         s
     }
@@ -194,30 +191,20 @@ impl Settings {
     }
 }
 
-/// Settings for whatever install is on this machine, or `None` when there is none.
+/// The install the user has configured, or `None` when there is none. Used by tests and headless
+/// runs that need a real install to read.
 ///
-/// The entry point for anything that must not name an install location literally — tests and
-/// headless runs included. A hardcoded `C:/GOG Games/...` passes on the machine it was written on
-/// and is a lie everywhere else; this asks the same detector the app uses.
+/// This NEVER guesses a location. It is the user's saved `game_dir` (whatever they picked on the
+/// Settings page), or the `SAB_GAME_DIR` environment variable for CI / scripted runs that have no
+/// saved settings file. A hardcoded `C:/GOG Games/...` passes on the machine it was written on and
+/// is a lie everywhere else, so there is no probe list here by design.
 pub fn detected() -> Option<Settings> {
-    detect_install().map(|game_dir| Settings { game_dir, ..Default::default() })
-}
-
-/// Look for an install in the usual places, so first run is usually zero-configuration. Ordered
-/// most- to least-likely; the first hit that passes the required-file check wins.
-pub fn detect_install() -> Option<String> {
-    let mut roots: Vec<String> = Vec::new();
-    for drive in ["C:", "D:", "E:"] {
-        roots.push(format!("{drive}/GOG Games/The Saboteur"));
-        roots.push(format!("{drive}/Program Files (x86)/GOG Galaxy/Games/The Saboteur"));
-        roots.push(format!("{drive}/Program Files (x86)/Steam/steamapps/common/The Saboteur"));
-        roots.push(format!("{drive}/SteamLibrary/steamapps/common/The Saboteur"));
-        roots.push(format!("{drive}/Program Files (x86)/Pandemic Studios/The Saboteur"));
-    }
-    roots.into_iter().find(|r| {
-        let probe = Settings { game_dir: r.clone(), ..Default::default() };
-        probe.is_valid()
-    })
+    let mut s = match std::env::var("SAB_GAME_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => Settings { game_dir: dir, ..Default::default() },
+        _ => Settings::load(),
+    };
+    s.clamp();
+    s.is_valid().then_some(s)
 }
 
 #[cfg(test)]
@@ -278,8 +265,8 @@ mod tests {
         assert_eq!(read.vgmstream_path, "C:/tools/vgmstream/vgmstream-cli.exe");
         assert_eq!(read.export_dir, "D:/mods/bundles");
         assert!((read.type_scale - 1.45).abs() < 1e-6);
-        // A stored install path must NOT be replaced by auto-detection.
-        assert_ne!(read.game_dir, detect_install().unwrap_or_default());
+        // A stored install path is returned verbatim — nothing guesses or overwrites it.
+        assert_eq!(read.game_dir, "D:/SteamLibrary/steamapps/common/The Saboteur");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -82,7 +82,7 @@ Our unique assets (from the clean decomp):
   directory {hash,offset,compSize,uncSize,0,flag}; N from offset-chain closure; loader `FUN_00658870`/
   `FUN_0065a900`/`FUN_006617d0`. Object (dir@0x20) + streamblock (dir@0x44) variants. Splice recomputes
   offsets; composes with sab_pack. `scan` = 0 in-scope mismatches on 1000+ real sub-packs. Closes drop-in
-  multi-asset bundles. Doc: tools/sab_sbla/SBLA_SUBPACK_FORMAT.md.
+  multi-asset bundles. Doc: docs/formats/sbla_subpack.md.
 - ⚠️ **World/startup pack path_crc** (docs/formats/world_megapack_key.md): the index field is the
   streamblock ID/ordinal (NOT name_crc); name_crc=pandemic_hash(name) at ALBS+8; path_crc is per-instance.
   **CORRECTION** (a deeper sub-search, self-verified): the `pandemic_hash("<name>.pack")` form one

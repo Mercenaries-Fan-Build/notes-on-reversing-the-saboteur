@@ -75,24 +75,54 @@ struct Playback {
     speed: f32,
 }
 
-pub fn run(cfg: Config) {
+/// A single degenerate triangle standing in for "no model yet". wgpu rejects zero-length vertex and
+/// index buffers, so the empty startup scene (before an install is configured) still needs *some*
+/// geometry; this is off-camera and untextured. Replaced the instant a real model loads.
+fn placeholder_mesh() -> Smsh {
+    Smsh {
+        positions: vec![[0.0; 3]; 3],
+        normals: vec![[0.0, 1.0, 0.0]; 3],
+        uvs: vec![[0.0; 2]; 3],
+        joints: vec![[0; 4]; 3],
+        weights: vec![[0.0; 4]; 3],
+        indices: vec![0, 1, 2],
+        prims: Vec::new(),
+    }
+}
+
+/// The startup model when there is nothing to load — no configured install, or a boot that failed.
+/// An empty rig and no pack parts, so the app comes up on the Settings chooser instead of dying.
+fn placeholder_boot() -> crate::boot::BootModel {
+    crate::boot::BootModel {
+        name: "no model".into(),
+        mesh: placeholder_mesh(),
+        bones: Vec::new(),
+        parts: Vec::new(),
+        part_ranges: Vec::new(),
+    }
+}
+
+pub fn run(mut cfg: Config) {
     let mut errors: Vec<String> = Vec::new();
 
     // --- the startup model: assembled from the install, or loaded from --mesh/--skel ---
-    let boot = match crate::boot::load(&cfg) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("[sab_workshop] FATAL: {e}");
-            if cfg.game_dir.is_empty() {
-                eprintln!(
-                    "[sab_workshop] No game install was found. Pass --game <dir> (the folder holding \
-                     Global/, Animations.pack, France.materials)."
-                );
-            } else {
-                eprintln!("[sab_workshop] Install checked: {}", cfg.game_dir);
-            }
-            return;
-        }
+    //
+    // A missing or unconfigured install is NOT fatal and never sends the user to a console. When the
+    // required files are not there we open on a placeholder scene and force the Settings page's
+    // "choose your game directory" chooser — the one and only way the install is set (see
+    // `settings_page` + `needs_install`). Only WITH a valid install do we assemble a real character.
+    let have_install = cfg.settings.is_valid();
+    let boot = if have_install {
+        crate::boot::load(&cfg).unwrap_or_else(|e| {
+            eprintln!("[sab_workshop] boot: {e}");
+            errors.push(format!("Could not assemble the startup character: {e}"));
+            placeholder_boot()
+        })
+    } else {
+        eprintln!(
+            "[sab_workshop] no valid install configured — opening the game-folder chooser (Settings)"
+        );
+        placeholder_boot()
     };
     let boot_parts = boot.parts;
     let boot_ranges = boot.part_ranges;
@@ -170,13 +200,19 @@ pub fn run(cfg: Config) {
     let mut submesh_tex: Vec<Option<usize>> = vec![None; n_sub];
     let mut submesh_prov: Vec<resolve::Prov> = vec![resolve::Prov::Unresolved; n_sub];
     let (bg_tx, bg_rx) = std::sync::mpsc::channel::<BgMsg>();
-    {
+    // Only read the install when there IS one. With no valid game_dir there are no packs to open,
+    // so the worker is not spawned and the browser shows nothing rather than spinning forever — the
+    // window is up purely to host the game-folder chooser.
+    if have_install {
         let cfgw = cfg.clone();
         let subw = submeshes.clone();
+        // Clone the sender so `bg_tx` stays in scope: a live install change (Settings chooser)
+        // re-spawns this same worker without a reboot, and needs its own handle.
+        let txw = bg_tx.clone();
         // A pack-assembled boot model is textured through the engine's own material table on the
         // click path below, so the worker must not ALSO run the legacy name-token seed over it —
         // that path exists for `--mesh` files, which have no material bindings to look up.
-        std::thread::spawn(move || background_load(cfgw, subw, rig_bones, !from_pack, bg_tx));
+        std::thread::spawn(move || background_load(cfgw, subw, rig_bones, !from_pack, txw));
     }
 
 
@@ -193,7 +229,8 @@ pub fn run(cfg: Config) {
     // Root motion walks the character out of a fixed-camera preview; lock it by default.
     let mut lock_root = true;
     let mut nav_tab = NavTab::Models;
-    let mut page = Page::Inspect;
+    // With no install, open straight on the chooser; otherwise the normal inspector.
+    let mut page = if have_install { Page::Inspect } else { Page::Settings };
     // The mod-editor pages (Templates / GameText / Icons). Every game-side path comes from the one
     // configured install root (Settings page), not from unwinding a megapack path.
     let game_dir = cfg.game_dir.clone();
@@ -205,13 +242,16 @@ pub fn run(cfg: Config) {
         launched_with: cfg.settings.game_dir.clone(),
         s: cfg.settings.clone(),
         note: None,
+        needs_install: !have_install,
+        apply: None,
     };
     // Model-browser groupings (rule-based + user overrides saved next to the game) and the
     // right-click "move to group" request applied after each UI pass.
     let mut groups = crate::models::Groups::load(&game_dir);
     let mut pending_group: Option<(usize, String)> = None;
-    // True until the ModelList stage streams in — the browser shows a spinner meanwhile.
-    let mut models_loading = true;
+    // True until the ModelList stage streams in — the browser shows a spinner meanwhile. With no
+    // install nothing is streaming, so start un-spun.
+    let mut models_loading = have_install;
     // The assembled assets (from GameTemplates) the browser lists, and the one selected (whose parts
     // the inspector shows).
     let mut browse_assets: Vec<crate::assets::Asset> = Vec::new();
@@ -311,6 +351,91 @@ pub fn run(cfg: Config) {
                     }
                 }
                 WindowEvent::RedrawRequested => {
+                    // --- apply a newly chosen install, LIVE (no reboot) ---
+                    // The chooser hands us a validated folder the instant its checklist goes green.
+                    // Rebuild the config around it, assemble the protagonist, and restream the
+                    // catalog / model list / packs — the same work done at boot, run again in place.
+                    // The megapacks are mmapped (cheap to reopen), so this is a brief hitch, not a
+                    // restart. This is what lets the red "no install" error clear without relaunching.
+                    if let Some(new_dir) = settings_ctx.apply.take() {
+                        let mut s = settings_ctx.s.clone();
+                        s.game_dir = new_dir;
+                        s.clamp();
+                        let _ = s.save(); // auto-save: the choice persists without a Save click
+                        cfg.settings = s.clone();
+                        cfg.game_dir = s.game_dir.clone();
+                        cfg.megapack = s.megapack();
+                        cfg.palettes = s.palettes();
+                        cfg.pack = s.anim_pack();
+                        cfg.wsao = Some(s.wsao());
+                        match crate::boot::load(&cfg) {
+                            Ok(b) => {
+                                // Upload the assembled protagonist — mirrors the click-swap path below.
+                                let nbones = b.bones.len();
+                                renderer.set_mesh(&b.mesh, nbones);
+                                skel = b.bones.clone();
+                                renderer.update_joints(&skinning::bind_pose(&skel));
+                                submeshes = renderer.submeshes().to_vec();
+                                mesh_stats = (b.mesh.positions.len(), b.mesh.indices.len() / 3, nbones);
+                                model_name = b.name.clone();
+                                current_parts = b.parts.clone();
+                                bone_depth = bone_depths(&skel);
+                                let (c, r) = bounds(&b.mesh);
+                                camera = OrbitCamera::framing(c, r);
+                                current = None;
+                                playback.time = 0.0;
+                                sel_submesh = None;
+                                sel_bone = None;
+                                sel_tex = None;
+                                thumbs.clear();
+                                tex_profile = resolve::profile_path(&model_name);
+                                assets = Vec::new();
+                                submesh_tex = vec![None; submeshes.len()];
+                                submesh_prov = vec![resolve::Prov::Unresolved; submeshes.len()];
+                                let from_pack_now = !current_parts.is_empty();
+                                if from_pack_now {
+                                    model_req = model_req.wrapping_add(1);
+                                    tex_pending = true;
+                                    spawn_tex_resolve(
+                                        &cfg, &current_parts, &b.part_ranges, &submeshes, model_req,
+                                        mtex_tx.clone(),
+                                    );
+                                }
+                                // The editor document + model groupings key on the install root too.
+                                editor_state = crate::editor::Editor::new(
+                                    &cfg.game_dir, cfg.settings.lang, &cfg.settings.dlc_slot,
+                                    &cfg.settings.mod_name,
+                                );
+                                groups = crate::models::Groups::load(&cfg.game_dir);
+                                // Restream catalog / model list / packs / anim for the new install.
+                                models_loading = true;
+                                let cfgw = cfg.clone();
+                                let subw = submeshes.clone();
+                                let txw = bg_tx.clone();
+                                let rb = skel.len();
+                                std::thread::spawn(move || {
+                                    background_load(cfgw, subw, rb, !from_pack_now, txw)
+                                });
+                                // The error state is over.
+                                settings_ctx.needs_install = false;
+                                settings_ctx.launched_with = cfg.game_dir.clone();
+                                settings_ctx.s = cfg.settings.clone();
+                                settings_ctx.dir_edit = cfg.game_dir.clone();
+                                settings_ctx.note = Some((format!("Loaded {}.", cfg.game_dir), false));
+                                load_status = Some((format!("Loaded install: {}", cfg.game_dir), false));
+                                page = Page::Inspect;
+                            }
+                            Err(e) => {
+                                // Mark this folder as tried so the auto-apply does not retry it every
+                                // frame (it passed the file-existence checklist but failed to
+                                // assemble — e.g. a corrupt pack). A different pick re-arms it.
+                                settings_ctx.launched_with = cfg.game_dir.clone();
+                                settings_ctx.note = Some((format!("Could not load that install: {e}"), true));
+                                load_status = Some((format!("Could not load install: {e}"), true));
+                            }
+                        }
+                    }
+
                     // Set by the verb bar, F10, or a texture resolve landing for a deferred
                     // context-menu export. Declared up here because the texture drain below can
                     // raise it before the UI runs.
@@ -418,6 +543,12 @@ pub fn run(cfg: Config) {
                         tex_pending,
                         dest: bundle_root(&settings_ctx.s).join(&model_name).display().to_string(),
                     };
+                    // Until an install is configured there is nothing the other pages can show, so
+                    // pin the view to the chooser — this is the "simplified choose-your-folder"
+                    // state, and it only clears by picking a folder (which relaunches the app).
+                    if settings_ctx.needs_install {
+                        page = Page::Settings;
+                    }
                     gui.run(|ctx| {
                         build_ui(
                             ctx, &catalog, &playable_rows, &mut show_all,
@@ -1755,13 +1886,24 @@ pub struct SettingsCtx {
     /// against this to decide whether to say "restart to apply".
     pub launched_with: String,
     pub note: Option<(String, bool)>, // (message, is_error)
+    /// The app came up with no valid install: the Settings page is the forced first-run chooser and
+    /// shows a prominent red error until a valid folder is picked.
+    pub needs_install: bool,
+    /// A validated install folder the user just chose, for `run()` to load LIVE (no reboot). Set by
+    /// the chooser the instant the checklist goes green; `run()` takes it, rebuilds around it, and
+    /// clears `needs_install`. `None` the rest of the time.
+    pub apply: Option<String>,
 }
 
 /// The Settings page. One column of labelled groups; nothing here is a mod edit, so nothing here
 /// touches the changelist or the DLC overlay.
 fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
     egui::CentralPanel::default().show(ctx, |ui| {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // `auto_shrink([false, false])` makes the scroll region fill the whole panel — its width and
+        // its height — so the wheel works anywhere over the page and the scrollbar sits at the far
+        // right edge, not two-thirds in at the content's own width. Content stays readable via the
+        // inner `set_max_width` below.
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.set_max_width(720.0);
             ui.add_space(8.0);
             ui.label(theme::poster_text("SETTINGS", 22.0, theme::TX));
@@ -1771,6 +1913,29 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                 theme::FAINT,
             ));
             ui.add_space(14.0);
+
+            // First run (or a moved/renamed install): the app has nothing to show until this is set.
+            // Make it an unmistakable ERROR — a filled red callout — not a quiet onboarding header,
+            // so it never looks like the app is "fine" while every page sits empty.
+            if sx.needs_install {
+                egui::Frame::none()
+                    .fill(theme::RED_SOFT)
+                    .stroke(egui::Stroke::new(1.0, theme::RED))
+                    .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                    .outer_margin(egui::Margin { bottom: 14.0, ..Default::default() })
+                    .show(ui, |ui| {
+                        ui.label(theme::poster_text("NO GAME INSTALL — NOTHING CAN LOAD", 15.0, theme::RED));
+                        ui.add_space(4.0);
+                        ui.label(theme::data_text(
+                            "The workshop has no Saboteur folder to read, so every page is empty. \
+                             Choose the folder that holds Global/, France.materials and Saboteur.exe \
+                             below — it loads the instant the checklist turns green. No restart, no \
+                             Save button.",
+                            11.0,
+                            theme::TX,
+                        ));
+                    });
+            }
 
             // ---- game install ----
             theme::eyebrow(ui, "Game install");
@@ -1785,7 +1950,7 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                     egui::TextEdit::singleline(&mut sx.dir_edit)
                         .desired_width(430.0)
                         // Describe the folder, do not name one: the install lives somewhere
-                        // different on every machine, which is what Detect is for.
+                        // different on every machine, so we never guess — the user points us at it.
                         .hint_text("the folder holding Global/, France.materials and Saboteur.exe"),
                 );
                 if ui.button("Browse…").clicked() {
@@ -1794,20 +1959,6 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                         .pick_folder()
                     {
                         sx.dir_edit = d.to_string_lossy().replace('\\', "/");
-                    }
-                }
-                if ui.button("Detect").clicked() {
-                    match crate::settings::detect_install() {
-                        Some(d) => {
-                            sx.dir_edit = d;
-                            sx.note = Some(("Found an install.".into(), false));
-                        }
-                        None => {
-                            sx.note = Some((
-                                "No install found in the usual GOG/Steam locations — Browse to it.".into(),
-                                true,
-                            ));
-                        }
                     }
                 }
             });
@@ -1917,7 +2068,18 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
             ui.add_space(8.0);
             let typed = sx.dir_edit.replace('\\', "/");
             let typed = typed.trim_end_matches('/').to_string();
-            let dir_changed = typed != sx.s.game_dir;
+            // Does the TYPED folder actually hold a Saboteur install?
+            let typed_valid =
+                crate::settings::Settings { game_dir: typed.clone(), ..sx.s.clone() }.is_valid();
+
+            // AUTO-APPLY the install: the moment a valid, different folder is in the box (typed or
+            // Browsed), hand it to `run()` to load live and persist it — no button, no reboot.
+            // `launched_with` is updated by the loader once it takes, so this fires exactly once per
+            // change. Only the install auto-applies; the other defaults below still commit on Save.
+            if typed_valid && typed != sx.launched_with && sx.apply.is_none() {
+                sx.apply = Some(typed.clone());
+            }
+
             ui.horizontal(|ui| {
                 if ui.button("Save settings").clicked() {
                     sx.s.game_dir = typed.clone();
@@ -1944,13 +2106,12 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                 ui.label(theme::data_text(msg, 11.0, if *err { theme::RED } else { theme::COLD }));
             }
 
-            // The install cannot be swapped in place: the megapacks are mmapped at boot and the model
-            // list, asset tree and editor document are all built from them. Say so plainly rather
-            // than half-reloading and leaving stale indices behind.
-            if sx.s.game_dir != sx.launched_with || dir_changed {
+            // Feedback while a changed folder is being resolved: valid ones load themselves (above);
+            // invalid ones say what is missing so the box is never a silent dead end.
+            if !typed.is_empty() && typed != sx.launched_with && !typed_valid {
                 ui.add_space(8.0);
                 ui.label(theme::data_text(
-                    "Restart the workshop to load from the new install.",
+                    "That folder is missing required files (see the checklist) — pick the one holding Global/ and France.materials.",
                     11.0,
                     theme::EMBER,
                 ));

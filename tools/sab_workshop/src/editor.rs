@@ -3588,13 +3588,13 @@ mod tests {
         assert_eq!(n2, 0);
     }
 
-    /// The install these tests read from, found the same way the app finds it. Never a literal path:
-    /// the one setting everything derives from is `settings::game_dir`, and a test that hardcodes it
-    /// passes or fails on where the game happens to live.
+    /// The install these tests read from — the user's configured install (or `SAB_GAME_DIR`), never
+    /// a literal path: the one setting everything derives from is `settings::game_dir`, and a test
+    /// that hardcodes it passes or fails on where the game happens to live.
     fn install() -> Option<String> {
-        let dir = crate::settings::detect_install();
+        let dir = crate::settings::detected().map(|s| s.game_dir);
         if dir.is_none() {
-            eprintln!("skip: no Saboteur install detected");
+            eprintln!("skip: no Saboteur install configured (set it in the app, or SAB_GAME_DIR)");
         }
         dir
     }

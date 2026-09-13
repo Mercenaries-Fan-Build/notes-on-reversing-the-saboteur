@@ -22,6 +22,7 @@ fn u16(b: &[u8], o: usize) -> u16 { u16::from_le_bytes([b[o], b[o + 1]]) }
 fn u32(b: &[u8], o: usize) -> u32 { u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
 
 /// One decoded texture surface: the finest (largest) mip, straight-alpha RGBA8.
+#[derive(Clone)]
 pub struct CpuTexture {
     pub name: String,
     pub width: u32,

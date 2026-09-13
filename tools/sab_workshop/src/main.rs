@@ -31,6 +31,8 @@ mod render;
 mod resolve;
 mod settings;
 mod skinning;
+mod source;
+mod sources;
 mod wsao;
 
 /// Resolved input paths (CLI overrides the built-in defaults).
@@ -143,7 +145,66 @@ fn main() {
         std::process::exit(app::texcheck(cfg, &filter));
     }
 
+    // Fingerprint any folder as a game source (skeleton-key probe). Prints the detected version,
+    // what fingerprinted, and — when the version opens successfully — a summary of what its
+    // impl was able to enumerate. Handy for pointing at a suspected prototype dir and seeing
+    // what the workshop recognizes without launching the GUI.
+    if let Some(i) = args.iter().position(|a| a == "--source-info") {
+        let dir = args.get(i + 1).cloned().unwrap_or(cfg.game_dir.clone());
+        std::process::exit(source_info(&dir));
+    }
+
     app::run(cfg);
+}
+
+fn source_info(dir: &str) -> i32 {
+    let path = std::path::Path::new(dir);
+    println!("Fingerprinting: {}\n", path.display());
+    match source::detect_version(path) {
+        None => {
+            println!("  ✗ no known Saboteur build detected");
+            println!("  (recognized: Retail PC [GOG/Steam], Prototype 2008 Xbox 360)");
+            1
+        }
+        Some((v, fp)) => {
+            println!("  ✓ detected: {} ({v:?})", v.label());
+            println!();
+            println!("  matched:");
+            for m in &fp.matched {
+                println!("    · {m}");
+            }
+            if !fp.warnings.is_empty() {
+                println!();
+                println!("  warnings:");
+                for w in &fp.warnings {
+                    println!("    ! {w}");
+                }
+            }
+            println!();
+            match source::open_source(path) {
+                Ok(src) => {
+                    println!("  opened as: {}", src.label());
+                    let meshes = src.list_meshes();
+                    let textures = src.list_textures();
+                    println!("    meshes    listed: {}", meshes.len());
+                    println!("    textures  listed: {}", textures.len());
+                    println!();
+                    println!("  post-open fingerprint (final):");
+                    for m in &src.fingerprint().matched {
+                        println!("    · {m}");
+                    }
+                    for w in &src.fingerprint().warnings {
+                        println!("    ! {w}");
+                    }
+                    0
+                }
+                Err(e) => {
+                    println!("  ✗ open failed: {e}");
+                    2
+                }
+            }
+        }
+    }
 }
 
 fn print_help() {
@@ -158,6 +219,7 @@ fn print_help() {
          \x20 --skel  <path>   the rig for --mesh (flat .skel text)\n\
          \x20 --index <path>   a generated anim_bone_map.json (default: read Animations.pack)\n\
          \x20 --pack  <path>   Animations.pack     (default: <game>/Animations.pack)\n\
+         \x20 --source-info <dir>  fingerprint a folder as a game source and print what was recognized\n\
          \x20 --help           show this help\n\n\
          PATHS:\n\
          \x20 <game>   from settings.json (set it once in the app's Settings page); never guessed\n\n\

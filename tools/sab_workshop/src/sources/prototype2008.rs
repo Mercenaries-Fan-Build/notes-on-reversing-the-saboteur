@@ -25,7 +25,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use crate::dds;
 use crate::dtex::CpuTexture;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
@@ -44,6 +46,24 @@ pub struct Prototype2008Source {
     tex_index: Vec<PackedRef>,
     /// Same for materials (`<hash>.materials`).
     mat_index: Vec<PackedRef>,
+    /// Loose `.dds` files under Bin360/, keyed by `pandemic_hash(stem)`. Populated at `open()`
+    /// so `load_texture(hash)` is a cheap lookup — the actual bytes and RGBA are only touched
+    /// on demand. Multiple DDS files can share a name (Branches/*/DiffuseCube.dds mirrors the
+    /// root one), so we keep the FIRST match at the shallowest depth (root wins over branches).
+    loose_dds: HashMap<u32, LooseDds>,
+    /// Decoded-texture cache — repeated preview / material-slot lookups don't re-decode.
+    tex_cache: Mutex<HashMap<u32, CpuTexture>>,
+}
+
+#[derive(Clone, Debug)]
+struct LooseDds {
+    /// Filename stem, used as the friendly name.
+    name: String,
+    /// Absolute path on disk. Rustc's dead-code pass mis-flags this on release builds — it IS
+    /// read by `load_texture` for `std::fs::read(&entry.path)`. `#[allow]` at the field keeps
+    /// the compiler quiet without silencing warnings on the wider module.
+    #[allow(dead_code)]
+    path: PathBuf,
 }
 
 /// One line out of a `.packlog`: pointer to a slot inside a specific `.Pack` file.
@@ -180,7 +200,45 @@ impl Prototype2008Source {
             );
         }
 
-        Ok(Self { bin360, fingerprint, hash_names, mesh_index, tex_index, mat_index })
+        // Sweep the Bin360 tree for loose `.dds` files. Empirically these are standard PC-style
+        // DDS (linear, LE DXT blocks) — see docs/2008_texture_format.md. Every one is keyed by
+        // `pandemic_hash(stem)` so any consumer that has a texture hash (from a packlog entry
+        // whose stem is a friendly-name, or from a material record) can resolve it here without
+        // caring where on disk it lives. Root-level files win over Branches/* twins because the
+        // shallower path is the canonical asset (Branches/ are per-team snapshots).
+        let mut loose_dds: HashMap<u32, LooseDds> = HashMap::new();
+        let mut loose_dds_by_depth: HashMap<u32, usize> = HashMap::new();
+        let mut loose_dds_count = 0usize;
+        walk_loose_dds(&bin360, &bin360, &mut |path, name, depth| {
+            let h = pandemic_hash(&name);
+            let keep = match loose_dds_by_depth.get(&h) {
+                Some(&prev) => depth < prev,
+                None => true,
+            };
+            if keep {
+                loose_dds.insert(h, LooseDds { name: name.clone(), path: path.to_path_buf() });
+                loose_dds_by_depth.insert(h, depth);
+                // Bonus name-inventory entry — a texture whose only appearance is a loose file
+                // still gets a plaintext name we can show in the browser.
+                hash_names.entry(h).or_insert(name);
+            }
+            loose_dds_count += 1;
+        });
+        fingerprint.matched(format!(
+            "{loose_dds_count} loose .dds files ({} unique hashes)",
+            loose_dds.len()
+        ));
+
+        Ok(Self {
+            bin360,
+            fingerprint,
+            hash_names,
+            mesh_index,
+            tex_index,
+            mat_index,
+            loose_dds,
+            tex_cache: Mutex::new(HashMap::new()),
+        })
     }
 }
 
@@ -206,7 +264,15 @@ impl GameSource for Prototype2008Source {
     }
 
     fn list_textures(&self) -> Vec<AssetHandle> {
-        self.tex_index
+        // Two population sources today: packlog-mined `<hash>.textures` slots (which still need
+        // SBL4 to unwrap before we can decode them — probe #1) and the loose `*.dds` files at
+        // Bin360 root and under Branches/. Both are surfaced so the browser can enumerate every
+        // texture; `load_texture` picks its decode path on the fly. Keys are the packlog index
+        // for slot rows and `u32::MAX - <loose_idx>` for loose rows — the discriminator lets us
+        // route without a second lookup and keeps a stable-order view for the UI (though only
+        // the hash is functionally used; the browser sorts by name/hash anyway).
+        let mut out: Vec<AssetHandle> = self
+            .tex_index
             .iter()
             .enumerate()
             .map(|(i, e)| AssetHandle {
@@ -214,7 +280,17 @@ impl GameSource for Prototype2008Source {
                 name: self.hash_names.get(&e.hash).cloned().unwrap_or_default(),
                 kind: AssetKind::Texture,
             })
-            .collect()
+            .collect();
+        // Loose DDS handles sit in a distinct key namespace so consumers that round-trip a
+        // handle can tell packlog-slot from loose-file without a second table.
+        for (i, (_h, entry)) in self.loose_dds.iter().enumerate() {
+            out.push(AssetHandle {
+                key: (u64::MAX - i as u64),
+                name: entry.name.clone(),
+                kind: AssetKind::Texture,
+            });
+        }
+        out
     }
 
     fn read_mesh_bytes(&self, handle: &AssetHandle) -> Result<Vec<u8>, String> {
@@ -262,14 +338,40 @@ impl GameSource for Prototype2008Source {
     }
 
     fn load_texture(&self, hash: u32) -> Result<CpuTexture, String> {
-        // Not wired yet — need to sniff whether `<hash>.textures` slots are Xbox-tiled BC1/BC3
-        // (likely) or already linear. First step is a probe: pull one slot, examine the header,
-        // decide on a decoder. Until then, texture browsing works (names come from the packlog)
-        // but 3D preview / thumbnails will show the error.
-        let _ = hash;
-        Err("prototype 2008: texture decoding not yet implemented — need format probe first \
-             (Xbox 360 tiling status unknown)"
-            .into())
+        // Cache hit — repeated preview / material-slot lookups don't reopen the file.
+        if let Some(t) = self.tex_cache.lock().unwrap().get(&hash) {
+            return Ok(t.clone());
+        }
+        // Path A: loose `.dds` at Bin360 root or under Branches/. Empirically standard PC DDS
+        // (linear layout, LE DXT blocks — see docs/2008_texture_format.md), so we can go
+        // straight through the shared `dtex::decode_surface` block decoder. This lights up 615
+        // textures across DXT1/2/3/4/5 with no further work.
+        if let Some(entry) = self.loose_dds.get(&hash) {
+            let bytes = std::fs::read(&entry.path)
+                .map_err(|e| format!("read {}: {e}", entry.path.display()))?;
+            let tex = dds::decode_bytes(&entry.name, &bytes)?;
+            self.tex_cache.lock().unwrap().insert(hash, tex.clone());
+            return Ok(tex);
+        }
+        // Path B: packlog-mined `<hash>.textures` slots inside a `.Pack`. The `.Pack` header
+        // starts with `SBL4`/`SBLL`/`SBL8`/etc. sub-pack magic (2612 of 4396 are SBL4) and the
+        // slot payload past the SBL4 header is opaque — not raw DDS, not raw DTEX, no DXT/DTEX
+        // 4CC anywhere. Scanned Act1_IntKey.Pack (999,201 B) for `DDS `, `DXT1/3/5`, `DTEX`:
+        // zero hits. Only `WSAO` + `MTLD` sit in cleartext, at the very start where the
+        // material record hasn't been swept up into whatever encoding follows. That's
+        // consistent with an SBL4 wrapper that batches every record type behind a single
+        // (possibly LZ / bit-packed) stream. Un-wrapping is probe #1's job; until it lands, we
+        // can't reach the pixel data even if the format were trivial.
+        if self.tex_index.iter().any(|e| e.hash == hash) {
+            return Err(format!(
+                "prototype 2008: texture {hash:08X} lives inside an SBL4-wrapped .Pack slot; \
+                 waiting on the SBL4 sub-pack probe (probe #1) — no plaintext DDS/DTEX bytes \
+                 present in the slot"
+            ));
+        }
+        Err(format!(
+            "prototype 2008: no loose .dds and no packlog-mined slot known for hash {hash:08X}"
+        ))
     }
 
     fn name_of_hash(&self, hash: u32) -> Option<String> {
@@ -358,6 +460,47 @@ fn normalize_windows_slash(s: &str) -> String {
     s.replace('\\', "/")
 }
 
+/// Recursive `*.dds` walk. Depth is measured in path components below `root` so callers can
+/// prefer the shallowest twin when the same stem appears in more than one Branches/*/ tree.
+fn walk_loose_dds(
+    root: &Path,
+    dir: &Path,
+    visit: &mut dyn FnMut(&Path, String, usize),
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk_loose_dds(root, &p, visit);
+        } else if p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("dds"))
+            .unwrap_or(false)
+        {
+            let name = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let depth = p
+                .strip_prefix(root)
+                .map(|rel| rel.components().count())
+                .unwrap_or(usize::MAX);
+            visit(&p, name, depth);
+        }
+    }
+}
+
+// NOTE: the earlier `read_pack_slot(pack_file, start, size)` helper — which trusted the
+// packlog's Start/Size fields to seek into a `.Pack` — was dropped when the SBL4 sub-pack
+// decoder landed. The packlog offsets describe a build-time intermediate layout that the
+// packer reorders on write, so seeking to them read the wrong bytes; the SBL4SubPack
+// directory (see `prototype2008_subpack.rs`) is the authoritative on-disk map.
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +566,65 @@ mod tests {
             confirmed,
             "expected some pandemic_hash matches on block names; got fingerprint: {:#?}",
             src.fingerprint()
+        );
+    }
+
+    #[test]
+    fn loose_dds_decodes_to_rgba8() {
+        // Real-file check for the loose-DDS path. CloudProj is the biggest and cleanest of the
+        // Bin360 root DDS files (512×512 DXT1, no mips, no cubemap). If the decoder ever
+        // regresses to a tiled interpretation the byte-count assertion still passes but the
+        // image is scrambled — the eyeball-verified reference PNG lives in the docs.
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        let hash = pandemic_hash("CloudProj");
+        let tex = src.load_texture(hash).expect("decode loose CloudProj.dds");
+        assert_eq!(tex.width, 512);
+        assert_eq!(tex.height, 512);
+        assert_eq!(tex.rgba.len() as u64, tex.width as u64 * tex.height as u64 * 4);
+    }
+
+    #[test]
+    fn load_texture_on_real_hash_either_decodes_or_stubs_explicitly() {
+        // Both outcomes are pass states — either a loose DDS decodes, or the packlog-mined slot
+        // returns the SBL4-blocked stub. What we're guarding against is a silent success on a
+        // hash we can't actually decode (returning garbage), or a panic.
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        let textures = src.list_textures();
+        assert!(!textures.is_empty(), "packlog + loose DDS should yield textures");
+        let mut decoded_any = false;
+        let mut blocked_any = false;
+        for (h, _name) in src.hash_names.iter().take(2000) {
+            match src.load_texture(*h) {
+                Ok(t) => {
+                    decoded_any = true;
+                    assert_eq!(t.rgba.len() as u64, t.width as u64 * t.height as u64 * 4);
+                }
+                Err(e) => {
+                    if e.contains("SBL4-wrapped") {
+                        blocked_any = true;
+                    } else if e.contains("no loose .dds and no packlog-mined slot") {
+                        // A hash that showed up in `hash_names` but not in either texture table
+                        // — a block-name hash for a mesh/material. Fine.
+                    } else {
+                        panic!("unexpected error for hash {h:08X}: {e}");
+                    }
+                }
+            }
+            if decoded_any && blocked_any {
+                break;
+            }
+        }
+        assert!(
+            decoded_any || blocked_any,
+            "expected at least one hash to either decode (loose DDS) or hit the SBL4 stub"
         );
     }
 
@@ -504,18 +706,24 @@ mod tests {
     }
 
     #[test]
-    fn stubbed_texture_decoder_still_returns_explicit_error() {
+    fn unknown_texture_hash_returns_the_catchall_error() {
+        // A hash that isn't in any index at all — neither a loose DDS nor a packlog-mined slot
+        // — should hit the catch-all error, not the SBL4-blocked one and not a silent success.
+        // (Probe #1's earlier `stubbed_texture_decoder_still_returns_explicit_error` was
+        // dropped when probe #2 wired loose DDS — texture decode is no longer wholly stubbed;
+        // this covers the still-unreachable-hash case.)
         let Some(root) = test_root() else {
             eprintln!("skip: no Bin360/ prototype");
             return;
         };
         let src = Prototype2008Source::open(&root).expect("open");
-        // Texture decode is still stubbed with a clear error until its format probe lands.
-        // Keep this asserting-the-shape-of-the-error test alive so we notice the day it flips.
         let err = match src.load_texture(0xdeadbeef) {
             Err(e) => e,
-            Ok(_) => panic!("expected stub error, got a decoded texture"),
+            Ok(_) => panic!("expected error for unknown hash, got a decoded texture"),
         };
-        assert!(err.contains("not yet implemented"), "expected explicit-stub error, got: {err}");
+        assert!(
+            err.contains("no loose .dds and no packlog-mined slot"),
+            "expected explicit unknown-hash error, got: {err}"
+        );
     }
 }

@@ -8,6 +8,11 @@
 //!   single biggest immediate win — it names every packed object in the build (and, because
 //!   the hash scheme is identical to retail's `pandemic_hash`, names retail assets too).
 //! - Enumerate mesh handles from the inventory.
+//! - **Materials**: walk every `<hash>.materials` slot at open time, parse the WSAO/MTLD
+//!   stream in each one, and build a global `material_uid → [d,s,n,wm]` lookup. See
+//!   `prototype2008_material.rs` for the on-disk shape. Only slots that land on raw WSAO
+//!   are indexed today — the rest are SBL4-container-wrapped (probe #1's territory) and
+//!   counted in the fingerprint so the count-vs-total is visible.
 //!
 //! **What's stubbed** (returns explicit errors — the app can still open the source and browse):
 //! - Reading mesh bytes: the 2008 sub-pack magic is `SBL4` (retail is `ALBS`/`SBLA`). Same
@@ -16,8 +21,6 @@
 //! - Textures: loose `.dds` on disk + `<hash>.textures` slots inside `.Pack`. Xbox 360 tiling
 //!   is likely on-disk; the existing BC1/BC3 block decoders in `dtex.rs` can be reused after
 //!   un-tiling.
-//! - Materials: no `France.materials` at the root — bindings must live inside `.materials`
-//!   slots of the region `.Pack` files (same slotted `[d, s, n, wm]` shape, unverified).
 //!
 //! The stubs return `Err("prototype 2008: <what and why>")` so the UI can display the reason
 //! rather than looking silently broken. Each stub gets replaced by a real reader as we probe
@@ -29,6 +32,7 @@ use std::path::{Path, PathBuf};
 use crate::dtex::CpuTexture;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
+use crate::sources::prototype2008_material::MaterialIndex;
 
 pub struct Prototype2008Source {
     /// The `Bin360` directory itself (not its parent).
@@ -43,6 +47,9 @@ pub struct Prototype2008Source {
     tex_index: Vec<PackedRef>,
     /// Same for materials (`<hash>.materials`).
     mat_index: Vec<PackedRef>,
+    /// Global `material_uid → [d,s,n,wm]` lookup, populated from every readable
+    /// `<hash>.materials` slot at open time. What `textures_for_material` consults.
+    materials: MaterialIndex,
 }
 
 /// One line out of a `.packlog`: pointer to a slot inside a specific `.Pack` file.
@@ -144,6 +151,53 @@ impl Prototype2008Source {
         fingerprint
             .matched(format!("global hash→name inventory: {} entries", hash_names.len()));
 
+        // Materials: walk every `.materials` slot into the WSAO/MTLD parser. Cheap up front (the
+        // slots are small — 258..15000 bytes) and gives us a table that `textures_for_material`
+        // can serve without re-reading anything.
+        //
+        // Two failure modes are expected and non-fatal:
+        //   1. The slot is SBL4-wrapped (probe #1 territory) — we count these separately so the
+        //      fingerprint tells the user how much progress unwrapping SBL4 would unlock.
+        //   2. The `.Pack` file is 0-bytes or truncated (a few dozen packlogs describe pack files
+        //      the extract lost) — the read errors, we bump `read_errs` and move on.
+        let mut materials = MaterialIndex::new();
+        let mut read_errs = 0usize;
+        for e in &mat_index {
+            match read_pack_slot(&e.pack_file, e.start, e.size) {
+                Ok(bytes) => {
+                    materials.ingest_slot(&bytes);
+                }
+                Err(_) => read_errs += 1,
+            }
+        }
+        // The SBL4 buckets are what probe #1 unlocks: `slots_sbl4` is the handful whose payload
+        // literally begins with the `SBL4` magic, `slots_bad_magic` is the far-larger set whose
+        // packlog offset lands on high-entropy container bytes because the SBL4 wrapper reshuffled
+        // the payload. Both go from "unreadable" to "indexable" the moment probe #1 lands.
+        let container_wrapped = materials.slots_sbl4 + materials.slots_bad_magic;
+        fingerprint.matched(format!(
+            "material bindings: {} materials indexed from {}/{} readable .materials slots \
+             (container-wrapped and awaiting probe #1: {}; read errors: {})",
+            materials.materials_indexed,
+            materials.slots_ok,
+            materials.slots_read,
+            container_wrapped,
+            read_errs,
+        ));
+        if container_wrapped > 0 {
+            fingerprint.warn(format!(
+                "{container_wrapped} .materials slots wait on the SBL4 sub-pack unwrap (probe #1); \
+                 `textures_for_material` will return None for materials that lived only in those \
+                 blocks until then"
+            ));
+        }
+        // Fold material NAMES into the global hash→name map — packlogs don't name materials
+        // themselves (only the blocks that contain them), and the picker's Material handles
+        // want the plaintext, not the raw hash.
+        for (uid, name) in &materials.name_by_uid {
+            hash_names.entry(*uid).or_insert_with(|| name.clone());
+        }
+
         // Sanity: pandemic_hash(block_name) should reproduce the block's on-disk hash. If it
         // does, the 2008 hash namespace is IDENTICAL to retail — every packlog stem is a
         // ready-made hash→name entry, and both builds' asset lookups round-trip. If not, we
@@ -173,7 +227,15 @@ impl Prototype2008Source {
             );
         }
 
-        Ok(Self { bin360, fingerprint, hash_names, mesh_index, tex_index, mat_index })
+        Ok(Self {
+            bin360,
+            fingerprint,
+            hash_names,
+            mesh_index,
+            tex_index,
+            mat_index,
+            materials,
+        })
     }
 }
 
@@ -222,14 +284,10 @@ impl GameSource for Prototype2008Source {
     }
 
     fn textures_for_material(&self, mat: u32) -> Option<[Option<u32>; 4]> {
-        // Not wired yet — 2008 materials live in `<hash>.materials` slots inside `.Pack`
-        // files, not a single loose `France.materials`. Format probe still pending: unknown
-        // whether it's a per-material record with the same slot-vector shape as WSMA or a
-        // separately-schema'd blob. Returning None keeps callers on the name-suffix fallback,
-        // which is fine for a first pass — meshes and textures resolve to their diffuse via
-        // filename correlation.
-        let _ = mat;
-        None
+        // Global `.materials`-slot inventory built at open time (see `open`). Slots that were
+        // SBL4-wrapped are absent from this index; `None` here means either "unknown material"
+        // OR "material lives in a still-wrapped block" — the fingerprint counter distinguishes.
+        self.materials.textures_for(mat)
     }
 
     fn load_texture(&self, hash: u32) -> Result<CpuTexture, String> {
@@ -404,6 +462,74 @@ mod tests {
             "expected some pandemic_hash matches on block names; got fingerprint: {:#?}",
             src.fingerprint()
         );
+    }
+
+    #[test]
+    fn walks_all_material_slots_and_indexes_the_readable_ones() {
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        // Some slots must parse cleanly (the 12 that land on raw WSAO in the current extract).
+        // Below that threshold means the WSAO/MTLD parser regressed — a much larger jump would
+        // mean probe #1 landed and this test's floor needs raising.
+        assert!(
+            src.materials.slots_ok >= 8,
+            "expected ≥8 material slots to parse cleanly, got {}/{}",
+            src.materials.slots_ok,
+            src.materials.slots_read
+        );
+        // At least a few dozen materials from those slots.
+        assert!(
+            src.materials.materials_indexed >= 30,
+            "expected ≥30 materials indexed, got {}",
+            src.materials.materials_indexed
+        );
+        // The fingerprint must surface the split (readable + SBL4 + errored) — this is the row
+        // that tells a user how much probe #1 would unlock, so it MUST be present.
+        assert!(
+            src.fingerprint().matched.iter().any(|m| m.contains("material bindings")),
+            "fingerprint missing 'material bindings' row: {:#?}",
+            src.fingerprint()
+        );
+    }
+
+    #[test]
+    fn textures_for_material_resolves_a_known_uid() {
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        // Pick the first known material UID from the index — its slot vector must have at
+        // least one populated slot (a real material always has a diffuse). Iterating rather
+        // than hardcoding a UID keeps this stable across extract re-runs.
+        let (uid, slots) = src
+            .materials
+            .by_uid
+            .iter()
+            .find(|(_, slots)| slots.iter().any(|s| s.is_some()))
+            .map(|(u, s)| (*u, *s))
+            .expect("at least one indexed material with a texture");
+        let looked_up = src.textures_for_material(uid).expect("known uid resolves");
+        assert_eq!(looked_up, slots, "trait lookup must match the underlying index");
+        assert!(
+            looked_up[0].is_some() || looked_up.iter().any(|s| s.is_some()),
+            "expected at least one populated slot for uid {uid:#010x}"
+        );
+    }
+
+    #[test]
+    fn textures_for_material_returns_none_for_unknown_uid() {
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        // A UID we're overwhelmingly likely never to have written (u32 space is 4B; the extract
+        // holds ~<50k materials at most) — the lookup must degrade cleanly to None, not panic.
+        assert!(src.textures_for_material(0xDEAD_BEEF).is_none());
     }
 
     #[test]

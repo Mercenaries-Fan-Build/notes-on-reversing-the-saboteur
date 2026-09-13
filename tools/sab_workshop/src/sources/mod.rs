@@ -3,4 +3,5 @@
 //! `source::detect_version`.
 
 pub mod prototype2008;
+pub mod prototype2008_material;
 pub mod retail_pc;

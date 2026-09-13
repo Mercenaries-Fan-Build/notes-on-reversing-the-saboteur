@@ -690,6 +690,7 @@ pub fn run(mut cfg: Config) {
                                 models_loading,
                                 source_handles: &source_handles,
                                 sel_source_handle: &mut sel_source_handle,
+                                source: source.as_ref(),
                             },
                             &mut editor_state,
                             &mut settings_ctx,
@@ -2086,6 +2087,9 @@ struct NavCtx<'a> {
     source_handles: &'a [crate::source::AssetHandle],
     /// Which source-handle row is selected (2008 mode only).
     sel_source_handle: &'a mut Option<usize>,
+    /// The active source, when open. The detail panel reads through it to show byte counts,
+    /// MSH4 magic, and (later) related textures/materials for a selected 2008 handle.
+    source: Option<&'a std::sync::Arc<dyn crate::source::GameSource>>,
 }
 
 /// Live state for the Settings page: the values being edited, plus what changing them implies.
@@ -2821,19 +2825,16 @@ fn build_ui(
                     let n_hex: Option<u32> = u32::from_str_radix(needle.trim_start_matches("0x"), 16).ok();
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         for (i, h) in nav.source_handles.iter().enumerate() {
-                            if !needle.is_empty()
-                                && !h.name.to_ascii_lowercase().contains(&needle)
-                                && n_hex.map(|q| (h.key as u32) != q).unwrap_or(true)
-                            {
+                            let hash_match = n_hex.and_then(|q| h.hash.map(|hh| hh == q)).unwrap_or(false);
+                            if !needle.is_empty() && !h.name.to_ascii_lowercase().contains(&needle) && !hash_match {
                                 continue;
                             }
                             let sel = *nav.sel_source_handle == Some(i);
-                            let name = if h.name.is_empty() {
-                                format!("({:08X})", h.key as u32)
-                            } else {
-                                h.name.clone()
+                            let label = match (h.name.as_str(), h.hash) {
+                                ("", Some(hh)) => format!("({hh:08X})"),
+                                (n, _) => n.to_string(),
                             };
-                            if ui.selectable_label(sel, name).clicked() {
+                            if ui.selectable_label(sel, label).clicked() {
                                 *nav.sel_source_handle = Some(i);
                             }
                         }
@@ -2990,6 +2991,67 @@ fn build_ui(
 
                 // ---- Inspect: what you are looking at ----
                 if *page == Page::Inspect {
+                    // Version-agnostic asset detail: when a source-layer handle is selected (the
+                    // 2008 case today; retail's `sel_source_handle` stays None because Nav takes
+                    // the browse_assets path) show what the source itself knows about it. This is
+                    // the harness-side detail panel — the same UI, populated from the trait.
+                    if let (Some(source), Some(handle)) = (
+                        nav.source,
+                        nav.sel_source_handle.and_then(|i| nav.source_handles.get(i)),
+                    ) {
+                        let title = if handle.name.is_empty() { "Asset".to_string() } else { handle.name.clone() };
+                        let badge = handle.hash.map(|h| format!("{h:08X}")).unwrap_or_default();
+                        theme::card(ui, "Asset", Some(&title), |ui| {
+                            theme::kv(ui, "kind", egui::RichText::new(format!("{:?}", handle.kind)));
+                            if !badge.is_empty() {
+                                theme::kv(ui, "hash", egui::RichText::new(&badge).monospace());
+                            }
+                            theme::kv(ui, "source", egui::RichText::new(source.version().label()));
+                            // Slot metadata: for a Mesh handle, ask the source for the raw bytes
+                            // and read the outer SBL-family record (BE u32 count + first record
+                            // offset/size). This proves we're pulling the correct on-disk region;
+                            // an "MSH4" magic inside the first inflated stream is the invariant
+                            // the SBL-mesh probe test enforces.
+                            if handle.kind == crate::source::AssetKind::Mesh {
+                                match source.read_mesh_bytes(handle) {
+                                    Ok(bytes) => {
+                                        theme::kv(ui, "slot bytes", egui::RichText::new(bytes.len().to_string()));
+                                        if bytes.len() >= 4 {
+                                            let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                                            theme::kv(ui, "records (BE u32)", egui::RichText::new(n.to_string()));
+                                        }
+                                        // Cheap MSH4 confirmation — inflate the first stream.
+                                        // No need to render the geometry; the presence of the
+                                        // magic proves the slot boundary is right.
+                                        if bytes.len() >= 16 {
+                                            let first_off = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+                                            let first_comp = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+                                            if first_off + first_comp <= bytes.len() && first_comp >= 2 && bytes[first_off] == 0x78 {
+                                                use std::io::Read;
+                                                let mut z = flate2::read::ZlibDecoder::new(&bytes[first_off..first_off + first_comp]);
+                                                let mut out = Vec::new();
+                                                if z.read_to_end(&mut out).is_ok() && out.len() >= 4 && &out[0..4] == b"MSH4" {
+                                                    theme::kv(ui, "first record", egui::RichText::new("MSH4 ✓").color(theme::EMBER));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        ui.label(egui::RichText::new(format!("read failed: {e}")).color(theme::RED).size(10.5));
+                                    }
+                                }
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "3D preview: pending MSH4 geometry decoder (the outer wrapper is proven; the inner vertex/index layout is the next reverse-engineering probe).",
+                                    )
+                                    .color(theme::FAINT)
+                                    .size(10.5),
+                                );
+                            }
+                        });
+                    }
+
                     theme::card(ui, "Character", None, |ui| {
                         theme::kv(ui, "vertices", egui::RichText::new(mesh_stats.0.to_string()));
                         theme::kv(ui, "triangles", egui::RichText::new(mesh_stats.1.to_string()));

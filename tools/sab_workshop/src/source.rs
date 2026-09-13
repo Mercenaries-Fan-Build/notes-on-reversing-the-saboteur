@@ -45,6 +45,10 @@ pub struct AssetHandle {
     /// resolves via GameTemplates; the 2008 impl resolves via the `.packlog` inventory).
     pub name: String,
     pub kind: AssetKind,
+    /// The plaintext content hash (typically `pandemic_hash(name)`) when the source knows it.
+    /// Lets consumers join across kinds — e.g. "find every texture / material handle that
+    /// belongs to the same block as this mesh". `None` when the source has only opaque keys.
+    pub hash: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

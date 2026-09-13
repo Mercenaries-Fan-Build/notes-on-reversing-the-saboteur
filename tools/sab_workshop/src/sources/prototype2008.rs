@@ -353,6 +353,7 @@ impl GameSource for Prototype2008Source {
             .enumerate()
             .map(|(i, e)| AssetHandle {
                 key: i as u64,
+                hash: Some(e.hash),
                 name: self.hash_names.get(&e.hash).cloned().unwrap_or_default(),
                 kind: AssetKind::Mesh,
             })
@@ -373,15 +374,17 @@ impl GameSource for Prototype2008Source {
             .enumerate()
             .map(|(i, e)| AssetHandle {
                 key: i as u64,
+                hash: Some(e.hash),
                 name: self.hash_names.get(&e.hash).cloned().unwrap_or_default(),
                 kind: AssetKind::Texture,
             })
             .collect();
         // Loose DDS handles sit in a distinct key namespace so consumers that round-trip a
         // handle can tell packlog-slot from loose-file without a second table.
-        for (i, (_h, entry)) in self.loose_dds.iter().enumerate() {
+        for (i, (h, entry)) in self.loose_dds.iter().enumerate() {
             out.push(AssetHandle {
                 key: (u64::MAX - i as u64),
+                hash: Some(*h),
                 name: entry.name.clone(),
                 kind: AssetKind::Texture,
             });

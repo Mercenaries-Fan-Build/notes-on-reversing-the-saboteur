@@ -326,6 +326,35 @@ impl GameSource for Prototype2008Source {
             .collect()
     }
 
+    fn list_materials(&self) -> Vec<AssetHandle> {
+        // The full material inventory is the union of `by_uid` (which drives resolution) and
+        // `name_by_uid` (which drives display). Every populated slot in `by_uid` has a matching
+        // name entry inserted at ingest time, so iterating one is enough. Order by name ASC (case
+        // insensitive) with UID as the tiebreaker so the picker stays stable across app launches.
+        let mut out: Vec<AssetHandle> = self
+            .materials
+            .by_uid
+            .keys()
+            .map(|&uid| AssetHandle {
+                key: uid as u64,
+                name: self
+                    .materials
+                    .name_by_uid
+                    .get(&uid)
+                    .cloned()
+                    .unwrap_or_else(|| self.hash_names.get(&uid).cloned().unwrap_or_default()),
+                kind: AssetKind::Material,
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        out
+    }
+
     fn list_textures(&self) -> Vec<AssetHandle> {
         // Two population sources today: packlog-mined `<hash>.textures` slots (which still need
         // SBL4 to unwrap before we can decode them — probe #1) and the loose `*.dds` files at

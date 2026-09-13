@@ -247,6 +247,20 @@ pub fn run(mut cfg: Config) {
         needs_install: !have_install,
         apply: None,
     };
+    // The 2008 Xbox 360 prototype browser state — a self-contained page over a
+    // `Box<dyn GameSource>`. Seeded from Settings.prototype_dir if it's configured; failure to
+    // open (a corrupt/missing folder that got moved) is non-fatal — the page then shows the
+    // folder picker and the note. This state persists across page-switches; no reload on
+    // returning to the tab.
+    let mut proto_state = crate::browse_2008::ProtoState::default();
+    if let Some(root) = cfg.settings.prototype_root() {
+        if let Err(e) = proto_state.set_root(&root) {
+            eprintln!("[sab_workshop] prototype seed: {e}");
+        }
+    }
+    // Set by the prototype page's "Choose folder…" button; the rfd dialog runs on the main
+    // thread after the frame, mirroring how the retail settings page defers its picker.
+    let mut proto_pick_dir = false;
     // Model-browser groupings (rule-based + user overrides saved next to the game) and the
     // right-click "move to group" request applied after each UI pass.
     let mut groups = crate::models::Groups::load(&game_dir);
@@ -636,6 +650,8 @@ pub fn run(mut cfg: Config) {
                             },
                             &mut editor_state,
                             &mut settings_ctx,
+                            &mut proto_state,
+                            &mut proto_pick_dir,
                         );
                     });
 
@@ -649,6 +665,49 @@ pub fn run(mut cfg: Config) {
                             settings_ctx.s.export_dir = d.to_string_lossy().replace('\\', "/");
                             if let Err(e) = settings_ctx.s.save() {
                                 load_status = Some((format!("settings: {e}"), true));
+                            }
+                        }
+                    }
+
+                    // --- pick a 2008 prototype folder (browser page's "Choose folder…" + the
+                    // Settings-page prototype picker both raise this flag) ---
+                    //
+                    // Runs AFTER build_ui because rfd::FileDialog blocks and would freeze the paint
+                    // if we did it inline. Success routes through ProtoState::set_root which opens
+                    // the source and clears listing/tex caches; failure leaves the previous state
+                    // intact + records `open_error` for the page to display.
+                    if std::mem::take(&mut proto_pick_dir) {
+                        let start = settings_ctx.s.prototype_dir.clone();
+                        let mut dlg = rfd::FileDialog::new()
+                            .set_title("Select the 2008 prototype folder (containing Bin360/) or Bin360/ itself");
+                        if !start.is_empty() {
+                            dlg = dlg.set_directory(&start);
+                        }
+                        if let Some(d) = dlg.pick_folder() {
+                            let picked = d.to_string_lossy().replace('\\', "/");
+                            settings_ctx.s.prototype_dir = picked.clone();
+                            settings_ctx.s.clamp();
+                            if let Err(e) = settings_ctx.s.save() {
+                                load_status = Some((format!("settings: {e}"), true));
+                            }
+                            // The trim/normalize `settings_root()` does may reduce this back to
+                            // None if the picked folder doesn't have Bin360/ under it — in that
+                            // case set_root would fail; short-circuit with a status message.
+                            match settings_ctx.s.prototype_root() {
+                                Some(root) => match proto_state.set_root(&root) {
+                                    Ok(()) => {
+                                        load_status = Some((format!("prototype: opened {}", root.display()), false));
+                                    }
+                                    Err(e) => {
+                                        load_status = Some((format!("prototype: {e}"), true));
+                                    }
+                                },
+                                None => {
+                                    load_status = Some((
+                                        format!("prototype: {picked} has no Bin360/ — pick the game-files folder"),
+                                        true,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -884,8 +943,11 @@ pub fn run(mut cfg: Config) {
                         }
                     }
 
-                    // The editor pages own the whole window with opaque panels; skip the scene pass.
-                    renderer.draw_scene = page.editor().is_none();
+                    // The editor pages own the whole window with opaque panels; skip the scene
+                    // pass. Prototype + Settings also fully cover the viewport with an opaque
+                    // CentralPanel, so drawing behind them just burns GPU on invisible pixels.
+                    // Inspect is the only page that actually reveals the wgpu scene.
+                    renderer.draw_scene = page == Page::Inspect;
                     match renderer.render(&mut gui) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
@@ -1886,19 +1948,26 @@ enum Page {
     Objects,
     /// Browse the texture pool as pictures, and wire one into an object property.
     Icons,
+    /// The 2008 Xbox 360 prototype browser — an additive view over a `Box<dyn GameSource>`
+    /// pointing at the pre-release build's game-files/ folder. Independent of the retail
+    /// wgpu scene: this page has no rig, no clips, no materials sidecar — just enumeration
+    /// + a detail card. Reachable only when Settings.prototype_dir points somewhere valid;
+    /// clicking the rail without that shows the folder picker.
+    Prototype,
     /// Where the game is installed, and the defaults every other page starts from.
     Settings,
 }
 
 impl Page {
-    const ALL: [Page; 5] =
-        [Page::Inspect, Page::Strings, Page::Objects, Page::Icons, Page::Settings];
+    const ALL: [Page; 6] =
+        [Page::Inspect, Page::Strings, Page::Objects, Page::Icons, Page::Prototype, Page::Settings];
     fn label(self) -> &'static str {
         match self {
             Page::Inspect => "inspect",
             Page::Strings => "strings",
             Page::Objects => "objects",
             Page::Icons => "icons",
+            Page::Prototype => "2008",
             Page::Settings => "settings",
         }
     }
@@ -1911,28 +1980,36 @@ impl Page {
             Page::Strings => sym::STRINGS,
             Page::Objects => sym::OBJECTS,
             Page::Icons => sym::ICONS,
+            // No bundled font glyph for "prototype"; the Greek Ξ reads as an archival stamp and
+            // renders in every font (verified via the `glyphs_are_covered` test — Latin + basic
+            // symbols set which Ξ falls under).
+            Page::Prototype => "Ξ",
             Page::Settings => sym::SETTINGS,
         }
     }
     /// The editor page this maps to, or `None` for the pages that are not editor views
-    /// (Inspect is the wgpu viewer; Settings is app configuration).
+    /// (Inspect is the wgpu viewer; Settings is app configuration; Prototype is the 2008 browser).
     fn editor(self) -> Option<crate::editor::EdPage> {
         use crate::editor::EdPage;
         match self {
-            Page::Inspect | Page::Settings => None,
+            Page::Inspect | Page::Settings | Page::Prototype => None,
             Page::Strings => Some(EdPage::Strings),
             Page::Objects => Some(EdPage::Objects),
             Page::Icons => Some(EdPage::Icons),
         }
     }
-    /// The 1-5 shortcut that selects this page.
+    /// The 1-6 shortcut that selects this page.
     fn key(self) -> egui::Key {
         match self {
             Page::Inspect => egui::Key::Num1,
             Page::Strings => egui::Key::Num2,
             Page::Objects => egui::Key::Num3,
             Page::Icons => egui::Key::Num4,
-            Page::Settings => egui::Key::Num5,
+            Page::Prototype => egui::Key::Num5,
+            // Settings moved from 5 to 6 to make room for the prototype browser — the rail's
+            // natural growth is at the tail, not by re-numbering the existing pages, but the
+            // Settings glyph stays at the far end where it's always been visually.
+            Page::Settings => egui::Key::Num6,
         }
     }
 }
@@ -2046,7 +2123,7 @@ pub struct SettingsCtx {
 
 /// The Settings page. One column of labelled groups; nothing here is a mod edit, so nothing here
 /// touches the changelist or the DLC overlay.
-fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
+fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx, proto_pick_dir: &mut bool) {
     egui::CentralPanel::default().show(ctx, |ui| {
         // `auto_shrink([false, false])` makes the scroll region fill the whole panel — its width and
         // its height — so the wheel works anywhere over the page and the scrollbar sits at the far
@@ -2181,6 +2258,48 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                 theme::FAINT,
             ));
 
+            // ---- 2008 Xbox 360 prototype install (additive; independent of the retail root above) ----
+            //
+            // A SECOND install pointer, deliberately not mixed with `game_dir`: the workshop can hold
+            // both at once, and each pins to a different `Box<dyn GameSource>`. Rail page "2008"
+            // opens off this one. Empty = the browser page shows a picker; set = it opens on load.
+            ui.add_space(12.0);
+            theme::eyebrow(ui, "2008 Xbox 360 prototype");
+            ui.label(theme::data_text(
+                "Point at the pre-release Xbox 360 build (folder holding Bin360/, or Bin360/ itself). \
+                 Additive to the retail install — retail keeps working; the 2008 browser opens off this path.",
+                11.0,
+                theme::DIM,
+            ));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut sx.s.prototype_dir)
+                        .desired_width(430.0)
+                        .hint_text("the folder holding Bin360/ (or Bin360/ itself)"),
+                );
+                if ui.button("Browse…").clicked() {
+                    // Delegate to the app's main-thread picker: same behaviour as the browser
+                    // page's Choose folder button, and it does the set_root call on our behalf.
+                    *proto_pick_dir = true;
+                }
+                if ui.button("Clear").clicked() {
+                    sx.s.prototype_dir.clear();
+                    // No `save()` here — the "Save settings" button below carries every change.
+                }
+            });
+            {
+                let root = sx.s.prototype_root();
+                let (msg, col) = if sx.s.prototype_dir.trim().is_empty() {
+                    ("Optional — the 2008 browser page (rail tab \"2008\") is empty without this.", theme::FAINT)
+                } else if root.is_some() {
+                    ("Found — the 2008 browser is enabled.", theme::COLD)
+                } else {
+                    ("No Bin360/ under that path — pick the folder holding it (or Bin360/ itself).", theme::EMBER)
+                };
+                ui.label(theme::data_text(msg, 10.0, col));
+            }
+
             ui.add_space(12.0);
             theme::eyebrow(ui, "Voice audio");
             ui.horizontal(|ui| {
@@ -2294,6 +2413,8 @@ fn build_ui(
     nav: &mut NavCtx,
     ed: &mut crate::editor::Editor,
     settings: &mut SettingsCtx,
+    proto: &mut crate::browse_2008::ProtoState,
+    proto_pick_dir: &mut bool,
 ) {
     // How much of each page's subject is accounted for. Only Materials is strictly work-remaining
     // (a binding is a decision you make); the rest are coverage. Both answer the same question —
@@ -2310,7 +2431,7 @@ fn build_ui(
     };
     let on_rig = playable_rows.len();
 
-    // 1-4 select a page — but not while a text field has focus, or you cannot type "1" into the
+    // 1-6 select a page — but not while a text field has focus, or you cannot type "1" into the
     // search box.
     if !ctx.wants_keyboard_input() {
         for p in Page::ALL {
@@ -2433,7 +2554,9 @@ fn build_ui(
     // it was unfindable, and it vanished entirely whenever the model had no bones. Lifting it into a
     // dedicated bar (the shape `mercs2_workshop` settled on) gives it room for the shortcut, the
     // destination, and the caveat that the bundle would come out untextured.
-    if page.editor().is_none() {
+    // Only Inspect owns the export bundle — a click-loaded retail character with a texture
+    // resolve is what the bundle carries. Prototype has no such state; Settings has no subject.
+    if *page == Page::Inspect {
         // Exact height + `horizontal_centered`, NOT `add_space` either side of an auto-sized row.
         // A panel that sizes to its tallest child cannot be padded symmetrically — the button's box
         // and the labels' line boxes differ, so equal spacers still landed more air under the button
@@ -2495,7 +2618,7 @@ fn build_ui(
         });
 
         // F10 anywhere on the page, matching the label on the button. Not while a text field has
-        // focus, for the same reason the 1-5 page keys are gated.
+        // focus, for the same reason the 1-6 page keys are gated.
         if !ctx.wants_keyboard_input()
             && ctx.input(|i| i.key_pressed(egui::Key::F10))
             && exp.ready
@@ -2589,7 +2712,15 @@ fn build_ui(
     // A single column, not the three-column shell: there is no navigator (nothing to browse) and no
     // changelist (these are app preferences, not mod edits — they do not publish).
     if *page == Page::Settings {
-        settings_page(ctx, settings);
+        settings_page(ctx, settings, proto_pick_dir);
+        return;
+    }
+
+    // ── 2008 PROTOTYPE BROWSER ──
+    // Self-contained: no wgpu scene, no rig, no material sidecar. Owned by `browse_2008`; here we
+    // only bridge the "Choose folder…" click to the main-thread rfd dialog run after paint.
+    if *page == Page::Prototype {
+        crate::browse_2008::render(ctx, proto, proto_pick_dir);
         return;
     }
 

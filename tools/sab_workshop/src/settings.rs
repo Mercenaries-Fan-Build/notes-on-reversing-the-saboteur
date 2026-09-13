@@ -63,16 +63,6 @@ pub struct Settings {
     /// set from the verb bar's destination link, not typed.
     #[serde(default)]
     pub export_dir: String,
-    /// The 2008 Xbox 360 prototype folder — the parent of `Bin360/`, or `Bin360/` itself. This is
-    /// an ADDITIVE second install pointer: the retail flow keeps using `game_dir`, and the
-    /// prototype browser page opens a `GameSource` off THIS path. Empty means "no prototype
-    /// configured" and the browser page shows a folder picker instead of a listing.
-    ///
-    /// Kept as a String (not Option) so the JSON round-trip is identical whether the user has
-    /// pointed it somewhere or not — an empty string is unambiguously the "unset" value and
-    /// matches how `game_dir` handles the same state.
-    #[serde(default)]
-    pub prototype_dir: String,
 }
 
 impl Default for Settings {
@@ -85,7 +75,6 @@ impl Default for Settings {
             type_scale: default_scale(),
             vgmstream_path: String::new(),
             export_dir: String::new(),
-            prototype_dir: String::new(),
         }
     }
 }
@@ -153,12 +142,6 @@ impl Settings {
             self.dlc_slot = default_slot();
         }
         self.vgmstream_path = self.vgmstream_path.trim().replace('\\', "/");
-        // Same normalisation as `game_dir` — forward slashes, no trailing separator, so a Browse-picked
-        // Windows path (`C:\...\game-files\`) survives a save/load without a double slash creeping in.
-        self.prototype_dir = self.prototype_dir.replace('\\', "/");
-        while self.prototype_dir.ends_with('/') {
-            self.prototype_dir.pop();
-        }
     }
 
     /// The configured `vgmstream-cli` path if it is set and present on disk; otherwise `None` (the
@@ -166,23 +149,6 @@ impl Settings {
     pub fn vgmstream(&self) -> Option<String> {
         let p = self.vgmstream_path.trim();
         (!p.is_empty() && std::path::Path::new(p).exists()).then(|| p.to_string())
-    }
-
-    /// The 2008 prototype root if configured AND its `Bin360/` (or the folder itself) is on disk.
-    /// The rail's browser page opens `source::open_source(&this)` when it is `Some`. Both spellings
-    /// are accepted for the same reason `detect_version` accepts them — the community's rar layout
-    /// varies.
-    pub fn prototype_root(&self) -> Option<std::path::PathBuf> {
-        let p = self.prototype_dir.trim();
-        if p.is_empty() {
-            return None;
-        }
-        let root = std::path::PathBuf::from(p);
-        if root.join("Bin360").is_dir() || root.file_name().map(|n| n == "Bin360").unwrap_or(false) {
-            Some(root)
-        } else {
-            None
-        }
     }
 
     // ---- derived game paths: the whole point of storing one root ----
@@ -286,7 +252,6 @@ mod tests {
             type_scale: 1.45,
             vgmstream_path: "C:/tools/vgmstream/vgmstream-cli.exe".into(),
             export_dir: "D:/mods/bundles".into(),
-            prototype_dir: "E:/prototypes/saboteur-2008/game-files".into(),
         };
         written.clamp();
         // save_to must create the intermediate directories, not fail on them.
@@ -299,7 +264,6 @@ mod tests {
         assert_eq!(read.mod_name, "Resistance Pack");
         assert_eq!(read.vgmstream_path, "C:/tools/vgmstream/vgmstream-cli.exe");
         assert_eq!(read.export_dir, "D:/mods/bundles");
-        assert_eq!(read.prototype_dir, "E:/prototypes/saboteur-2008/game-files");
         assert!((read.type_scale - 1.45).abs() < 1e-6);
         // A stored install path is returned verbatim — nothing guesses or overwrites it.
         assert_eq!(read.game_dir, "D:/SteamLibrary/steamapps/common/The Saboteur");

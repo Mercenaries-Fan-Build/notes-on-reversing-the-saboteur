@@ -35,7 +35,7 @@ use crate::dtex::CpuTexture;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
 use crate::sources::prototype2008_material::MaterialIndex;
-use crate::sources::prototype2008_subpack::Sbl4SubPack;
+use crate::sources::prototype2008_subpack::SubPack;
 
 pub struct Prototype2008Source {
     /// The `Bin360` directory itself (not its parent).
@@ -137,13 +137,30 @@ impl Prototype2008Source {
             // that block's per-type slot (`<block_hash>.textures`, `<block_hash>.meshes`, …)
             // all sharing ONE hash which is `pandemic_hash(block_name)`. So the name inventory
             // keys on the block hash, not per-entry.
-            let block_name = pl
+            let stem = pl
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
             match parse_packlog(pl, &bin360) {
                 Ok(entries) => {
+                    // Chunk splits (`Barge0.Packlog` + `Barge1.Packlog` etc.) both record the
+                    // SAME block hash keyed on the base name (`Barge`, no trailing digit) — see
+                    // `docs/2008_namespace_prefix.md`. If the raw stem's pandemic_hash matches
+                    // the block hash, use it as-is; otherwise strip trailing ASCII digits and
+                    // try again. Falls back to the raw stem when neither matches (so a genuine
+                    // hash-scheme mismatch still keeps the packlog stem in the inventory).
+                    let block_hash = entries.first().map(|e| e.hash).unwrap_or(0);
+                    let block_name = if !stem.is_empty() && pandemic_hash(&stem) == block_hash {
+                        stem.clone()
+                    } else {
+                        let trimmed = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+                        if !trimmed.is_empty() && pandemic_hash(trimmed) == block_hash {
+                            trimmed.to_string()
+                        } else {
+                            stem.clone()
+                        }
+                    };
                     for e in entries {
                         if !block_name.is_empty() {
                             hash_names.entry(e.hash).or_insert_with(|| block_name.clone());
@@ -179,7 +196,7 @@ impl Prototype2008Source {
             .matched(format!("global hash→name inventory: {} entries", hash_names.len()));
 
         // NOTE: the material walk that probe #3 landed here was rewritten in the merge below to
-        // read via `Sbl4SubPack::read_slot` (probe #1) — see the block just before `Ok(Self { … })`.
+        // read via `SubPack::read_slot` (probe #1) — see the block just before `Ok(Self { … })`.
         // Keeping the sanity check + Ok(Self) here; the actual walk is deferred until after the
         // loose-DDS sweep so all fingerprint entries land in a consistent order.
 
@@ -242,13 +259,17 @@ impl Prototype2008Source {
         ));
 
         // Walk every `.materials` slot at open time and build the global material→slot-vector
-        // lookup. Reads go through the SBL4 sub-pack directory (probe #1) — its offsets are
-        // authoritative; the earlier packlog-driven read landed in the wrong region for every
-        // non-first slot on disk. Non-SBL4 packs (SBLL/SBL8/…) fail to parse cleanly and are
-        // counted separately: a future probe will lift them.
+        // lookup. Reads go through the SBL-family sub-pack directory (all seven of
+        // SBL0/SBL4/SBL5/SBL6/SBL8/SBLL/SBLX share the same 8-byte header + 24-byte record +
+        // contiguous BE data layout — the 4-byte magic suffix is a family tag, not a format
+        // switch; see `docs/2008_subpack_variants.md`). Its offsets are authoritative; the
+        // earlier packlog-driven read landed in the wrong region for every non-first slot on
+        // disk. Genuinely-out-of-family packs (empty placeholders, MP00 mega-streamblocks,
+        // AP04 Animations.pack — none of which are sub-packs at all) are counted separately.
         let mut materials = MaterialIndex::new();
         let mut read_errs = 0usize;
-        let mut non_sbl4 = 0usize;
+        let mut non_family = 0usize;
+        let mut by_magic: HashMap<[u8; 4], usize> = HashMap::new();
         // Iterate unique pack files — every packlog entry for the same block points at the same
         // .Pack, and one .Pack has at most one `.materials` slot. Deduping keeps us from
         // re-opening + re-parsing the same file per mat_index entry.
@@ -261,27 +282,39 @@ impl Prototype2008Source {
                 Ok(b) => b,
                 Err(_) => { read_errs += 1; continue }
             };
-            let sbl = match Sbl4SubPack::parse(&buf) {
+            let sbl = match SubPack::parse(&buf) {
                 Ok(s) => s,
-                Err(_) => { non_sbl4 += 1; continue }
+                Err(_) => { non_family += 1; continue }
             };
+            *by_magic.entry(sbl.magic).or_insert(0) += 1;
             let Some(rec) = sbl.find("materials") else { continue };
             let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
             materials.ingest_slot(slot);
         }
         fingerprint.matched(format!(
             "material bindings: {} materials indexed from {}/{} readable .materials slots \
-             (non-SBL4 packs skipped: {}; read errors: {})",
+             (non-family .Pack files skipped: {}; read errors: {})",
             materials.materials_indexed,
             materials.slots_ok,
             materials.slots_read,
-            non_sbl4,
+            non_family,
             read_errs,
         ));
-        if non_sbl4 > 0 {
+        // Per-magic split of what actually opened — distinguishes a "SBL4-only reader regressed"
+        // failure from a "genuine non-family file" outcome. Two very different problems.
+        if !by_magic.is_empty() {
+            let mut parts: Vec<(String, usize)> = by_magic
+                .iter()
+                .map(|(m, n)| (String::from_utf8_lossy(m).into_owned(), *n))
+                .collect();
+            parts.sort_by(|a, b| b.1.cmp(&a.1));
+            let list = parts.iter().map(|(m, n)| format!("{m}={n}")).collect::<Vec<_>>().join(", ");
+            fingerprint.matched(format!("sub-pack magics: [{list}]"));
+        }
+        if non_family > 0 {
             fingerprint.warn(format!(
-                "{non_sbl4} .Pack files use a non-SBL4 container (SBLL / SBL8 / SBL6 / SBLX …) — \
-                 their materials wait on a future probe that decodes those variants"
+                "{non_family} .Pack files are not sub-pack containers at all \
+                 (empty placeholders / MP00 mega-streamblocks / AP04 Animations.pack)"
             ));
         }
         // Fold material NAMES into the global hash→name map — packlogs don't name materials
@@ -403,7 +436,7 @@ impl GameSource for Prototype2008Source {
         // walked once that reader lands.
         let pack_bytes = std::fs::read(&e.pack_file)
             .map_err(|err| format!("read {}: {err}", e.pack_file.display()))?;
-        let sub = Sbl4SubPack::parse(&pack_bytes)
+        let sub = SubPack::parse(&pack_bytes)
             .map_err(|err| format!("{}: {err}", e.pack_file.display()))?;
         let rec = sub.find("meshes").ok_or_else(|| {
             format!(

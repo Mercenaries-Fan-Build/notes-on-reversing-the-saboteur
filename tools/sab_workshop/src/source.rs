@@ -100,6 +100,11 @@ pub trait GameSource: Send + Sync {
     fn list_meshes(&self) -> Vec<AssetHandle>;
     /// Every texture the source can hand out by hash + friendly name (when known).
     fn list_textures(&self) -> Vec<AssetHandle> { Vec::new() }
+    /// Every material the source can enumerate. Retail's WSAO records are keyed by drawcall
+    /// hash and consumed on demand via `textures_for_material`; the default returns empty so
+    /// the trait stays additive. The 2008 impl has a real answer because its `.materials`
+    /// slots are pre-parsed at open time and every UID is known before any drawcall fires.
+    fn list_materials(&self) -> Vec<AssetHandle> { Vec::new() }
 
     // ── read / resolve ───────────────────────────────────────────────────────────────────────
 

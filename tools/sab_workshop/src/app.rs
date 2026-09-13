@@ -293,7 +293,12 @@ pub fn run(mut cfg: Config) {
         match crate::source::open_source(std::path::Path::new(&cfg.settings.game_dir)) {
             Ok(s) => {
                 if s.version() == crate::source::GameVersion::Prototype2008Xbox360 {
-                    source_handles = s.list_meshes();
+                    // Union of everything the source can enumerate. Order matters for the
+                    // browser tabs' default view — meshes are the natural entry point, so
+                    // they land first; textures next (visible on click); materials last.
+                    source_handles.extend(s.list_meshes());
+                    source_handles.extend(s.list_textures());
+                    source_handles.extend(s.list_materials());
                 }
                 println!(
                     "[sab_workshop] source opened: {} — {} browse handles",
@@ -2806,34 +2811,95 @@ fn build_ui(
             // clips. Textures lists the pool the contact sheet is showing.
             match (*page, *nav.tab) {
                 // 2008 mode: source-layer handles override the retail Groups tree. Flat list,
-                // filter by substring OR hex hash. Selection stores the row index; clicking a
-                // row does not (yet) load geometry — the MSH4 body decoder is a follow-up — so
-                // the click is currently a "select for detail" op.
+                // filter by substring OR hex hash, plus a kind picker (Meshes / Textures /
+                // Materials / all). Selection stores the row index; the detail card in the
+                // inspector reads it. Clicking a row does not (yet) load geometry — the MSH4
+                // body decoder is a follow-up — so the click is currently a "select for
+                // detail" op for all kinds.
                 (Page::Inspect, NavTab::Models) if !nav.source_handles.is_empty() => {
+                    use crate::source::AssetKind;
+                    // The kind filter state lives on the search string with a leading token
+                    // so it round-trips through the existing search field with zero new
+                    // NavCtx fields. Tokens: `k:m` meshes, `k:t` textures, `k:mat` materials.
+                    // The default view (no `k:` prefix) shows everything, mixed.
+                    let (kind_filter, needle_body): (Option<AssetKind>, String) =
+                        if let Some(rest) = needle.strip_prefix("k:m ") {
+                            (Some(AssetKind::Mesh), rest.to_string())
+                        } else if needle == "k:m" {
+                            (Some(AssetKind::Mesh), String::new())
+                        } else if let Some(rest) = needle.strip_prefix("k:t ") {
+                            (Some(AssetKind::Texture), rest.to_string())
+                        } else if needle == "k:t" {
+                            (Some(AssetKind::Texture), String::new())
+                        } else if let Some(rest) = needle.strip_prefix("k:mat ") {
+                            (Some(AssetKind::Material), rest.to_string())
+                        } else if needle == "k:mat" {
+                            (Some(AssetKind::Material), String::new())
+                        } else {
+                            (None, needle.clone())
+                        };
+                    let mut n_meshes = 0usize;
+                    let mut n_tex = 0usize;
+                    let mut n_mat = 0usize;
+                    for h in nav.source_handles {
+                        match h.kind {
+                            AssetKind::Mesh => n_meshes += 1,
+                            AssetKind::Texture => n_tex += 1,
+                            AssetKind::Material => n_mat += 1,
+                            _ => {}
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        let chips: [(&str, Option<&str>, usize, bool); 4] = [
+                            ("all", None, nav.source_handles.len(), kind_filter.is_none()),
+                            ("meshes", Some("k:m"), n_meshes, kind_filter == Some(AssetKind::Mesh)),
+                            ("textures", Some("k:t"), n_tex, kind_filter == Some(AssetKind::Texture)),
+                            ("materials", Some("k:mat"), n_mat, kind_filter == Some(AssetKind::Material)),
+                        ];
+                        for (label, tok, count, on) in chips {
+                            if ui.selectable_label(on, format!("{label} ({count})")).clicked() {
+                                *nav.search = tok.unwrap_or("").to_string();
+                            }
+                        }
+                    });
                     ui.label(theme::data_text(
-                        format!("{} source assets (2008)", nav.source_handles.len()),
-                        10.0,
-                        theme::FAINT,
-                    ));
-                    ui.label(theme::data_text(
-                        "click to select · geometry decode pending (MSH4)",
+                        "click to select · detail on the right · MSH4 geometry decode pending",
                         9.0,
                         theme::FAINT,
                     ));
                     ui.separator();
                     ui.add_space(4.0);
-                    let n_hex: Option<u32> = u32::from_str_radix(needle.trim_start_matches("0x"), 16).ok();
+                    let needle_lo = needle_body.to_ascii_lowercase();
+                    let n_hex: Option<u32> =
+                        u32::from_str_radix(needle_lo.trim_start_matches("0x"), 16).ok();
+                    let kind_prefix = |k: AssetKind| match k {
+                        AssetKind::Mesh => "M",
+                        AssetKind::Texture => "T",
+                        AssetKind::Material => "m",
+                        AssetKind::Animation => "A",
+                        AssetKind::UiString => "S",
+                        AssetKind::Other => "?",
+                    };
                     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         for (i, h) in nav.source_handles.iter().enumerate() {
+                            if let Some(want) = kind_filter {
+                                if h.kind != want {
+                                    continue;
+                                }
+                            }
                             let hash_match = n_hex.and_then(|q| h.hash.map(|hh| hh == q)).unwrap_or(false);
-                            if !needle.is_empty() && !h.name.to_ascii_lowercase().contains(&needle) && !hash_match {
+                            if !needle_lo.is_empty()
+                                && !h.name.to_ascii_lowercase().contains(&needle_lo)
+                                && !hash_match
+                            {
                                 continue;
                             }
                             let sel = *nav.sel_source_handle == Some(i);
-                            let label = match (h.name.as_str(), h.hash) {
+                            let name = match (h.name.as_str(), h.hash) {
                                 ("", Some(hh)) => format!("({hh:08X})"),
                                 (n, _) => n.to_string(),
                             };
+                            let label = format!("[{}] {}", kind_prefix(h.kind), name);
                             if ui.selectable_label(sel, label).clicked() {
                                 *nav.sel_source_handle = Some(i);
                             }
@@ -3007,12 +3073,67 @@ fn build_ui(
                                 theme::kv(ui, "hash", egui::RichText::new(&badge).monospace());
                             }
                             theme::kv(ui, "source", egui::RichText::new(source.version().label()));
-                            // Slot metadata: for a Mesh handle, ask the source for the raw bytes
-                            // and read the outer SBL-family record (BE u32 count + first record
-                            // offset/size). This proves we're pulling the correct on-disk region;
-                            // an "MSH4" magic inside the first inflated stream is the invariant
-                            // the SBL-mesh probe test enforces.
-                            if handle.kind == crate::source::AssetKind::Mesh {
+                            // Per-kind detail. Meshes surface slot metadata + MSH4 magic;
+                            // textures decode via the source (loose DDS today, SBL slot when
+                            // wired) and render a preview; materials show their [d,s,n,wm]
+                            // slot chips resolved through textures_for_material.
+                            if handle.kind == crate::source::AssetKind::Texture {
+                                if let Some(h) = handle.hash {
+                                    match source.load_texture(h) {
+                                        Ok(t) => {
+                                            theme::kv(ui, "size", egui::RichText::new(format!("{}×{}", t.width, t.height)));
+                                            theme::kv(ui, "bytes (RGBA)", egui::RichText::new(t.rgba.len().to_string()));
+                                            // Load into egui's texture cache once so the
+                                            // preview doesn't re-decode every frame.
+                                            let img = egui::ColorImage::from_rgba_unmultiplied(
+                                                [t.width as usize, t.height as usize],
+                                                &t.rgba,
+                                            );
+                                            let tex_handle = ui.ctx().load_texture(
+                                                format!("src_tex_{h:08X}"),
+                                                img,
+                                                egui::TextureOptions::LINEAR,
+                                            );
+                                            ui.add_space(4.0);
+                                            let max = 256.0f32;
+                                            let (w, ht) = (t.width as f32, t.height as f32);
+                                            let scale = (max / w).min(max / ht).min(1.0);
+                                            ui.add(
+                                                egui::Image::new(&tex_handle)
+                                                    .fit_to_exact_size(egui::vec2(w * scale, ht * scale)),
+                                            );
+                                        }
+                                        Err(e) => {
+                                            ui.label(egui::RichText::new(format!("decode failed: {e}")).color(theme::FAINT).size(10.5));
+                                        }
+                                    }
+                                }
+                            } else if handle.kind == crate::source::AssetKind::Material {
+                                if let Some(uid) = handle.hash {
+                                    match source.textures_for_material(uid) {
+                                        Some(slots) => {
+                                            let names = ["diffuse", "spec", "normal", "mask"];
+                                            for (i, s) in slots.iter().enumerate() {
+                                                let val = match s {
+                                                    Some(h) => {
+                                                        let n = source.name_of_hash(*h).unwrap_or_default();
+                                                        if n.is_empty() {
+                                                            format!("{h:08X}")
+                                                        } else {
+                                                            format!("{n}  {h:08X}")
+                                                        }
+                                                    }
+                                                    None => "—".into(),
+                                                };
+                                                theme::kv(ui, names[i], egui::RichText::new(val).monospace());
+                                            }
+                                        }
+                                        None => {
+                                            ui.label(egui::RichText::new("(not indexed — likely container-wrapped, awaiting variant unwrap)").color(theme::FAINT).size(10.5));
+                                        }
+                                    }
+                                }
+                            } else if handle.kind == crate::source::AssetKind::Mesh {
                                 match source.read_mesh_bytes(handle) {
                                     Ok(bytes) => {
                                         theme::kv(ui, "slot bytes", egui::RichText::new(bytes.len().to_string()));

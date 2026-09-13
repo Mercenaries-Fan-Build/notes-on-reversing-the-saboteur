@@ -425,6 +425,22 @@ impl GameSource for Prototype2008Source {
         Ok(pack_bytes[rec.offset..rec.offset + rec.size].to_vec())
     }
 
+    fn list_materials(&self) -> Vec<AssetHandle> {
+        // Iterate MaterialIndex — each entry is a distinct MTLD record parsed at open time.
+        // Name comes from `name_by_uid` (populated from the MTLD name field). Key mirrors the
+        // uid so a downstream consumer can round-trip a handle to `textures_for_material`.
+        self.materials
+            .by_uid
+            .keys()
+            .map(|uid| AssetHandle {
+                key: *uid as u64,
+                hash: Some(*uid),
+                name: self.materials.name_by_uid.get(uid).cloned().unwrap_or_default(),
+                kind: AssetKind::Material,
+            })
+            .collect()
+    }
+
     fn textures_for_material(&self, mat: u32) -> Option<[Option<u32>; 4]> {
         // Global `.materials`-slot inventory built at open time (see `open`). Slots that were
         // SBL4-wrapped are absent from this index; `None` here means either "unknown material"

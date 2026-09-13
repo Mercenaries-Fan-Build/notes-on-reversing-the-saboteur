@@ -112,17 +112,36 @@ pub fn run(mut cfg: Config) {
     // "choose your game directory" chooser — the one and only way the install is set (see
     // `settings_page` + `needs_install`). Only WITH a valid install do we assemble a real character.
     let have_install = cfg.settings.is_valid();
-    let boot = if have_install {
-        crate::boot::load(&cfg).unwrap_or_else(|e| {
+    // Version dispatch: same folder-picker feeds whichever `GameSource` fingerprints. Retail runs
+    // its full assembler + renderer as before; 2008 opens the source and skips the retail chain
+    // (its assets flow through the trait-driven browser/materials paths below).
+    let boot_version = if have_install {
+        crate::source::detect_version(std::path::Path::new(&cfg.settings.game_dir))
+            .map(|(v, _fp)| v)
+    } else {
+        None
+    };
+    let boot = match boot_version {
+        Some(crate::source::GameVersion::RetailPc) => crate::boot::load(&cfg).unwrap_or_else(|e| {
             eprintln!("[sab_workshop] boot: {e}");
             errors.push(format!("Could not assemble the startup character: {e}"));
             placeholder_boot()
-        })
-    } else {
-        eprintln!(
-            "[sab_workshop] no valid install configured — opening the game-folder chooser (Settings)"
-        );
-        placeholder_boot()
+        }),
+        Some(crate::source::GameVersion::Prototype2008Xbox360) => {
+            // No retail-shape Megapack here; the source-layer browser will drive the UI.
+            // Placeholder scene keeps the 3D viewport valid while the browser catches the eye.
+            eprintln!(
+                "[sab_workshop] 2008 prototype detected — retail assembler skipped; \
+                 source-driven browser will populate the Nav"
+            );
+            placeholder_boot()
+        }
+        None => {
+            eprintln!(
+                "[sab_workshop] no valid install configured — opening the game-folder chooser (Settings)"
+            );
+            placeholder_boot()
+        }
     };
     let boot_parts = boot.parts;
     let boot_ranges = boot.part_ranges;
@@ -204,7 +223,10 @@ pub fn run(mut cfg: Config) {
     // Only read the install when there IS one. With no valid game_dir there are no packs to open,
     // so the worker is not spawned and the browser shows nothing rather than spinning forever — the
     // window is up purely to host the game-folder chooser.
-    if have_install {
+    // The retail background loader opens Megapack + Animations.pack + GameTemplates, none of
+    // which live in a 2008 folder. Gate on version so a 2008 boot doesn't spam retail-only
+    // file-not-found errors in the console.
+    if have_install && boot_version == Some(crate::source::GameVersion::RetailPc) {
         let cfgw = cfg.clone();
         let subw = submeshes.clone();
         // Clone the sender so `bg_tx` stays in scope: a live install change (Settings chooser)
@@ -258,6 +280,39 @@ pub fn run(mut cfg: Config) {
     // the inspector shows).
     let mut browse_assets: Vec<crate::assets::Asset> = Vec::new();
     let mut sel_asset: Option<usize> = None;
+    // Version-agnostic asset source. `None` when no valid install (the chooser is up). `Some`
+    // for retail AND 2008 — retail's chain still runs Megapack directly via its dedicated boot
+    // path, but the source is available for consumers that go through the trait (2008 browser
+    // rows, cross-version Materials lookups). Held as an `Arc` so worker threads can share it.
+    let mut source: Option<std::sync::Arc<dyn crate::source::GameSource>> = None;
+    // 2008-mode nav rows: `source.list_meshes()` (+ later textures/materials). Populated at boot
+    // when a 2008 folder is loaded; empty for retail (which uses `browse_assets` instead).
+    let mut source_handles: Vec<crate::source::AssetHandle> = Vec::new();
+    let mut sel_source_handle: Option<usize> = None;
+    if have_install {
+        match crate::source::open_source(std::path::Path::new(&cfg.settings.game_dir)) {
+            Ok(s) => {
+                if s.version() == crate::source::GameVersion::Prototype2008Xbox360 {
+                    source_handles = s.list_meshes();
+                }
+                println!(
+                    "[sab_workshop] source opened: {} — {} browse handles",
+                    s.label(),
+                    source_handles.len()
+                );
+                source = Some(std::sync::Arc::from(s));
+            }
+            Err(e) => {
+                eprintln!("[sab_workshop] source open failed: {e}");
+                errors.push(format!("open source: {e}"));
+            }
+        }
+    }
+    // Turn off the "loading from megapack…" spinner when we're not actually loading from a
+    // megapack — a 2008 source is already populated by the time we get here.
+    if !source_handles.is_empty() {
+        models_loading = false;
+    }
     // Background texture resolve for a clicked model: a monotonic request id (stale results from a
     // superseded click are discarded) and the result channel.
     let mut model_req: u64 = 0;
@@ -633,6 +688,8 @@ pub fn run(mut cfg: Config) {
                                 pending_group: &mut pending_group,
                                 export_after_load: &mut export_when_ready,
                                 models_loading,
+                                source_handles: &source_handles,
+                                sel_source_handle: &mut sel_source_handle,
                             },
                             &mut editor_state,
                             &mut settings_ctx,
@@ -2022,6 +2079,13 @@ struct NavCtx<'a> {
     export_after_load: &'a mut bool,
     /// True until the model list has streamed in from the megapack — show a spinner meanwhile.
     models_loading: bool,
+    /// Version-agnostic asset handles from the active `GameSource`. Non-empty for 2008 (where
+    /// there is no GameTemplates chain to build `browse_assets`); empty for retail (which uses
+    /// `browse_assets` instead). When non-empty, the Nav Models tab renders this flat list
+    /// instead of the category-grouped retail one.
+    source_handles: &'a [crate::source::AssetHandle],
+    /// Which source-handle row is selected (2008 mode only).
+    sel_source_handle: &'a mut Option<usize>,
 }
 
 /// Live state for the Settings page: the values being edited, plus what changing them implies.
@@ -2737,6 +2801,44 @@ fn build_ui(
             // Materials and Rig have their own subjects; Inspect's pills pick between models and
             // clips. Textures lists the pool the contact sheet is showing.
             match (*page, *nav.tab) {
+                // 2008 mode: source-layer handles override the retail Groups tree. Flat list,
+                // filter by substring OR hex hash. Selection stores the row index; clicking a
+                // row does not (yet) load geometry — the MSH4 body decoder is a follow-up — so
+                // the click is currently a "select for detail" op.
+                (Page::Inspect, NavTab::Models) if !nav.source_handles.is_empty() => {
+                    ui.label(theme::data_text(
+                        format!("{} source assets (2008)", nav.source_handles.len()),
+                        10.0,
+                        theme::FAINT,
+                    ));
+                    ui.label(theme::data_text(
+                        "click to select · geometry decode pending (MSH4)",
+                        9.0,
+                        theme::FAINT,
+                    ));
+                    ui.separator();
+                    ui.add_space(4.0);
+                    let n_hex: Option<u32> = u32::from_str_radix(needle.trim_start_matches("0x"), 16).ok();
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for (i, h) in nav.source_handles.iter().enumerate() {
+                            if !needle.is_empty()
+                                && !h.name.to_ascii_lowercase().contains(&needle)
+                                && n_hex.map(|q| (h.key as u32) != q).unwrap_or(true)
+                            {
+                                continue;
+                            }
+                            let sel = *nav.sel_source_handle == Some(i);
+                            let name = if h.name.is_empty() {
+                                format!("({:08X})", h.key as u32)
+                            } else {
+                                h.name.clone()
+                            };
+                            if ui.selectable_label(sel, name).clicked() {
+                                *nav.sel_source_handle = Some(i);
+                            }
+                        }
+                    });
+                }
                 (Page::Inspect, NavTab::Models) if nav.models_loading => {
                     // The model list is still streaming from the megapack — show a spinner, not an
                     // empty tree.

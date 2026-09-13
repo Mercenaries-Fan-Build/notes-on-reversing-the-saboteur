@@ -185,9 +185,15 @@ impl Settings {
         ]
     }
 
-    /// True when every REQUIRED file is present — the bar for the app being able to do anything.
+    /// True when the folder fingerprints as SOME game version the workshop knows how to read —
+    /// retail PC (GOG/Steam) or the 2008 Xbox 360 prototype today. Each version has its own
+    /// bar for "usable", and the source-layer fingerprint is the authority. `check()` still
+    /// reports the retail checklist on the Settings page for legibility.
     pub fn is_valid(&self) -> bool {
-        self.check().iter().all(|c| !c.required || c.ok)
+        if self.game_dir.is_empty() {
+            return false;
+        }
+        crate::source::detect_version(std::path::Path::new(&self.game_dir)).is_some()
     }
 }
 

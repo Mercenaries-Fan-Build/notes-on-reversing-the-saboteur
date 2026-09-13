@@ -60,6 +60,7 @@ pub struct Renderer {
     submeshes: Vec<SubMesh>,
     submesh_diffuse: Vec<Option<wgpu::TextureView>>,
     submesh_normal: Vec<Option<wgpu::TextureView>>,
+    submesh_spec: Vec<Option<wgpu::TextureView>>,
     submesh_bg: Vec<wgpu::BindGroup>,
     tex_bgl: wgpu::BindGroupLayout,
     scene_bgl: wgpu::BindGroupLayout, // kept so the joint buffer can be resized on a mesh swap
@@ -69,6 +70,9 @@ pub struct Renderer {
     /// 1x1 flat-normal `(128, 128, 255, 255)` — the fallback normal view (a "no bump" tangent normal
     /// pointing straight out, so N·L collapses to the vertex-space lambert).
     flat_normal_view: wgpu::TextureView,
+    /// 1x1 black — the fallback spec view. A material with no `_S` map declared in WSMA gets zero
+    /// spec everywhere, matching the game (only materials that ship a spec map are shiny).
+    black_view: wgpu::TextureView,
     /// Shorthand BG bound when `show_textures` is off — everything renders as untextured lit.
     fallback_bg: wgpu::BindGroup,
 
@@ -205,6 +209,19 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Spec map — per-pixel mask on the Blinn-Phong term so cloth/hair stays matte while
+                // skin/leather shines. Sampled as luminance in the shader (`_S` textures are
+                // typically grayscale, but a per-channel RGB spec-colour reads as luminance harmlessly).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -219,11 +236,14 @@ impl Renderer {
         });
         // Shared 1x1 fallbacks: white for the diffuse slot, flat OpenGL-tangent normal for the normal
         // slot (encodes Z ≈ +1 → the fragment TBN's N is used unchanged, so lighting reduces to the
-        // vertex-normal lambert).
+        // vertex-normal lambert), black for the spec slot (zero-mask → no highlight, matching
+        // materials that ship no `_S` in WSMA).
         let white_view = make_tex_view(&device, &queue, 1, 1, &[255, 255, 255, 255]);
         let flat_normal_view =
             make_tex_view(&device, &queue, 1, 1, &crate::normalmap::FLAT_NORMAL_RGBA);
-        let fallback_bg = make_submesh_bg(&device, &tex_bgl, &sampler, &white_view, &flat_normal_view);
+        let black_view = make_tex_view(&device, &queue, 1, 1, &[0, 0, 0, 255]);
+        let fallback_bg =
+            make_submesh_bg(&device, &tex_bgl, &sampler, &white_view, &flat_normal_view, &black_view);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pl"),
@@ -297,12 +317,15 @@ impl Renderer {
         });
         let index_count = mesh.indices.len() as u32;
 
-        // Non-overlapping per-material draw list; every submesh starts untextured (white + flat).
+        // Non-overlapping per-material draw list; every submesh starts untextured (white + flat + no-spec).
         let submeshes = formats::submesh_cover(&mesh.prims, index_count);
         let submesh_diffuse: Vec<Option<wgpu::TextureView>> = (0..submeshes.len()).map(|_| None).collect();
         let submesh_normal: Vec<Option<wgpu::TextureView>> = (0..submeshes.len()).map(|_| None).collect();
+        let submesh_spec: Vec<Option<wgpu::TextureView>> = (0..submeshes.len()).map(|_| None).collect();
         let submesh_bg: Vec<wgpu::BindGroup> = (0..submeshes.len())
-            .map(|_| make_submesh_bg(&device, &tex_bgl, &sampler, &white_view, &flat_normal_view))
+            .map(|_| {
+                make_submesh_bg(&device, &tex_bgl, &sampler, &white_view, &flat_normal_view, &black_view)
+            })
             .collect();
 
         // --- grid pipeline + geometry ---
@@ -373,12 +396,14 @@ impl Renderer {
             submeshes,
             submesh_diffuse,
             submesh_normal,
+            submesh_spec,
             submesh_bg,
             tex_bgl,
             scene_bgl: bgl,
             sampler,
             white_view,
             flat_normal_view,
+            black_view,
             fallback_bg,
             grid_pipeline,
             grid_vbo,
@@ -444,6 +469,7 @@ impl Renderer {
         self.submeshes = formats::submesh_cover(&mesh.prims, self.index_count);
         self.submesh_diffuse = (0..self.submeshes.len()).map(|_| None).collect();
         self.submesh_normal = (0..self.submeshes.len()).map(|_| None).collect();
+        self.submesh_spec = (0..self.submeshes.len()).map(|_| None).collect();
         self.submesh_bg = (0..self.submeshes.len())
             .map(|_| {
                 make_submesh_bg(
@@ -452,6 +478,7 @@ impl Renderer {
                     &self.sampler,
                     &self.white_view,
                     &self.flat_normal_view,
+                    &self.black_view,
                 )
             })
             .collect();
@@ -498,7 +525,18 @@ impl Renderer {
         self.rebuild_submesh_bg(i);
     }
 
-    /// Unassign submesh `i`'s diffuse (falls back to white). The normal slot is unchanged.
+    /// Upload `tex` as submesh `i`'s spec-map mask. The shader samples this as luminance and
+    /// multiplies the Blinn-Phong highlight by it — bright pixels shine, dark pixels stay matte.
+    pub fn set_submesh_spec(&mut self, i: usize, tex: &CpuTexture) {
+        if i >= self.submeshes.len() {
+            return;
+        }
+        self.submesh_spec[i] =
+            Some(make_tex_view(&self.device, &self.queue, tex.width.max(1), tex.height.max(1), &tex.rgba));
+        self.rebuild_submesh_bg(i);
+    }
+
+    /// Unassign submesh `i`'s diffuse (falls back to white). Other slots are unchanged.
     pub fn clear_submesh_texture(&mut self, i: usize) {
         if i >= self.submeshes.len() {
             return;
@@ -516,7 +554,16 @@ impl Renderer {
         self.rebuild_submesh_bg(i);
     }
 
-    /// Drop every resolved diffuse (back to the flat white look). Normals are unchanged.
+    /// Unassign submesh `i`'s spec map (falls back to black — no highlight).
+    pub fn clear_submesh_spec(&mut self, i: usize) {
+        if i >= self.submeshes.len() {
+            return;
+        }
+        self.submesh_spec[i] = None;
+        self.rebuild_submesh_bg(i);
+    }
+
+    /// Drop every resolved diffuse (back to the flat white look). Normals + specs are unchanged.
     pub fn clear_textures(&mut self) {
         for i in 0..self.submeshes.len() {
             self.submesh_diffuse[i] = None;
@@ -527,7 +574,8 @@ impl Renderer {
     fn rebuild_submesh_bg(&mut self, i: usize) {
         let d = self.submesh_diffuse[i].as_ref().unwrap_or(&self.white_view);
         let n = self.submesh_normal[i].as_ref().unwrap_or(&self.flat_normal_view);
-        self.submesh_bg[i] = make_submesh_bg(&self.device, &self.tex_bgl, &self.sampler, d, n);
+        let s = self.submesh_spec[i].as_ref().unwrap_or(&self.black_view);
+        self.submesh_bg[i] = make_submesh_bg(&self.device, &self.tex_bgl, &self.sampler, d, n, s);
     }
 
     /// Draw one frame: 3D scene (grid + skinned mesh) then the egui overlay.
@@ -642,13 +690,14 @@ fn make_tex_view(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgb
     tex.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// Build one submesh's group-1 bind group over the shared `tex_bgl`: (diffuse, sampler, normal).
+/// Build one submesh's group-1 bind group over the shared `tex_bgl`: (diffuse, sampler, normal, spec).
 fn make_submesh_bg(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     diffuse: &wgpu::TextureView,
     normal: &wgpu::TextureView,
+    spec: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("submesh bg"),
@@ -657,6 +706,7 @@ fn make_submesh_bg(
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(diffuse) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(normal) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(spec) },
         ],
     })
 }
@@ -704,6 +754,7 @@ struct Camera { view_proj: mat4x4<f32> };
 @group(1) @binding(0) var diffuse: texture_2d<f32>;
 @group(1) @binding(1) var mesh_samp: sampler;
 @group(1) @binding(2) var normal_tex: texture_2d<f32>;
+@group(1) @binding(3) var spec_tex: texture_2d<f32>;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -780,15 +831,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let d = abs(dot(n, l));
     let diffuse_shade = 0.18 + 0.82 * d;
 
-    // Blinn-Phong specular against the sampled normal — the term that MAKES normal maps visible
-    // (a plain lambert barely shows tangent-space perturbation). Held to a tight, dim highlight
-    // because there is no spec-map modulation yet — the game's slot-1 texture would per-pixel-mask
-    // which surfaces are shiny (skin, leather) vs matte (cloth, hair); as a flat constant it turns
-    // cloth into PVC. See the note above `fs_main` — wiring the spec map is the proper fix.
+    // Blinn-Phong specular against the sampled normal, MASKED per-pixel by the spec map — the
+    // proper fix for the "everything looks wet" problem a global constant caused. Sab's slot-1
+    // `_S` textures are usually grayscale (occasionally coloured); sample as luminance so both
+    // conventions read the same, and skin/leather shines while cloth/hair stays matte. A
+    // material with no spec map falls back to the 1x1 black view (mask = 0 → zero spec).
     let view_dir = normalize(cross(dpdy(in.world_pos), dpdx(in.world_pos)));
     let half_v = normalize(l + view_dir);
     let n_dot_h = max(dot(n, half_v), 0.0);
-    let spec = pow(n_dot_h, 64.0) * 0.15;
+    let s_sample = textureSample(spec_tex, mesh_samp, in.uv).rgb;
+    let s_mask = dot(s_sample, vec3<f32>(0.299, 0.587, 0.114));
+    let spec = pow(n_dot_h, 48.0) * s_mask * 1.2;
 
     let color = base.rgb * diffuse_shade + vec3<f32>(spec);
     return vec4<f32>(color, 1.0);

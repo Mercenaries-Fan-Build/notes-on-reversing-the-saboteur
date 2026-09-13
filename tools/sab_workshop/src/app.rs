@@ -459,12 +459,15 @@ pub fn run(mut cfg: Config) {
                                 assets = a;
                                 submesh_tex = st;
                                 submesh_prov = sp;
-                                // Diffuse and normal are the two slots the shader samples; spec/mask
-                                // live in the pool for the Materials panel + bundle export only.
+                                // Diffuse + normal + spec are what the shader samples; the mask slot
+                                // rides only in the Materials panel + bundle export for now.
                                 for (i, slot, tex) in &decoded {
                                     match *slot {
                                         s if s == resolve::SubmeshBinding::DIFFUSE => {
                                             renderer.set_submesh_texture(*i, tex);
+                                        }
+                                        s if s == resolve::SubmeshBinding::SPEC => {
+                                            renderer.set_submesh_spec(*i, tex);
                                         }
                                         s if s == resolve::SubmeshBinding::NORMAL => {
                                             renderer.set_submesh_normal(*i, tex);
@@ -487,12 +490,17 @@ pub fn run(mut cfg: Config) {
                             submesh_tex = mt.submesh_tex;
                             submesh_prov = mt.submesh_prov;
                             let mut n_diffuse = 0usize;
+                            let mut n_spec = 0usize;
                             let mut n_normal = 0usize;
                             for (i, slot, tex) in &mt.decoded {
                                 match *slot {
                                     s if s == resolve::SubmeshBinding::DIFFUSE => {
                                         renderer.set_submesh_texture(*i, tex);
                                         n_diffuse += 1;
+                                    }
+                                    s if s == resolve::SubmeshBinding::SPEC => {
+                                        renderer.set_submesh_spec(*i, tex);
+                                        n_spec += 1;
                                     }
                                     s if s == resolve::SubmeshBinding::NORMAL => {
                                         renderer.set_submesh_normal(*i, tex);
@@ -503,9 +511,10 @@ pub fn run(mut cfg: Config) {
                             }
                             // Visibility on the resolve → what did the shader actually receive?
                             println!(
-                                "[sab_workshop] {}: uploaded {} diffuse + {} normal textures to {} submeshes",
+                                "[sab_workshop] {}: uploaded {} diffuse + {} spec + {} normal textures to {} submeshes",
                                 model_name,
                                 n_diffuse,
+                                n_spec,
                                 n_normal,
                                 submeshes.len(),
                             );
@@ -525,6 +534,11 @@ pub fn run(mut cfg: Config) {
                                         Some(Ok(tex)) => renderer.set_submesh_texture(i, &tex),
                                         Some(Err(e)) => eprintln!("[sab_workshop] decode: {e}"),
                                         None => renderer.clear_submesh_texture(i),
+                                    }
+                                    match st[i].spec().map(|ai| assets[ai].decode()) {
+                                        Some(Ok(tex)) => renderer.set_submesh_spec(i, &tex),
+                                        Some(Err(e)) => eprintln!("[sab_workshop] decode: {e}"),
+                                        None => renderer.clear_submesh_spec(i),
                                     }
                                     match st[i].normal().map(|ai| assets[ai].decode()) {
                                         Some(Ok(tex)) => renderer.set_submesh_normal(i, &tex),
@@ -773,10 +787,9 @@ pub fn run(mut cfg: Config) {
 
                     // --- act on a Materials picker change: rebind + persist the sidecar ---
                     if let Some((i, slot, ai)) = pending_tex.take() {
-                        // Slot 0 (diffuse) and slot 2 (normal) both feed the shader — slot 1 (spec)
-                        // and slot 3 (mask) are persisted in the sidecar + carried into the bundle
-                        // export, but the current shader doesn't sample them so they don't touch
-                        // the wgpu bind group.
+                        // Slot 0 (diffuse), 1 (spec), and 2 (normal) all feed the shader. Slot 3
+                        // (mask) is persisted in the sidecar + carried into the bundle export, but
+                        // the current shader doesn't sample it, so it doesn't touch the bind group.
                         let s = slot as usize;
                         if s == resolve::SubmeshBinding::DIFFUSE {
                             match ai {
@@ -788,6 +801,17 @@ pub fn run(mut cfg: Config) {
                                     ),
                                 },
                                 None => renderer.clear_submesh_texture(i),
+                            }
+                        } else if s == resolve::SubmeshBinding::SPEC {
+                            match ai {
+                                Some(ai) => match assets[ai].decode() {
+                                    Ok(tex) => renderer.set_submesh_spec(i, &tex),
+                                    Err(e) => eprintln!(
+                                        "[sab_workshop] decode {}: {e}",
+                                        assets[ai].name
+                                    ),
+                                },
+                                None => renderer.clear_submesh_spec(i),
                             }
                         } else if s == resolve::SubmeshBinding::NORMAL {
                             match ai {

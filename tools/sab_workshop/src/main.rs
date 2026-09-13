@@ -25,6 +25,7 @@ mod gui;
 mod havok;
 mod meshload;
 mod models;
+mod normalmap;
 mod pack;
 mod render;
 mod resolve;

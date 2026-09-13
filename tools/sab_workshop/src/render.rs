@@ -54,14 +54,23 @@ pub struct Renderer {
     ibo: wgpu::Buffer,
     index_count: u32,
 
-    // Per-submesh (leaf-range cover) draw list + its bound diffuse texture. `None` = untextured →
-    // the shared 1x1 white texture (looks like the old flat shading). Same order as `submeshes`.
+    // Per-submesh (leaf-range cover) draw list + its bound textures. A submesh always has ONE
+    // BindGroup — slot views that are `None` bind the shared fallback (white for diffuse, flat
+    // normal for normal). Same order as `submeshes`.
     submeshes: Vec<SubMesh>,
-    submesh_bg: Vec<Option<wgpu::BindGroup>>,
+    submesh_diffuse: Vec<Option<wgpu::TextureView>>,
+    submesh_normal: Vec<Option<wgpu::TextureView>>,
+    submesh_bg: Vec<wgpu::BindGroup>,
     tex_bgl: wgpu::BindGroupLayout,
     scene_bgl: wgpu::BindGroupLayout, // kept so the joint buffer can be resized on a mesh swap
     sampler: wgpu::Sampler,
-    white_bg: wgpu::BindGroup,
+    /// 1x1 white — the fallback diffuse view (unbound submeshes render as plain lit geometry).
+    white_view: wgpu::TextureView,
+    /// 1x1 flat-normal `(128, 128, 255, 255)` — the fallback normal view (a "no bump" tangent normal
+    /// pointing straight out, so N·L collapses to the vertex-space lambert).
+    flat_normal_view: wgpu::TextureView,
+    /// Shorthand BG bound when `show_textures` is off — everything renders as untextured lit.
+    fallback_bg: wgpu::BindGroup,
 
     grid_pipeline: wgpu::RenderPipeline,
     grid_vbo: wgpu::Buffer,
@@ -163,7 +172,7 @@ impl Renderer {
             ],
         });
 
-        // --- per-material texture bind group (group 1) ---
+        // --- per-material texture bind group (group 1): diffuse + normal + one shared sampler ---
         let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tex bgl"),
             entries: &[
@@ -183,10 +192,23 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Normal map — sampled with the SAME sampler as diffuse. This is only correct because
+                // Saboteur's `_NM` textures are tangent-space DXT1 (see normalmap.rs guard test); a
+                // grayscale-relief convention would need re-derivation before upload.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("diffuse sampler"),
+            label: Some("mesh sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,
@@ -195,8 +217,13 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        // 1x1 white fallback: an unresolved submesh renders as plain lit geometry.
-        let white_bg = make_tex_bind_group(&device, &queue, &tex_bgl, &sampler, 1, 1, &[255, 255, 255, 255]);
+        // Shared 1x1 fallbacks: white for the diffuse slot, flat OpenGL-tangent normal for the normal
+        // slot (encodes Z ≈ +1 → the fragment TBN's N is used unchanged, so lighting reduces to the
+        // vertex-normal lambert).
+        let white_view = make_tex_view(&device, &queue, 1, 1, &[255, 255, 255, 255]);
+        let flat_normal_view =
+            make_tex_view(&device, &queue, 1, 1, &crate::normalmap::FLAT_NORMAL_RGBA);
+        let fallback_bg = make_submesh_bg(&device, &tex_bgl, &sampler, &white_view, &flat_normal_view);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("scene pl"),
@@ -270,9 +297,13 @@ impl Renderer {
         });
         let index_count = mesh.indices.len() as u32;
 
-        // Non-overlapping per-material draw list; every submesh starts untextured (white).
+        // Non-overlapping per-material draw list; every submesh starts untextured (white + flat).
         let submeshes = formats::submesh_cover(&mesh.prims, index_count);
-        let submesh_bg = (0..submeshes.len()).map(|_| None).collect();
+        let submesh_diffuse: Vec<Option<wgpu::TextureView>> = (0..submeshes.len()).map(|_| None).collect();
+        let submesh_normal: Vec<Option<wgpu::TextureView>> = (0..submeshes.len()).map(|_| None).collect();
+        let submesh_bg: Vec<wgpu::BindGroup> = (0..submeshes.len())
+            .map(|_| make_submesh_bg(&device, &tex_bgl, &sampler, &white_view, &flat_normal_view))
+            .collect();
 
         // --- grid pipeline + geometry ---
         let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -340,11 +371,15 @@ impl Renderer {
             ibo,
             index_count,
             submeshes,
+            submesh_diffuse,
+            submesh_normal,
             submesh_bg,
             tex_bgl,
             scene_bgl: bgl,
             sampler,
-            white_bg,
+            white_view,
+            flat_normal_view,
+            fallback_bg,
             grid_pipeline,
             grid_vbo,
             grid_count,
@@ -407,7 +442,19 @@ impl Renderer {
         });
         self.index_count = mesh.indices.len() as u32;
         self.submeshes = formats::submesh_cover(&mesh.prims, self.index_count);
-        self.submesh_bg = (0..self.submeshes.len()).map(|_| None).collect();
+        self.submesh_diffuse = (0..self.submeshes.len()).map(|_| None).collect();
+        self.submesh_normal = (0..self.submeshes.len()).map(|_| None).collect();
+        self.submesh_bg = (0..self.submeshes.len())
+            .map(|_| {
+                make_submesh_bg(
+                    &self.device,
+                    &self.tex_bgl,
+                    &self.sampler,
+                    &self.white_view,
+                    &self.flat_normal_view,
+                )
+            })
+            .collect();
 
         let jc = bone_count.max(1);
         if jc != self.joint_count {
@@ -429,35 +476,58 @@ impl Renderer {
         }
     }
 
-    /// Upload `tex` as submesh `i`'s diffuse. Replaces any previous texture on that submesh.
+    /// Upload `tex` as submesh `i`'s diffuse and rebuild that submesh's bind group.
     pub fn set_submesh_texture(&mut self, i: usize, tex: &CpuTexture) {
         if i >= self.submeshes.len() {
             return;
         }
-        let bg = make_tex_bind_group(
-            &self.device,
-            &self.queue,
-            &self.tex_bgl,
-            &self.sampler,
-            tex.width.max(1),
-            tex.height.max(1),
-            &tex.rgba,
-        );
-        self.submesh_bg[i] = Some(bg);
+        self.submesh_diffuse[i] =
+            Some(make_tex_view(&self.device, &self.queue, tex.width.max(1), tex.height.max(1), &tex.rgba));
+        self.rebuild_submesh_bg(i);
     }
 
-    /// Unassign submesh `i`'s texture (it falls back to white).
+    /// Upload `tex` as submesh `i`'s tangent-space normal map. Rebuilds the bind group. Saboteur's
+    /// `_NM` records are already tangent-space DXT1 (see the guard test in `normalmap.rs`), so we
+    /// upload the decoded bytes as-is with no signed re-encoding.
+    pub fn set_submesh_normal(&mut self, i: usize, tex: &CpuTexture) {
+        if i >= self.submeshes.len() {
+            return;
+        }
+        self.submesh_normal[i] =
+            Some(make_tex_view(&self.device, &self.queue, tex.width.max(1), tex.height.max(1), &tex.rgba));
+        self.rebuild_submesh_bg(i);
+    }
+
+    /// Unassign submesh `i`'s diffuse (falls back to white). The normal slot is unchanged.
     pub fn clear_submesh_texture(&mut self, i: usize) {
-        if let Some(b) = self.submesh_bg.get_mut(i) {
-            *b = None;
+        if i >= self.submeshes.len() {
+            return;
+        }
+        self.submesh_diffuse[i] = None;
+        self.rebuild_submesh_bg(i);
+    }
+
+    /// Unassign submesh `i`'s normal (falls back to the flat OpenGL-tangent normal).
+    pub fn clear_submesh_normal(&mut self, i: usize) {
+        if i >= self.submeshes.len() {
+            return;
+        }
+        self.submesh_normal[i] = None;
+        self.rebuild_submesh_bg(i);
+    }
+
+    /// Drop every resolved diffuse (back to the flat white look). Normals are unchanged.
+    pub fn clear_textures(&mut self) {
+        for i in 0..self.submeshes.len() {
+            self.submesh_diffuse[i] = None;
+            self.rebuild_submesh_bg(i);
         }
     }
 
-    /// Drop every resolved texture (back to the flat white look).
-    pub fn clear_textures(&mut self) {
-        for b in &mut self.submesh_bg {
-            *b = None;
-        }
+    fn rebuild_submesh_bg(&mut self, i: usize) {
+        let d = self.submesh_diffuse[i].as_ref().unwrap_or(&self.white_view);
+        let n = self.submesh_normal[i].as_ref().unwrap_or(&self.flat_normal_view);
+        self.submesh_bg[i] = make_submesh_bg(&self.device, &self.tex_bgl, &self.sampler, d, n);
     }
 
     /// Draw one frame: 3D scene (grid + skinned mesh) then the egui overlay.
@@ -512,10 +582,7 @@ impl Renderer {
                 // One draw per submesh, each with its own diffuse (or the white fallback). When
                 // textures are toggled off, everything binds white → the original flat-lit look.
                 for (i, sm) in self.submeshes.iter().enumerate() {
-                    let bg = match (self.show_textures, &self.submesh_bg[i]) {
-                        (true, Some(b)) => b,
-                        _ => &self.white_bg,
-                    };
+                    let bg = if self.show_textures { &self.submesh_bg[i] } else { &self.fallback_bg };
                     pass.set_bind_group(1, bg, &[]);
                     let end = sm.index_start + sm.index_count;
                     pass.draw_indexed(sm.index_start..end, 0, 0..1);
@@ -542,21 +609,13 @@ fn build_vertices(mesh: &Smsh) -> Vec<Vertex> {
         .collect()
 }
 
-/// Upload `rgba` (w*h*4, straight-alpha) as an `Rgba8Unorm` texture and build a group-1 bind group
-/// (texture + sampler). We keep the stored bytes as-is (no sRGB decode) so the preview matches a raw
-/// DDS view and stays consistent with the flat/grid passes, which don't gamma-correct either.
-fn make_tex_bind_group(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    w: u32,
-    h: u32,
-    rgba: &[u8],
-) -> wgpu::BindGroup {
+/// Upload `rgba` (w*h*4, straight-alpha) as an `Rgba8Unorm` texture and return its view. We keep the
+/// stored bytes as-is (no sRGB decode) so the preview matches a raw DDS view and stays consistent
+/// with the flat/grid passes — and, for normal maps, so the tangent-space bytes are read verbatim.
+fn make_tex_view(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> wgpu::TextureView {
     let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("diffuse"),
+        label: Some("mesh texture"),
         size,
         mip_level_count: 1,
         sample_count: 1,
@@ -577,20 +636,27 @@ fn make_tex_bind_group(
             aspect: wgpu::TextureAspect::All,
         },
         &data,
-        wgpu::ImageDataLayout {
-            offset: 0,
-            bytes_per_row: Some(w * 4),
-            rows_per_image: Some(h),
-        },
+        wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
         size,
     );
-    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    tex.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Build one submesh's group-1 bind group over the shared `tex_bgl`: (diffuse, sampler, normal).
+fn make_submesh_bg(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    diffuse: &wgpu::TextureView,
+    normal: &wgpu::TextureView,
+) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("diffuse bg"),
+        label: Some("submesh bg"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(diffuse) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(normal) },
         ],
     })
 }
@@ -636,7 +702,8 @@ struct Camera { view_proj: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<storage, read> joints: array<mat4x4<f32>>;
 @group(1) @binding(0) var diffuse: texture_2d<f32>;
-@group(1) @binding(1) var diffuse_samp: sampler;
+@group(1) @binding(1) var mesh_samp: sampler;
+@group(1) @binding(2) var normal_tex: texture_2d<f32>;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -649,6 +716,8 @@ struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
+    // Fragment-space TBN reconstruction needs the world-space position, so pass it through.
+    @location(2) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -672,19 +741,57 @@ fn vs_main(in: VsIn) -> VsOut {
     out.clip = camera.view_proj * world_pos;
     out.normal = world_nrm;
     out.uv = in.uv;
+    out.world_pos = world_pos.xyz;
     return out;
+}
+
+// Christian Schüler's cotangent-frame reconstruction — recovers a per-fragment TBN from the world
+// position and UV derivatives, so we don't need per-vertex tangents (Saboteur meshes don't carry
+// them). Reference: http://www.thetenthplanet.de/archives/1180.
+fn cotangent_frame(n: vec3<f32>, p: vec3<f32>, uv: vec2<f32>) -> mat3x3<f32> {
+    let dp1 = dpdx(p);
+    let dp2 = dpdy(p);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let dp2perp = cross(dp2, n);
+    let dp1perp = cross(n, dp1);
+    let t = dp2perp * duv1.x + dp1perp * duv2.x;
+    let b = dp2perp * duv1.y + dp1perp * duv2.y;
+    let invmax = inverseSqrt(max(dot(t, t), dot(b, b)));
+    return mat3x3<f32>(t * invmax, b * invmax, n);
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let n = normalize(in.normal);
+    let base = textureSample(diffuse, mesh_samp, in.uv);
+    let vn = normalize(in.normal);
+
+    // Sample tangent-space normal (Saboteur's `_NM` is OpenGL-convention DXT1: R=X, G=+Y, B=+Z).
+    // Where the submesh has no normal map bound, the fallback is the flat (0.5, 0.5, 1.0) texel, so
+    // `n_tan` = (0, 0, 1) and the TBN transform leaves `vn` unchanged — the shader degrades to the
+    // old vertex-normal lambert with no branching.
+    let n_tan = textureSample(normal_tex, mesh_samp, in.uv).xyz * 2.0 - 1.0;
+    let tbn = cotangent_frame(vn, in.world_pos, in.uv);
+    let n = normalize(tbn * n_tan);
+
+    // Key light from above-front-right; the same direction the pre-normal-map shader used, so a
+    // model with no `_NM` reads identically to before on the diffuse term.
     let l = normalize(vec3<f32>(0.4, 0.85, 0.55));
-    // Two-sided lambert so backfaces aren't black.
     let d = abs(dot(n, l));
-    let shade = 0.18 + 0.82 * d;
-    // Diffuse texture (1x1 white when the submesh is unresolved) modulated by the lambert term.
-    let base = textureSample(diffuse, diffuse_samp, in.uv);
-    return vec4<f32>(base.rgb * shade, 1.0);
+    let diffuse_shade = 0.18 + 0.82 * d;
+
+    // Blinn-Phong specular against the sampled normal — the term that MAKES normal maps visible
+    // (a plain lambert barely shows tangent-space perturbation). Held to a tight, dim highlight
+    // because there is no spec-map modulation yet — the game's slot-1 texture would per-pixel-mask
+    // which surfaces are shiny (skin, leather) vs matte (cloth, hair); as a flat constant it turns
+    // cloth into PVC. See the note above `fs_main` — wiring the spec map is the proper fix.
+    let view_dir = normalize(cross(dpdy(in.world_pos), dpdx(in.world_pos)));
+    let half_v = normalize(l + view_dir);
+    let n_dot_h = max(dot(n, half_v), 0.0);
+    let spec = pow(n_dot_h, 64.0) * 0.15;
+
+    let color = base.rgb * diffuse_shade + vec3<f32>(spec);
+    return vec4<f32>(color, 1.0);
 }
 "#;
 

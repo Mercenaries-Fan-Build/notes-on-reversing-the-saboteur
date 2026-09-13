@@ -197,7 +197,8 @@ pub fn run(mut cfg: Config) {
     let mut palettes: Option<pack::Megapack> = None;
     let mut mesh_list: Vec<meshload::MeshEntry> = Vec::new();
     let mut assets: Vec<resolve::TexAsset> = Vec::new();
-    let mut submesh_tex: Vec<Option<usize>> = vec![None; n_sub];
+    let mut submesh_tex: Vec<resolve::SubmeshBinding> =
+        vec![resolve::SubmeshBinding::default(); n_sub];
     let mut submesh_prov: Vec<resolve::Prov> = vec![resolve::Prov::Unresolved; n_sub];
     let (bg_tx, bg_rx) = std::sync::mpsc::channel::<BgMsg>();
     // Only read the install when there IS one. With no valid game_dir there are no packs to open,
@@ -223,7 +224,8 @@ pub fn run(mut cfg: Config) {
     let mut playback = Playback { time: 0.0, playing: true, looping: true, speed: 1.0 };
     let mut pending_load: Option<usize> = None; // catalog.clips index requested this frame
     // Materials picker request: (submesh, Some(asset) | None to unassign), applied after the UI runs.
-    let mut pending_tex: Option<(usize, Option<usize>)> = None;
+    // Materials-panel picker signals a per-slot rebind: (submesh index, slot 0..=3, asset index).
+    let mut pending_tex: Option<(usize, u8, Option<usize>)> = None;
     let mut pending_save = false;
     // Navigator: which category is shown, and a click-to-load request (index into `mesh_list`).
     // Root motion walks the character out of a fixed-camera preview; lock it by default.
@@ -390,7 +392,8 @@ pub fn run(mut cfg: Config) {
                                 thumbs.clear();
                                 tex_profile = resolve::profile_path(&model_name);
                                 assets = Vec::new();
-                                submesh_tex = vec![None; submeshes.len()];
+                                submesh_tex =
+                                    vec![resolve::SubmeshBinding::default(); submeshes.len()];
                                 submesh_prov = vec![resolve::Prov::Unresolved; submeshes.len()];
                                 let from_pack_now = !current_parts.is_empty();
                                 if from_pack_now {
@@ -456,8 +459,18 @@ pub fn run(mut cfg: Config) {
                                 assets = a;
                                 submesh_tex = st;
                                 submesh_prov = sp;
-                                for (i, tex) in &decoded {
-                                    renderer.set_submesh_texture(*i, tex);
+                                // Diffuse and normal are the two slots the shader samples; spec/mask
+                                // live in the pool for the Materials panel + bundle export only.
+                                for (i, slot, tex) in &decoded {
+                                    match *slot {
+                                        s if s == resolve::SubmeshBinding::DIFFUSE => {
+                                            renderer.set_submesh_texture(*i, tex);
+                                        }
+                                        s if s == resolve::SubmeshBinding::NORMAL => {
+                                            renderer.set_submesh_normal(*i, tex);
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             }
                             BgMsg::Packs { megapack: mp, palettes: pal } => {
@@ -473,9 +486,29 @@ pub fn run(mut cfg: Config) {
                             assets = mt.assets;
                             submesh_tex = mt.submesh_tex;
                             submesh_prov = mt.submesh_prov;
-                            for (i, tex) in &mt.decoded {
-                                renderer.set_submesh_texture(*i, tex);
+                            let mut n_diffuse = 0usize;
+                            let mut n_normal = 0usize;
+                            for (i, slot, tex) in &mt.decoded {
+                                match *slot {
+                                    s if s == resolve::SubmeshBinding::DIFFUSE => {
+                                        renderer.set_submesh_texture(*i, tex);
+                                        n_diffuse += 1;
+                                    }
+                                    s if s == resolve::SubmeshBinding::NORMAL => {
+                                        renderer.set_submesh_normal(*i, tex);
+                                        n_normal += 1;
+                                    }
+                                    _ => {}
+                                }
                             }
+                            // Visibility on the resolve → what did the shader actually receive?
+                            println!(
+                                "[sab_workshop] {}: uploaded {} diffuse + {} normal textures to {} submeshes",
+                                model_name,
+                                n_diffuse,
+                                n_normal,
+                                submeshes.len(),
+                            );
                             // A hand-authored sidecar is a DECISION and outranks what the material
                             // table answered — otherwise the picker's Save button did nothing the
                             // moment the model reloaded.
@@ -488,10 +521,15 @@ pub fn run(mut cfg: Config) {
                                     }
                                     submesh_tex[i] = st[i];
                                     submesh_prov[i] = sp[i];
-                                    match st[i].map(|ai| assets[ai].decode()) {
+                                    match st[i].diffuse().map(|ai| assets[ai].decode()) {
                                         Some(Ok(tex)) => renderer.set_submesh_texture(i, &tex),
                                         Some(Err(e)) => eprintln!("[sab_workshop] decode: {e}"),
                                         None => renderer.clear_submesh_texture(i),
+                                    }
+                                    match st[i].normal().map(|ai| assets[ai].decode()) {
+                                        Some(Ok(tex)) => renderer.set_submesh_normal(i, &tex),
+                                        Some(Err(e)) => eprintln!("[sab_workshop] decode: {e}"),
+                                        None => renderer.clear_submesh_normal(i),
                                     }
                                 }
                             }
@@ -554,7 +592,7 @@ pub fn run(mut cfg: Config) {
                             ctx, &catalog, &playable_rows, &mut show_all,
                             &current, &mut playback, &mut pending_load, &mut renderer.show_grid,
                             &mut renderer.show_textures, &mut lock_root, &errors, pack.is_some(), rig_ok,
-                            mesh_stats, &model_name, &load_status, &mut page, &mut thumbs, &mut export_ctx,
+                            mesh_stats, &model_name, &load_status, &mut page, &mut export_ctx,
                             &mut MatsCtx {
                                 submeshes: &submeshes,
                                 assets: &assets,
@@ -563,6 +601,7 @@ pub fn run(mut cfg: Config) {
                                 selected: &mut sel_submesh,
                                 pending_tex: &mut pending_tex,
                                 pending_save: &mut pending_save,
+                                thumbs: &mut thumbs,
                             },
                             &mut NavCtx {
                                 tab: &mut nav_tab,
@@ -670,7 +709,8 @@ pub fn run(mut cfg: Config) {
                                     // a WORKER so this click never freezes the UI. Results stream back
                                     // and are applied in the mtex drain below.
                                     assets = Vec::new();
-                                    submesh_tex = vec![None; submeshes.len()];
+                                    submesh_tex =
+                                        vec![resolve::SubmeshBinding::default(); submeshes.len()];
                                     submesh_prov = vec![resolve::Prov::Unresolved; submeshes.len()];
                                     model_req = model_req.wrapping_add(1);
                                     tex_pending = true;
@@ -732,25 +772,55 @@ pub fn run(mut cfg: Config) {
                     } // end `if megapack.is_some()`
 
                     // --- act on a Materials picker change: rebind + persist the sidecar ---
-                    if let Some((i, ai)) = pending_tex.take() {
-                        match ai {
-                            Some(ai) => match assets[ai].decode() {
-                                Ok(tex) => renderer.set_submesh_texture(i, &tex),
-                                Err(e) => eprintln!("[sab_workshop] decode {}: {e}", assets[ai].name),
-                            },
-                            None => renderer.clear_submesh_texture(i),
+                    if let Some((i, slot, ai)) = pending_tex.take() {
+                        // Slot 0 (diffuse) and slot 2 (normal) both feed the shader — slot 1 (spec)
+                        // and slot 3 (mask) are persisted in the sidecar + carried into the bundle
+                        // export, but the current shader doesn't sample them so they don't touch
+                        // the wgpu bind group.
+                        let s = slot as usize;
+                        if s == resolve::SubmeshBinding::DIFFUSE {
+                            match ai {
+                                Some(ai) => match assets[ai].decode() {
+                                    Ok(tex) => renderer.set_submesh_texture(i, &tex),
+                                    Err(e) => eprintln!(
+                                        "[sab_workshop] decode {}: {e}",
+                                        assets[ai].name
+                                    ),
+                                },
+                                None => renderer.clear_submesh_texture(i),
+                            }
+                        } else if s == resolve::SubmeshBinding::NORMAL {
+                            match ai {
+                                Some(ai) => match assets[ai].decode() {
+                                    Ok(tex) => renderer.set_submesh_normal(i, &tex),
+                                    Err(e) => eprintln!(
+                                        "[sab_workshop] decode {}: {e}",
+                                        assets[ai].name
+                                    ),
+                                },
+                                None => renderer.clear_submesh_normal(i),
+                            }
                         }
-                        submesh_tex[i] = ai;
-                        // A pick is a decision, so it stops being a guess — and unpicking returns
-                        // the submesh to occupied rather than to "seeded".
-                        submesh_prov[i] =
-                            if ai.is_some() { resolve::Prov::Bound } else { resolve::Prov::Unresolved };
+                        submesh_tex[i].set(slot as usize, ai);
+                        // A pick is a decision. Any slot bound elevates the submesh to Bound;
+                        // clearing every slot returns it to Unresolved.
+                        submesh_prov[i] = if submesh_tex[i].is_bound() {
+                            resolve::Prov::Bound
+                        } else {
+                            resolve::Prov::Unresolved
+                        };
                         match resolve::save_sidecar(&tex_profile, &submesh_tex, &submesh_prov, &assets) {
-                            Ok(()) => println!(
-                                "[sab_workshop] submesh {i} -> {} (saved {})",
-                                ai.map(|x| assets[x].name.as_str()).unwrap_or("(none)"),
-                                resolve::sidecar_path(&tex_profile)
-                            ),
+                            Ok(()) => {
+                                let slot_name = resolve::SubmeshBinding::SLOT_NAMES
+                                    .get(slot as usize)
+                                    .copied()
+                                    .unwrap_or("?");
+                                println!(
+                                    "[sab_workshop] submesh {i} {slot_name} -> {} (saved {})",
+                                    ai.map(|x| assets[x].name.as_str()).unwrap_or("(none)"),
+                                    resolve::sidecar_path(&tex_profile)
+                                );
+                            }
                             Err(e) => eprintln!("[sab_workshop] sidecar save failed: {e}"),
                         }
                     }
@@ -817,12 +887,14 @@ enum BgMsg {
     /// The flat mesh list (for the loader) + the assembled assets built from GameTemplates (what the
     /// browser shows). Arrives after the mmap chain-walk + the GameTemplates parse.
     ModelList { mesh_list: Vec<meshload::MeshEntry>, assets: Vec<crate::assets::Asset> },
-    /// The current character's resolved textures + which submesh each is on + decoded pixels.
+    /// The current character's resolved textures + per-slot bindings per submesh + decoded pixels.
+    /// `decoded` carries `(submesh, slot, pixels)` so the main thread can route each into the right
+    /// place (only diffuse touches the wgpu bind group today).
     Textures {
         assets: Vec<resolve::TexAsset>,
-        submesh_tex: Vec<Option<usize>>,
+        submesh_tex: Vec<resolve::SubmeshBinding>,
         submesh_prov: Vec<resolve::Prov>,
-        decoded: Vec<(usize, crate::dtex::CpuTexture)>,
+        decoded: Vec<(usize, usize, crate::dtex::CpuTexture)>,
     },
     /// The mmapped megapacks themselves — hands click-to-load model switching to the main thread.
     Packs { megapack: Option<pack::Megapack>, palettes: Option<pack::Megapack> },
@@ -869,9 +941,10 @@ fn spawn_tex_resolve(
 struct ModelTex {
     req: u64,
     assets: Vec<resolve::TexAsset>,
-    submesh_tex: Vec<Option<usize>>,
+    submesh_tex: Vec<resolve::SubmeshBinding>,
     submesh_prov: Vec<resolve::Prov>,
-    decoded: Vec<(usize, crate::dtex::CpuTexture)>,
+    /// `(submesh, slot, pixels)`; slot 0 = diffuse (the only one the shader samples today).
+    decoded: Vec<(usize, usize, crate::dtex::CpuTexture)>,
 }
 
 /// The last two components of a path — `…/workshop_export/CH_AL_SeanDevlin_01`.
@@ -941,7 +1014,8 @@ fn resolve_model_textures(
 
     let nsub = submesh_starts.len();
     let mut assets: Vec<resolve::TexAsset> = Vec::new();
-    let mut submesh_tex: Vec<Option<usize>> = vec![None; nsub];
+    let mut submesh_tex: Vec<resolve::SubmeshBinding> =
+        vec![resolve::SubmeshBinding::default(); nsub];
     let mut submesh_prov: Vec<resolve::Prov> = vec![resolve::Prov::Unresolved; nsub];
 
     // ── primary: WSAO, the engine's own material→texture binding ──
@@ -956,14 +1030,33 @@ fn resolve_model_textures(
     let wsao = wsao_path.as_deref().and_then(|p| crate::wsao::Wsao::open(p).ok());
 
     if let Some(w) = &wsao {
-        // 1. material hash → colour texture name-hash (WSTX slot 0), per submesh. A `numTex == 0`
-        //    material is a container range with no textures — `textures()` yields an empty slice, so
-        //    `.first()` is None and that submesh is left for the fallback (or unresolved).
-        let want: Vec<Option<u32>> = submesh_mats
+        // 1. material hash → FULL texture-slot vector, per submesh. WSMA orders the slice
+        //    `[diffuse, spec, normal, wm]` (see wsao.rs). A `numTex == 0` material is a container
+        //    range with no textures — `textures()` yields an empty slice and every slot is None.
+        //    Pre-widening this map took only `.first()` (slot 0); the other three ended up
+        //    invisible in every downstream — pool, GUI, bundle. The full slice is the fix.
+        let want: Vec<[Option<u32>; resolve::SubmeshBinding::NUM_SLOTS]> = submesh_mats
             .iter()
-            .map(|m| m.and_then(|mat| w.textures(mat).and_then(|t| t.first().copied())))
+            .map(|m| {
+                let mut slots = [None; resolve::SubmeshBinding::NUM_SLOTS];
+                if let Some(hashes) = m.and_then(|mat| w.textures(mat)) {
+                    for (i, h) in hashes
+                        .iter()
+                        .take(resolve::SubmeshBinding::NUM_SLOTS)
+                        .enumerate()
+                    {
+                        // 0 == "no texture assigned to this slot" for the game — a real DTEX name
+                        // never hashes to zero.
+                        if *h != 0 {
+                            slots[i] = Some(*h);
+                        }
+                    }
+                }
+                slots
+            })
             .collect();
-        let mut needed: HashSet<u32> = want.iter().flatten().copied().collect();
+        let mut needed: HashSet<u32> =
+            want.iter().flat_map(|s| s.iter().copied()).flatten().collect();
 
         // 2. resolve those name-hashes to DTEX records: the parts' OWN bundles first (a character's
         //    skins usually co-locate), then a whole-pack sweep for the ~23% that cross bundles / the
@@ -981,17 +1074,21 @@ fn resolve_model_textures(
             }
         }
 
-        // 3. bind each submesh to its colour record. This is the game's decision, so provenance is
-        //    Bound, not Seeded.
+        // 3. bind each submesh's slots to their records. The game's decision → Prov::Bound whenever
+        //    any slot lands.
         let mut idx: HashMap<u32, usize> = HashMap::new();
         for (h, a) in found {
             let ai = assets.len();
             idx.insert(h, ai);
             assets.push(a);
         }
-        for (k, wh) in want.iter().enumerate() {
-            if let Some(ai) = wh.and_then(|h| idx.get(&h).copied()) {
-                submesh_tex[k] = Some(ai);
+        for (k, slot_hashes) in want.iter().enumerate() {
+            for (s, wh) in slot_hashes.iter().enumerate() {
+                if let Some(ai) = wh.and_then(|h| idx.get(&h).copied()) {
+                    submesh_tex[k].slots[s] = Some(ai);
+                }
+            }
+            if submesh_tex[k].is_bound() {
                 submesh_prov[k] = resolve::Prov::Bound;
             }
         }
@@ -1000,11 +1097,13 @@ fn resolve_model_textures(
     // ── fallback: name-suffix heuristic, only for submeshes WSAO left unbound ──
     // Fires when France.materials can't answer (absent, or a submesh with no material / a material
     // not in the table). Resolves per part and seeds only the still-unbound submeshes of that part.
-    if submesh_tex.iter().any(|t| t.is_none()) {
+    // The heuristic is diffuse-only; the sibling normal/spec/mask still get discovered because the
+    // whole pool is added to `assets`, and the bundle exporter's `stem()` sibling-pull-in walks it.
+    if submesh_tex.iter().any(|t| !t.is_bound()) {
         for (name, file_off, i0, ilen) in &parts {
             let mine: Vec<usize> = (0..nsub)
                 .filter(|k| {
-                    submesh_tex[*k].is_none()
+                    !submesh_tex[*k].is_bound()
                         && submesh_starts[*k] >= *i0
                         && submesh_starts[*k] < *i0 + *ilen
                 })
@@ -1023,18 +1122,21 @@ fn resolve_model_textures(
             assets.extend(pool);
             for (slot, k) in mine.iter().enumerate() {
                 if let Some(ai) = seeded.get(slot).copied().flatten() {
-                    submesh_tex[*k] = Some(base + ai);
+                    submesh_tex[*k] = resolve::SubmeshBinding::diffuse_only(base + ai);
                     submesh_prov[*k] = resolve::Prov::Seeded;
                 }
             }
         }
     }
 
+    // Decode every populated slot so the main thread can show a proper Materials preview and the
+    // bundle exporter can write them without a second decode pass. Slot 0 (diffuse) is what the
+    // shader samples today; the rest are decoded for the picker's thumbnails only.
     let mut decoded = Vec::new();
-    for (i, slot) in submesh_tex.iter().enumerate() {
-        if let Some(ai) = slot {
-            if let Ok(t) = assets[*ai].decode() {
-                decoded.push((i, t));
+    for (i, binding) in submesh_tex.iter().enumerate() {
+        for (slot, ai) in binding.iter_bound() {
+            if let Ok(t) = assets[ai].decode() {
+                decoded.push((i, slot, t));
             }
         }
     }
@@ -1107,22 +1209,27 @@ fn background_load(
     // seed. Skipped entirely for a pack-assembled model, which is textured through the engine's own
     // material table on the main thread's resolve (see `spawn_tex_resolve`).
     let mut assets: Vec<resolve::TexAsset> = Vec::new();
-    let mut submesh_tex: Vec<Option<usize>> = vec![None; n];
+    let mut submesh_tex: Vec<resolve::SubmeshBinding> =
+        vec![resolve::SubmeshBinding::default(); n];
     let mut submesh_prov: Vec<resolve::Prov> = vec![resolve::Prov::Unresolved; n];
-    let mut decoded: Vec<(usize, crate::dtex::CpuTexture)> = Vec::new();
+    let mut decoded: Vec<(usize, usize, crate::dtex::CpuTexture)> = Vec::new();
     let mesh_path = cfg.mesh.clone().unwrap_or_default();
     if let (true, Some(mp)) = (legacy_textures, &megapack) {
         let a = resolve::textures_in(mp, &cfg.char_token);
         (submesh_tex, submesh_prov) = resolve::load_sidecar(&mesh_path, n, &a).unwrap_or_else(|| {
             let assign = resolve::autoseed(&mesh_path, &submeshes, &a);
-            let prov = resolve::seed_prov(&assign);
-            (assign, prov)
+            let binding: Vec<resolve::SubmeshBinding> = assign
+                .iter()
+                .map(|a| a.map(resolve::SubmeshBinding::diffuse_only).unwrap_or_default())
+                .collect();
+            let prov = resolve::seed_prov(&binding);
+            (binding, prov)
         });
-        for (i, slot) in submesh_tex.iter().enumerate() {
-            if let Some(ai) = slot {
-                match a[*ai].decode() {
-                    Ok(tex) => decoded.push((i, tex)),
-                    Err(e) => eprintln!("[sab_workshop] decode {}: {e}", a[*ai].name),
+        for (i, binding) in submesh_tex.iter().enumerate() {
+            for (slot, ai) in binding.iter_bound() {
+                match a[ai].decode() {
+                    Ok(tex) => decoded.push((i, slot, tex)),
+                    Err(e) => eprintln!("[sab_workshop] decode {}: {e}", a[ai].name),
                 }
             }
         }
@@ -1136,7 +1243,7 @@ fn background_load(
                 let Some(texes) = w.textures(mat) else { continue };
                 let Some(&diffuse) = texes.first() else { continue };
                 if let Ok(tex) = crate::wsao::load_loose_dtex(dd, diffuse) {
-                    decoded.push((i, tex));
+                    decoded.push((i, resolve::SubmeshBinding::DIFFUSE, tex));
                 }
             }
         }
@@ -1206,7 +1313,7 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
         };
 
         n_assets += 1;
-        let bound = mt.submesh_tex.iter().filter(|t| t.is_some()).count();
+        let bound = mt.submesh_tex.iter().filter(|b| b.is_bound()).count();
         let wsao = mt.submesh_prov.iter().filter(|p| **p == resolve::Prov::Bound).count();
         tot_sub += submeshes.len();
         tot_bound += bound;
@@ -1221,9 +1328,9 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
             wsao,
             bound - wsao,
         );
-        for (i, sm) in submeshes.iter().enumerate() {
+        for (i, _sm) in submeshes.iter().enumerate() {
             let mat = mats[i].map(|m| format!("{m:08X}")).unwrap_or_else(|| "--------".into());
-            let (tex, prov) = match mt.submesh_tex[i] {
+            let (tex, prov) = match mt.submesh_tex[i].diffuse() {
                 Some(ai) => (mt.assets[ai].name.as_str(), match mt.submesh_prov[i] {
                     resolve::Prov::Bound => "WSAO",
                     resolve::Prov::Seeded => "seed",
@@ -1231,7 +1338,21 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
                 }),
                 None => ("(unresolved)", "--"),
             };
-            println!("  [{i:2}] mat {mat}  {prov:>4}  {tex}");
+            // Extra slots (spec/normal/mask) get a trailing hint so the texcheck report shows the
+            // whole binding, not just what the shader samples.
+            let extras: Vec<String> = mt.submesh_tex[i]
+                .iter_bound()
+                .filter(|(s, _)| *s != resolve::SubmeshBinding::DIFFUSE)
+                .map(|(s, ai)| {
+                    format!(
+                        "{}={}",
+                        resolve::SubmeshBinding::SLOT_NAMES[s],
+                        mt.assets[ai].name
+                    )
+                })
+                .collect();
+            let extras = if extras.is_empty() { String::new() } else { format!("  [{}]", extras.join(", ")) };
+            println!("  [{i:2}] mat {mat}  {prov:>4}  {tex}{extras}");
         }
     }
     println!(
@@ -1835,14 +1956,18 @@ struct ExportCtx<'a> {
 struct MatsCtx<'a> {
     submeshes: &'a [SubMesh],
     assets: &'a [resolve::TexAsset],
-    submesh_tex: &'a [Option<usize>],
+    submesh_tex: &'a [resolve::SubmeshBinding],
     /// How each binding was arrived at — bound / seeded / unresolved, parallel to `submesh_tex`.
     submesh_prov: &'a [resolve::Prov],
     /// Which submesh the Materials page is working on.
     selected: &'a mut Option<usize>,
-    pending_tex: &'a mut Option<(usize, Option<usize>)>,
+    /// A per-slot picker click: `(submesh, slot 0..=3, asset)`.
+    pending_tex: &'a mut Option<(usize, u8, Option<usize>)>,
     /// Set by the stamp: re-write the sidecar as it currently stands.
     pending_save: &'a mut bool,
+    /// Per-asset thumbnail cache, so the picker rows can preview each bound texture — including
+    /// the normal maps. Every slot's currently-bound texture gets an inline image.
+    thumbs: &'a mut Thumbs,
 }
 
 /// The navigator's borrowed state: the browsable catalogs + the click out-params.
@@ -2140,7 +2265,6 @@ fn build_ui(
     model_name: &str,
     load_status: &Option<(String, bool)>,
     page: &mut Page,
-    thumbs: &mut Thumbs,
     exp: &mut ExportCtx,
     mats: &mut MatsCtx,
     nav: &mut NavCtx,
@@ -2151,9 +2275,11 @@ fn build_ui(
     // (a binding is a decision you make); the rest are coverage. Both answer the same question —
     // how much of this is resolved — which is what the rail meter reports.
     let bound = mats.submesh_prov.iter().filter(|p| **p == resolve::Prov::Bound).count();
-    let textured = mats.submesh_tex.iter().filter(|s| s.is_some()).count();
+    let textured = mats.submesh_tex.iter().filter(|b| b.is_bound()).count();
     let used: usize = {
-        let mut seen: Vec<usize> = mats.submesh_tex.iter().flatten().copied().collect();
+        // How many distinct pool assets any submesh actually references — every slot counts.
+        let mut seen: Vec<usize> =
+            mats.submesh_tex.iter().flat_map(|b| b.iter_bound().map(|(_, a)| a)).collect();
         seen.sort_unstable();
         seen.dedup();
         seen.len()
@@ -2795,12 +2921,10 @@ fn build_ui(
                     );
                     ui.add_space(6.0);
                     for (i, sm) in mats.submeshes.iter().enumerate() {
-                        let assigned = mats.submesh_tex[i];
-                        let cur = assigned.map(|ai| mats.assets[ai].name.as_str()).unwrap_or("(none)");
-                        // Will to Fight, as information design: a submesh with a texture bound has
-                        // had its colour returned; one without is still occupied, and stays grey.
-                        // This is the resting state — nothing toggles it.
-                        let (fill, border) = if assigned.is_some() {
+                        let binding = mats.submesh_tex[i];
+                        // Row colouring keys on "anything bound": the submesh is textured whenever
+                        // any of its four slots resolves, even if only the normal or spec landed.
+                        let (fill, border) = if binding.is_bound() {
                             (theme::EMBER_SOFT, theme::EMBER_DK)
                         } else {
                             (theme::G0, theme::LINE)
@@ -2808,7 +2932,7 @@ fn build_ui(
                         theme::row_chip(ui, fill, border, |ui| {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
-                                    let ix = if assigned.is_some() { theme::EMBER } else { theme::FAINT };
+                                    let ix = if binding.is_bound() { theme::EMBER } else { theme::FAINT };
                                     ui.label(theme::data_text(format!("{i:02}"), 10.0, ix));
                                     ui.label(theme::data_text(
                                         format!("{} tris", sm.index_count / 3),
@@ -2837,36 +2961,106 @@ fn build_ui(
                                         },
                                     );
                                 });
-                                egui::ComboBox::from_id_source(("texpick", i))
-                                    .selected_text(egui::RichText::new(cur).size(11.0))
-                                    // Never wider than what's actually available (a `.max(k)` floor
-                                    // here would overflow the row and creep the panel — see above).
-                                    .width((ui.available_width() - 8.0).max(0.0))
-                                    .show_ui(ui, |ui| {
-                                        if ui.selectable_label(assigned.is_none(), "(none)").clicked() {
-                                            *mats.pending_tex = Some((i, None));
+                                // One combo per slot — 0=diffuse, 1=spec, 2=normal, 3=mask, mirroring
+                                // WSMA's own ordering (see wsao.rs). The pool is filtered to the
+                                // slot's role so the diffuse combo isn't 500 rows of normals; assets
+                                // whose role does not match still appear underneath a separator so
+                                // a misclassified name can still be picked.
+                                for slot in 0..resolve::SubmeshBinding::NUM_SLOTS {
+                                    let want_role = resolve::SubmeshBinding::SLOT_ROLES[slot];
+                                    let slot_name = resolve::SubmeshBinding::SLOT_NAMES[slot];
+                                    let assigned = binding.slot(slot);
+                                    let cur = assigned
+                                        .and_then(|ai| mats.assets.get(ai))
+                                        .map(|a| a.name.as_str())
+                                        .unwrap_or("(none)");
+                                    ui.horizontal(|ui| {
+                                        // 48-square thumbnail on the left: the bound texture (or an
+                                        // empty grey box when nothing is bound / decode failed).
+                                        // A normal map shows lavender-blue; a diffuse shows its
+                                        // colour — the difference is visible at a glance.
+                                        let thumb_size = egui::vec2(48.0, 48.0);
+                                        if let Some(handle) = assigned.and_then(|ai| mats.thumbs.get(ai, ui.ctx(), mats.assets)) {
+                                            ui.add(
+                                                egui::Image::new(&handle)
+                                                    .fit_to_exact_size(thumb_size)
+                                                    .maintain_aspect_ratio(true),
+                                            );
+                                        } else {
+                                            let (rect, _) =
+                                                ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                                            ui.painter().rect_filled(rect, 2.0, theme::G0);
+                                            ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, theme::LINE));
                                         }
-                                        for (ai, a) in mats.assets.iter().enumerate() {
-                                            let lbl = format!("{}  · {}", a.name, a.role.label());
-                                            if ui.selectable_label(assigned == Some(ai), lbl).clicked() {
-                                                *mats.pending_tex = Some((i, Some(ai)));
-                                            }
-                                        }
+                                        // A short fixed-width tag makes the four combos line up.
+                                        let tag_color = if assigned.is_some() { theme::EMBER } else { theme::FAINT };
+                                        ui.add_sized(
+                                            [40.0, 18.0],
+                                            egui::Label::new(theme::data_text(slot_name, 10.0, tag_color)),
+                                        );
+                                        egui::ComboBox::from_id_source(("texpick", i, slot))
+                                            .selected_text(egui::RichText::new(cur).size(11.0))
+                                            .width((ui.available_width() - 8.0).max(0.0))
+                                            .show_ui(ui, |ui| {
+                                                if ui
+                                                    .selectable_label(assigned.is_none(), "(none)")
+                                                    .clicked()
+                                                {
+                                                    *mats.pending_tex =
+                                                        Some((i, slot as u8, None));
+                                                }
+                                                // Role-matching entries first.
+                                                let mut any_role = false;
+                                                for (ai, a) in mats.assets.iter().enumerate() {
+                                                    if a.role != want_role {
+                                                        continue;
+                                                    }
+                                                    any_role = true;
+                                                    let lbl = format!("{}  · {}", a.name, a.role.label());
+                                                    if ui
+                                                        .selectable_label(assigned == Some(ai), lbl)
+                                                        .clicked()
+                                                    {
+                                                        *mats.pending_tex =
+                                                            Some((i, slot as u8, Some(ai)));
+                                                    }
+                                                }
+                                                // Then the rest, separated — a misclassified asset
+                                                // stays reachable rather than looking absent.
+                                                if any_role {
+                                                    ui.separator();
+                                                }
+                                                for (ai, a) in mats.assets.iter().enumerate() {
+                                                    if a.role == want_role {
+                                                        continue;
+                                                    }
+                                                    let lbl = format!("{}  · {}", a.name, a.role.label());
+                                                    if ui
+                                                        .selectable_label(assigned == Some(ai), lbl)
+                                                        .clicked()
+                                                    {
+                                                        *mats.pending_tex =
+                                                            Some((i, slot as u8, Some(ai)));
+                                                    }
+                                                }
+                                            });
                                     });
-                                if let Some(ai) = assigned {
-                                    let a = &mats.assets[ai];
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{}x{} · {} · {}",
-                                            a.width,
-                                            a.height,
-                                            a.format,
-                                            a.role.label()
-                                        ))
-                                        .monospace()
-                                        .size(9.5)
-                                        .color(theme::FAINT),
-                                    );
+                                    if let Some(ai) = assigned {
+                                        if let Some(a) = mats.assets.get(ai) {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "    {}x{} · {} · {}",
+                                                    a.width,
+                                                    a.height,
+                                                    a.format,
+                                                    a.role.label()
+                                                ))
+                                                .monospace()
+                                                .size(9.5)
+                                                .color(theme::FAINT),
+                                            );
+                                        }
+                                    }
                                 }
                             });
                         });

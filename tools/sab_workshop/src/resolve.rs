@@ -363,9 +363,76 @@ pub enum Prov {
     Unresolved,
 }
 
+/// Per-submesh, per-slot binding. Slot indices mirror the WSMA texture-slice ordering documented in
+/// `wsao.rs`: 0=diffuse, 1=spec, 2=normal, 3=wm (mask). This is the game's own ordering — the one
+/// `Wsao::textures` returns — not a Mercs 2 import.
+///
+/// `Ord + Hash` come from the underlying array so a `SubmeshBinding` can key a `BTreeMap` (the
+/// glTF material dedup uses this — one material per distinct tuple of slot indices).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SubmeshBinding {
+    pub slots: [Option<usize>; 4],
+}
+
+impl SubmeshBinding {
+    pub const DIFFUSE: usize = 0;
+    pub const SPEC: usize = 1;
+    pub const NORMAL: usize = 2;
+    pub const MASK: usize = 3;
+    pub const NUM_SLOTS: usize = 4;
+    pub const SLOT_ROLES: [Role; 4] = [Role::Diffuse, Role::Spec, Role::Normal, Role::Mask];
+    pub const SLOT_NAMES: [&'static str; 4] = ["diffuse", "spec", "normal", "mask"];
+
+    /// A binding that only knows a diffuse — the shape the fallback heuristic and every pre-widening
+    /// site produce.
+    pub fn diffuse_only(idx: usize) -> Self {
+        let mut s = Self::default();
+        s.slots[Self::DIFFUSE] = Some(idx);
+        s
+    }
+    pub fn diffuse(&self) -> Option<usize> { self.slots[Self::DIFFUSE] }
+    pub fn spec(&self) -> Option<usize> { self.slots[Self::SPEC] }
+    pub fn normal(&self) -> Option<usize> { self.slots[Self::NORMAL] }
+    pub fn mask(&self) -> Option<usize> { self.slots[Self::MASK] }
+    pub fn slot(&self, slot: usize) -> Option<usize> {
+        self.slots.get(slot).copied().flatten()
+    }
+    pub fn set(&mut self, slot: usize, idx: Option<usize>) {
+        if slot < Self::NUM_SLOTS {
+            self.slots[slot] = idx;
+        }
+    }
+    pub fn is_bound(&self) -> bool { self.slots.iter().any(|s| s.is_some()) }
+    /// `(slot_index, asset_index)` for every populated slot, in slot order.
+    pub fn iter_bound(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.slots.iter().enumerate().filter_map(|(i, s)| s.map(|a| (i, a)))
+    }
+}
+
+/// Per-submesh serialized bindings. Slot fields are `Option` and default-empty so an old sidecar (or
+/// a slot never populated) round-trips cleanly.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SlotSidecar {
+    pub diffuse: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 pub struct Sidecar {
+    /// Legacy per-submesh diffuse-only binding, kept for reading files written before the per-slot
+    /// widening. Old files carried only this; new files omit it in favour of `slots` (serialized as
+    /// empty and skipped on write below).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub submeshes: Vec<Option<String>>,
+    /// Per-submesh, per-slot binding. Empty in legacy sidecars — `load_sidecar` migrates the
+    /// diffuse from `submeshes` when this is empty.
+    #[serde(default)]
+    pub slots: Vec<SlotSidecar>,
     /// Per submesh: was this an actual decision, or just the auto-seed we happened to save
     /// alongside it? Without this the file cannot tell them apart — `save_sidecar` writes the whole
     /// assignment, seeded entries included, so on reload every guess would look like a choice.
@@ -397,41 +464,66 @@ pub fn profile_path(model_name: &str) -> String {
         .unwrap_or(safe)
 }
 
-/// Read the sidecar and map its texture names onto `assets` indices, per submesh, with each
-/// binding's provenance. Returns `None` if there's no sidecar. Unknown names (texture missing this
-/// run) resolve to `None` for that submesh.
+/// Read the sidecar and map its texture names onto `assets` indices, per submesh + per slot, with
+/// each submesh's provenance. Returns `None` if there's no sidecar. Unknown names (texture missing
+/// this run) resolve to `None` for that slot.
+///
+/// Migrates legacy sidecars in place: a file with only `submeshes` (pre-widening) reads as
+/// diffuse-only, slots 1/2/3 empty. The next `save_sidecar` writes the new shape.
 pub fn load_sidecar(
     mesh_path: &str,
     n_submeshes: usize,
     assets: &[TexAsset],
-) -> Option<(Vec<Option<usize>>, Vec<Prov>)> {
+) -> Option<(Vec<SubmeshBinding>, Vec<Prov>)> {
     let text = std::fs::read_to_string(sidecar_path(mesh_path)).ok()?;
     let sc: Sidecar = serde_json::from_str(&text).ok()?;
-    let mut out = vec![None; n_submeshes];
+    let find = |name: &str| assets.iter().position(|a| a.name.eq_ignore_ascii_case(name));
+    let mut out = vec![SubmeshBinding::default(); n_submeshes];
     let mut prov = vec![Prov::Unresolved; n_submeshes];
-    for (i, slot) in sc.submeshes.iter().take(n_submeshes).enumerate() {
-        if let Some(name) = slot {
-            out[i] = assets.iter().position(|a| a.name.eq_ignore_ascii_case(name));
+    // Per-slot path (new-shape sidecar).
+    for (i, slot) in sc.slots.iter().take(n_submeshes).enumerate() {
+        out[i].slots[SubmeshBinding::DIFFUSE] = slot.diffuse.as_deref().and_then(find);
+        out[i].slots[SubmeshBinding::SPEC] = slot.spec.as_deref().and_then(find);
+        out[i].slots[SubmeshBinding::NORMAL] = slot.normal.as_deref().and_then(find);
+        out[i].slots[SubmeshBinding::MASK] = slot.mask.as_deref().and_then(find);
+    }
+    // Legacy migration: a pre-widening sidecar has no `slots`, only `submeshes` (diffuse-only).
+    if sc.slots.is_empty() {
+        for (i, name) in sc.submeshes.iter().take(n_submeshes).enumerate() {
+            out[i].slots[SubmeshBinding::DIFFUSE] = name.as_deref().and_then(find);
         }
-        prov[i] = match out[i] {
-            None => Prov::Unresolved,
-            // No `bound` array => an old sidecar => treat as authored.
-            Some(_) if sc.bound.get(i).copied().unwrap_or(true) => Prov::Bound,
-            Some(_) => Prov::Seeded,
+    }
+    for (i, b) in out.iter().enumerate() {
+        prov[i] = match b.is_bound() {
+            false => Prov::Unresolved,
+            true if sc.bound.get(i).copied().unwrap_or(true) => Prov::Bound,
+            true => Prov::Seeded,
         };
     }
     Some((out, prov))
 }
 
-/// Write the current assignment — and how each entry was arrived at — to the sidecar.
+/// Write the current per-slot assignment — and how each submesh was arrived at — to the sidecar.
 pub fn save_sidecar(
     profile: &str,
-    assign: &[Option<usize>],
+    binding: &[SubmeshBinding],
     prov: &[Prov],
     assets: &[TexAsset],
 ) -> Result<(), String> {
+    let name_of = |idx: Option<usize>| idx.and_then(|i| assets.get(i)).map(|a| a.name.clone());
     let sc = Sidecar {
-        submeshes: assign.iter().map(|a| a.map(|ai| assets[ai].name.clone())).collect(),
+        // Do not write the legacy field. `skip_serializing_if` keeps the file clean; readers still
+        // accept it for old files.
+        submeshes: Vec::new(),
+        slots: binding
+            .iter()
+            .map(|b| SlotSidecar {
+                diffuse: name_of(b.diffuse()),
+                spec: name_of(b.spec()),
+                normal: name_of(b.normal()),
+                mask: name_of(b.mask()),
+            })
+            .collect(),
         bound: prov.iter().map(|p| *p == Prov::Bound).collect(),
     };
     let text = serde_json::to_string_pretty(&sc).map_err(|e| e.to_string())?;
@@ -444,8 +536,8 @@ pub fn save_sidecar(
 }
 
 /// The provenance implied by a fresh auto-seed: anything it placed is a guess, the rest is nothing.
-pub fn seed_prov(assign: &[Option<usize>]) -> Vec<Prov> {
-    assign.iter().map(|a| if a.is_some() { Prov::Seeded } else { Prov::Unresolved }).collect()
+pub fn seed_prov(binding: &[SubmeshBinding]) -> Vec<Prov> {
+    binding.iter().map(|b| if b.is_bound() { Prov::Seeded } else { Prov::Unresolved }).collect()
 }
 
 /// Sean's merged parts, in merge order, paired with the diffuse-name keyword each maps to. The

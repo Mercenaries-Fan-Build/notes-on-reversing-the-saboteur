@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use crate::formats::SubMesh;
 use crate::meshload::{self, LoadedMesh, MeshEntry};
-use crate::resolve::{Prov, TexAsset};
+use crate::resolve::{Prov, SubmeshBinding, TexAsset};
 
 /// Everything an export needs, OWNED — so it can be handed to a worker thread.
 ///
@@ -46,7 +46,9 @@ pub struct Job {
     /// The submesh cover as the renderer built it, so `submesh_tex` indexes line up exactly.
     pub submeshes: Vec<SubMesh>,
     pub assets: Vec<TexAsset>,
-    pub submesh_tex: Vec<Option<usize>>,
+    /// Per-submesh per-slot binding (0=diffuse, 1=spec, 2=normal, 3=mask). See
+    /// `resolve::SubmeshBinding` — this is what `wsao::Wsao::textures` returns for each material.
+    pub submesh_tex: Vec<SubmeshBinding>,
     pub submesh_prov: Vec<Prov>,
     pub outroot: PathBuf,
 }
@@ -125,8 +127,12 @@ pub fn run(job: &Job) -> Result<String, String> {
         raw_files.push((p.name.clone(), format!("raw/{file}"), bytes.len()));
     }
 
-    // ---- textures/ : every bound skin, plus its normal/spec siblings ----
-    let mut want: Vec<usize> = job.submesh_tex.iter().flatten().copied().collect();
+    // ---- textures/ : every asset bound to any slot, plus name-stem siblings ----
+    // The picker/WSAO path fills all four slots when it can, so this iterates the FULL binding, not
+    // just the diffuse. The stem-sibling pull-in below is kept as a fallback for the name-suffix
+    // heuristic path (`_D` has no WSMA record and its `_NM`/`_MASK` siblings would otherwise miss).
+    let mut want: Vec<usize> =
+        job.submesh_tex.iter().flat_map(|b| b.iter_bound().map(|(_, a)| a)).collect();
     want.sort_unstable();
     want.dedup();
     let bound_stems: Vec<String> = want.iter().filter_map(|i| job.assets.get(*i)).map(|a| stem(&a.name)).collect();
@@ -180,7 +186,6 @@ fn manifest(
     tex_errs: &[String],
     glb_len: usize,
 ) -> serde_json::Value {
-    let mat_of: BTreeMap<usize, usize> = written.iter().enumerate().map(|(m, w)| (w.asset, m)).collect();
     let file_of: BTreeMap<usize, &str> = written.iter().map(|w| (w.asset, w.file.as_str())).collect();
 
     let ranges: BTreeMap<&str, (u32, u32)> =
@@ -212,20 +217,37 @@ fn manifest(
         })
         .collect();
 
+    let slot_name_and_file = |ai: Option<usize>| {
+        let name = ai.and_then(|x| job.assets.get(x)).map(|t| t.name.clone());
+        let file = ai.and_then(|x| file_of.get(&x)).map(|f| format!("textures/{f}"));
+        (name, file)
+    };
+
     let submeshes: Vec<_> = job
         .submeshes
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let a = job.submesh_tex.get(i).copied().flatten();
+            let binding = job.submesh_tex.get(i).copied().unwrap_or_default();
+            let (d_name, d_file) = slot_name_and_file(binding.diffuse());
+            let (s_name, s_file) = slot_name_and_file(binding.spec());
+            let (n_name, n_file) = slot_name_and_file(binding.normal());
+            let (m_name, m_file) = slot_name_and_file(binding.mask());
             serde_json::json!({
                 "index": i,
                 "index_start": s.index_start,
                 "index_count": s.index_count,
                 "material_hashes": s.materials.iter().map(|m| format!("0x{m:08X}")).collect::<Vec<_>>(),
-                "texture": a.and_then(|x| job.assets.get(x)).map(|t| t.name.clone()),
-                "texture_file": a.and_then(|x| file_of.get(&x)).map(|f| format!("textures/{f}")),
-                "gltf_material": a.and_then(|x| mat_of.get(&x)).copied(),
+                // Kept as-is so downstream tools that only knew about the diffuse binding still see
+                // the field they expect.
+                "texture": d_name.clone(),
+                "texture_file": d_file.clone(),
+                "slots": {
+                    "diffuse":  { "texture": d_name, "file": d_file },
+                    "spec":     { "texture": s_name, "file": s_file },
+                    "normal":   { "texture": n_name, "file": n_file },
+                    "mask":     { "texture": m_name, "file": m_file },
+                },
                 "provenance": match job.submesh_prov.get(i) {
                     Some(Prov::Bound) => "bound",
                     Some(Prov::Seeded) => "seeded",
@@ -284,7 +306,7 @@ fn write_glb(
     lm: &LoadedMesh,
     label: &str,
     submeshes: &[SubMesh],
-    submesh_tex: &[Option<usize>],
+    submesh_tex: &[SubmeshBinding],
     written: &[WrittenTex],
 ) -> Vec<u8> {
     let g = &lm.mesh;
@@ -394,35 +416,72 @@ fn write_glb(
     let a_ibm = acc(v_ibm, 5126, nb, "MAT4", 0);
 
     // ---- materials / images / textures ----
-    // One material per exported skin. A submesh with no binding gets no `material` at all, which is
-    // glTF's own way of saying "default" — better than inventing a grey material that a modder would
-    // then have to tell apart from a real one.
+    //
+    // One image + one texture per written PNG; one material per DISTINCT SubmeshBinding — the
+    // (diffuse, spec, normal, mask) tuple. Keying on the full binding (instead of just the diffuse,
+    // as this once did) is what makes normal/spec bindings actually reach glTF: two submeshes that
+    // share a diffuse but differ in their normal would otherwise be collapsed into one baseColor-only
+    // material. glTF 2.0's core PBR has slots for baseColor and normal — spec and mask have no
+    // dedicated slot under metallic-roughness, so they ride in `extras` (a modder or a Blender
+    // import script can find them without needing a vendor extension).
     let mut images: Vec<serde_json::Value> = Vec::new();
     let mut textures: Vec<serde_json::Value> = Vec::new();
-    let mut materials: Vec<serde_json::Value> = Vec::new();
-    let mut mat_of: BTreeMap<usize, usize> = BTreeMap::new();
-    for (m, w) in written.iter().enumerate() {
+    let mut tex_index: BTreeMap<usize, usize> = BTreeMap::new();
+    for (t, w) in written.iter().enumerate() {
         images.push(serde_json::json!({ "uri": format!("textures/{}", w.file) }));
-        textures.push(serde_json::json!({ "source": m }));
-        materials.push(serde_json::json!({
-            "name": w.file.trim_end_matches(".png"),
-            "pbrMetallicRoughness": {
-                "baseColorTexture": { "index": m },
-                "metallicFactor": 0.0,
-                "roughnessFactor": 1.0,
-            },
-            "doubleSided": true,
-        }));
-        mat_of.insert(w.asset, m);
+        textures.push(serde_json::json!({ "source": t }));
+        tex_index.insert(w.asset, t);
     }
+    let file_of: BTreeMap<usize, &str> = written.iter().map(|w| (w.asset, w.file.as_str())).collect();
 
-    // ---- primitives: one per submesh, sharing the vertex accessors ----
-    let mut prims: Vec<serde_json::Value> = Vec::new();
+    let mut materials: Vec<serde_json::Value> = Vec::new();
+    let mut mat_of: BTreeMap<SubmeshBinding, usize> = BTreeMap::new();
     let cover: Vec<SubMesh> = if submeshes.is_empty() {
         vec![SubMesh { index_start: 0, index_count: ni as u32, materials: Vec::new() }]
     } else {
         submeshes.to_vec()
     };
+    for (i, _s) in cover.iter().enumerate() {
+        let Some(binding) = submesh_tex.get(i).copied() else { continue };
+        if !binding.is_bound() {
+            continue;
+        }
+        if mat_of.contains_key(&binding) {
+            continue;
+        }
+        let mut name_parts: Vec<String> = Vec::new();
+        let mut pbr = serde_json::json!({ "metallicFactor": 0.0, "roughnessFactor": 1.0 });
+        let mut extras = serde_json::Map::new();
+        let mut mat = serde_json::json!({ "doubleSided": true });
+        if let Some(t) = binding.diffuse().and_then(|a| tex_index.get(&a).copied()) {
+            pbr["baseColorTexture"] = serde_json::json!({ "index": t });
+            if let Some(f) = binding.diffuse().and_then(|a| file_of.get(&a)) {
+                name_parts.push(f.trim_end_matches(".png").into());
+            }
+        }
+        if let Some(t) = binding.normal().and_then(|a| tex_index.get(&a).copied()) {
+            mat["normalTexture"] = serde_json::json!({ "index": t });
+        }
+        if let Some(t) = binding.spec().and_then(|a| tex_index.get(&a).copied()) {
+            extras.insert("specularTexture".into(), serde_json::json!({ "index": t }));
+        }
+        if let Some(t) = binding.mask().and_then(|a| tex_index.get(&a).copied()) {
+            extras.insert("maskTexture".into(), serde_json::json!({ "index": t }));
+        }
+        mat["pbrMetallicRoughness"] = pbr;
+        if !extras.is_empty() {
+            mat["extras"] = serde_json::Value::Object(extras);
+        }
+        if name_parts.is_empty() {
+            name_parts.push(format!("material_{}", materials.len()));
+        }
+        mat["name"] = serde_json::json!(name_parts.join("_"));
+        mat_of.insert(binding, materials.len());
+        materials.push(mat);
+    }
+
+    // ---- primitives: one per submesh, sharing the vertex accessors ----
+    let mut prims: Vec<serde_json::Value> = Vec::new();
     for (i, s) in cover.iter().enumerate() {
         if s.index_count == 0 {
             continue;
@@ -434,7 +493,7 @@ fn write_glb(
             attrs["WEIGHTS_0"] = serde_json::json!(a_wgt);
         }
         let mut p = serde_json::json!({ "attributes": attrs, "indices": a_idx });
-        if let Some(m) = submesh_tex.get(i).copied().flatten().and_then(|x| mat_of.get(&x)) {
+        if let Some(m) = submesh_tex.get(i).and_then(|b| mat_of.get(b)) {
             p["material"] = serde_json::json!(m);
         }
         prims.push(p);
@@ -594,9 +653,10 @@ mod tests {
             SubMesh { index_start: 0, index_count: 3, materials: vec![0xAA] },
             SubMesh { index_start: 3, index_count: 3, materials: vec![0xBB] },
         ];
-        // Submesh 0 binds asset 7, submesh 1 binds nothing.
+        // Submesh 0 binds asset 7 (diffuse only), submesh 1 binds nothing.
         let written = vec![WrittenTex { asset: 7, file: "skin.png".into() }];
-        let glb = write_glb(&lm, "T", &cover, &[Some(7), None], &written);
+        let bindings = [SubmeshBinding::diffuse_only(7), SubmeshBinding::default()];
+        let glb = write_glb(&lm, "T", &cover, &bindings, &written);
         let (json, _) = chunks(&glb);
         let prims = json["meshes"][0]["primitives"].as_array().unwrap();
         assert_eq!(prims.len(), 2);
@@ -685,10 +745,245 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
     }
 
+    /// Mimic a user clicking a SINGLE Sean part in the Parts panel: load one MSHA, resolve
+    /// its per-submesh WSMA bindings, and report which slots (diffuse/spec/normal/mask) got
+    /// filled with a real asset index. This is the empirical test for the user's complaint
+    /// that the 3D viewer doesn't shade normal maps for a selected part.
+    #[test]
+    fn single_part_click_resolves_all_slots() {
+        let Some(s) = crate::settings::detected() else {
+            eprintln!("skip: no Saboteur install detected");
+            return;
+        };
+        let Ok(mp) = crate::pack::Megapack::open(&s.megapack()) else {
+            eprintln!("skip: megapack unavailable");
+            return;
+        };
+        let Ok(wsao) = crate::wsao::Wsao::open(&s.wsao()) else {
+            eprintln!("skip: France.materials unavailable");
+            return;
+        };
+        // Pick just Sean's UB (upper body) — one part, mirrors a Parts-panel click.
+        let list = crate::meshload::list_meshes(&mp);
+        let Some(part) = list.iter().find(|e| e.name == "CH_AL_SeanDevlin_01_UB").cloned() else {
+            eprintln!("skip: no CH_AL_SeanDevlin_01_UB in this pack");
+            return;
+        };
+        let picked = vec![part.clone()];
+        let lm = crate::meshload::assemble(mp.raw(), &picked).expect("assemble");
+        let submeshes: Vec<SubMesh> =
+            crate::formats::submesh_cover(&lm.mesh.prims, lm.mesh.indices.len() as u32);
+
+        use std::collections::{HashMap, HashSet};
+        let want: Vec<[Option<u32>; SubmeshBinding::NUM_SLOTS]> = submeshes
+            .iter()
+            .map(|sm| {
+                let mut slots = [None; SubmeshBinding::NUM_SLOTS];
+                if let Some(mat) = sm.materials.first().copied() {
+                    if let Some(hashes) = wsao.textures(mat) {
+                        for (i, h) in hashes.iter().take(SubmeshBinding::NUM_SLOTS).enumerate() {
+                            if *h != 0 {
+                                slots[i] = Some(*h);
+                            }
+                        }
+                    }
+                }
+                slots
+            })
+            .collect();
+        let mut needed: HashSet<u32> =
+            want.iter().flat_map(|s| s.iter().copied()).flatten().collect();
+        let own = mp.entry_containing(part.file_off).map(|e| mp.slice(&e).to_vec()).unwrap_or_default();
+        let mut found: HashMap<u32, TexAsset> = HashMap::new();
+        crate::resolve::take_hashes_from_slices(&[&own], &mut needed, &mut found);
+        let after_own = needed.len();
+        crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found);
+        let after_sweep = needed.len();
+
+        // Now report: how many submeshes had a normal-slot hash requested, and how many got resolved.
+        let normal_requested = want.iter().filter(|s| s[SubmeshBinding::NORMAL].is_some()).count();
+        let normal_hashes: Vec<u32> = want
+            .iter()
+            .filter_map(|s| s[SubmeshBinding::NORMAL])
+            .collect();
+        let normal_resolved =
+            normal_hashes.iter().filter(|h| found.contains_key(h)).count();
+        println!(
+            "\n=== single-part resolve probe (CH_AL_SeanDevlin_01_UB) ===\n\
+             submeshes:            {}\n\
+             normal hashes wanted: {} distinct\n\
+             normal hashes found:  {} / {}\n\
+             hashes unresolved after own-slice:  {}\n\
+             hashes unresolved after pack sweep: {}\n\
+             assets in pool: {}",
+            submeshes.len(),
+            normal_hashes.len(),
+            normal_resolved,
+            normal_hashes.len(),
+            after_own,
+            after_sweep,
+            found.len(),
+        );
+        // The bug the user reports: if normal_requested > 0 and normal_resolved == 0, the shader
+        // never gets a normal-slot upload for a single-part load. Assert one direction of that so
+        // the test fails when a regression sneaks in.
+        if normal_requested > 0 {
+            assert!(
+                normal_resolved > 0,
+                "WSMA asked for {normal_requested} normal-slot textures, but zero resolved — the \
+                 3D viewer can't shade normals it can't find"
+            );
+        }
+    }
+
     #[test]
     fn sibling_maps_share_a_stem() {
         assert_eq!(stem("Sean_Head_D"), stem("Sean_Head_N"));
         assert_eq!(stem("Sean_Head_D"), stem("SEAN_HEAD_SM"));
         assert_ne!(stem("Sean_Head_D"), stem("Sean_Hand_D"));
+    }
+
+    /// End-to-end against the installed game: assemble Sean, bind him via WSAO's full slot
+    /// vector, run the bundle export, and prove that normal + spec (when the material has them)
+    /// actually land in `textures/` and are wired into the glTF material as `normalTexture` /
+    /// `extras.specularTexture`. This is the invariant the earlier diffuse-only export missed —
+    /// `_NM` and `_SM` records existed in the pool but never reached the file system.
+    #[test]
+    fn bundle_exports_normal_and_spec_when_material_has_them() {
+        let Some(s) = crate::settings::detected() else {
+            eprintln!("skip: no Saboteur install detected");
+            return;
+        };
+        let Ok(mp) = crate::pack::Megapack::open(&s.megapack()) else {
+            eprintln!("skip: megapack unavailable");
+            return;
+        };
+        let Ok(wsao) = crate::wsao::Wsao::open(&s.wsao()) else {
+            eprintln!("skip: France.materials unavailable");
+            return;
+        };
+        let list = crate::meshload::list_meshes(&mp);
+        let parts: Vec<MeshEntry> = list
+            .iter()
+            .filter(|e| e.name.to_ascii_lowercase().contains("seandevlin"))
+            .take(3)
+            .cloned()
+            .collect();
+        if parts.is_empty() {
+            eprintln!("skip: no Sean parts");
+            return;
+        }
+        let lm = crate::meshload::assemble(mp.raw(), &parts).expect("assemble");
+        let submeshes: Vec<SubMesh> =
+            crate::formats::submesh_cover(&lm.mesh.prims, lm.mesh.indices.len() as u32);
+
+        // Resolve every WSMA slot for every submesh (mirrors app::resolve_model_textures).
+        use std::collections::{HashMap, HashSet};
+        let want: Vec<[Option<u32>; SubmeshBinding::NUM_SLOTS]> = submeshes
+            .iter()
+            .map(|sm| {
+                let mut slots = [None; SubmeshBinding::NUM_SLOTS];
+                if let Some(mat) = sm.materials.first().copied() {
+                    if let Some(hashes) = wsao.textures(mat) {
+                        for (i, h) in hashes.iter().take(SubmeshBinding::NUM_SLOTS).enumerate() {
+                            if *h != 0 {
+                                slots[i] = Some(*h);
+                            }
+                        }
+                    }
+                }
+                slots
+            })
+            .collect();
+        let mut needed: HashSet<u32> =
+            want.iter().flat_map(|s| s.iter().copied()).flatten().collect();
+        if needed.is_empty() {
+            eprintln!("skip: Sean's submeshes have no WSMA bindings in this pack");
+            return;
+        }
+        let mut found: HashMap<u32, TexAsset> = HashMap::new();
+        let own: Vec<Vec<u8>> = parts
+            .iter()
+            .filter_map(|p| mp.entry_containing(p.file_off).map(|e| mp.slice(&e).to_vec()))
+            .collect();
+        let own_ref: Vec<&[u8]> = own.iter().map(|v| v.as_slice()).collect();
+        crate::resolve::take_hashes_from_slices(&own_ref, &mut needed, &mut found);
+        if !needed.is_empty() {
+            crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found);
+        }
+        let mut assets: Vec<TexAsset> = Vec::new();
+        let mut idx: HashMap<u32, usize> = HashMap::new();
+        for (h, a) in found {
+            let ai = assets.len();
+            idx.insert(h, ai);
+            assets.push(a);
+        }
+        let submesh_tex: Vec<SubmeshBinding> = want
+            .iter()
+            .map(|slot_hashes| {
+                let mut b = SubmeshBinding::default();
+                for (s, wh) in slot_hashes.iter().enumerate() {
+                    if let Some(ai) = wh.and_then(|h| idx.get(&h).copied()) {
+                        b.slots[s] = Some(ai);
+                    }
+                }
+                b
+            })
+            .collect();
+
+        // Only bother if the pool actually contains a normal or spec — some outfits may not.
+        let any_normal =
+            submesh_tex.iter().any(|b| b.normal().is_some() || b.spec().is_some());
+        if !any_normal {
+            eprintln!("skip: no submesh in this outfit has a normal/spec binding — cannot verify");
+            return;
+        }
+
+        let out = std::env::temp_dir().join("sab_workshop_bundle_slots_test");
+        let _ = std::fs::remove_dir_all(&out);
+        let submesh_prov = vec![Prov::Bound; submeshes.len()];
+        let job = Job {
+            megapack: s.megapack(),
+            label: "SeanSlotsTest".into(),
+            parts: parts.clone(),
+            submeshes: submeshes.clone(),
+            assets,
+            submesh_tex: submesh_tex.clone(),
+            submesh_prov,
+            outroot: out.clone(),
+        };
+        let dir = PathBuf::from(run(&job).expect("export"));
+
+        // The textures folder should now hold at least one `_NM` or `_SM` PNG — before the port,
+        // only `_D` files ever appeared here.
+        let tex_dir = dir.join("textures");
+        let files: Vec<String> = std::fs::read_dir(&tex_dir)
+            .expect("textures dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let has_nm = files.iter().any(|f| f.to_lowercase().contains("_nm"));
+        let has_sm = files.iter().any(|f| f.to_lowercase().contains("_sm") || f.to_lowercase().contains("_s."));
+        assert!(
+            has_nm || has_sm,
+            "textures/ has no _NM or _SM PNG — the slot 1/2 harvest is not reaching disk. Files: {files:?}"
+        );
+
+        // The glTF should carry `normalTexture` OR `extras.specularTexture` on at least one
+        // material — proof the widened material writer is wired up, not just the file writer.
+        let glb = std::fs::read(dir.join("model.glb")).expect("model.glb");
+        let (json, _) = chunks(&glb);
+        let mats = json["materials"].as_array().cloned().unwrap_or_default();
+        let mat_has_normal = mats.iter().any(|m| m.get("normalTexture").is_some());
+        let mat_has_spec = mats
+            .iter()
+            .any(|m| m.get("extras").and_then(|e| e.get("specularTexture")).is_some());
+        assert!(
+            mat_has_normal || mat_has_spec,
+            "no glTF material carries a normalTexture or extras.specularTexture — the slot 1/2 \
+             wiring in write_glb is not hooked up. Materials: {mats:#?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&out);
     }
 }

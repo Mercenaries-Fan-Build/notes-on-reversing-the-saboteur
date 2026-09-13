@@ -210,8 +210,11 @@ pub fn decode_preview(buf: &[u8], min_dim: u32) -> Result<CpuTexture, String> {
     Ok(CpuTexture { name: d.name, width: w, height: h, format: d.format, rgba })
 }
 
-/// Decode one surface of `fmt` at `w`x`h` from `data` to RGBA8.
-fn decode_surface(fmt: u32, w: u32, h: u32, data: &[u8]) -> Result<Vec<u8>, String> {
+/// Decode one surface of `fmt` at `w`x`h` from `data` to RGBA8. Public within the crate so
+/// other container readers (retail DTEX here, standard DDS in `crate::dds` for the 2008
+/// prototype's loose textures) can share the same block decoders — the block layout is D3D9's
+/// and doesn't care about which wrapper produced the bytes.
+pub(crate) fn decode_surface(fmt: u32, w: u32, h: u32, data: &[u8]) -> Result<Vec<u8>, String> {
     let (w, h) = (w as usize, h as usize);
     match fmt {
         DXT1 | DXT3 | DXT5 => Ok(decode_bc(fmt, w, h, data)),

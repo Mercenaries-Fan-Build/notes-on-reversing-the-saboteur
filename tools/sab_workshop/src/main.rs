@@ -18,6 +18,7 @@ mod bone_names;
 mod boot;
 mod bundle;
 mod camera;
+mod dds;
 mod dtex;
 mod editor;
 mod formats;

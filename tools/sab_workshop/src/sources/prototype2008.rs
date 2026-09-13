@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use crate::dtex::CpuTexture;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
+use crate::sources::prototype2008_subpack::Sbl4SubPack;
 
 pub struct Prototype2008Source {
     /// The `Bin360` directory itself (not its parent).
@@ -56,9 +57,15 @@ struct PackedRef {
     hash: u32,
     /// The `.Pack` file this slot lives in, absolute-ish (relative to bin360 root).
     pack_file: PathBuf,
-    /// Byte offset within the `.Pack` file.
+    /// The packlog's claimed slot start. NOT the on-disk position — the packer reorders
+    /// slots on write, so trusting this to seek inside a `.Pack` reads bytes from the
+    /// wrong region (see `docs/2008_subpack_format.md`). Kept only so texture / material
+    /// probes can compare vs the authoritative SBL4 offset when they land.
+    #[allow(dead_code)]
     start: u64,
-    /// Slot size in bytes.
+    /// Packlog's declared slot size — same caveat as `start`. Close to but not equal to
+    /// the SBL4 record's `size` (the packer adds per-slot wrappers).
+    #[allow(dead_code)]
     size: u64,
 }
 
@@ -215,10 +222,32 @@ impl GameSource for Prototype2008Source {
             .mesh_index
             .get(handle.key as usize)
             .ok_or_else(|| format!("mesh handle {} out of range", handle.key))?;
-        // Return the raw slot bytes from the `.Pack` file. Wrapping/decoding (SBL4 sub-pack
-        // format vs retail's ALBS) is the next probe — for now callers get the raw slice and
-        // any format layer that gets probed can wrap this.
-        read_pack_slot(&e.pack_file, e.start, e.size)
+        // The packlog's `Start`/`Size` fields point at an intermediate build-time layout —
+        // the packer reorders slots on disk, so trusting those numbers reads bytes from the
+        // wrong slot (usually a hunk of the neighbouring textures blob). The authoritative
+        // directory lives in the `.Pack` file itself, prefixed by SBL4. Parse it, find the
+        // record whose kind_hash == pandemic_hash("meshes"), and hand back exactly that.
+        //
+        // This is still not a per-mesh MSHA extraction — the meshes slot is itself a
+        // mini-directory of zlib-compressed `MSH4` records with a shape distinct from
+        // retail's `AHSM`, and that inner format is a follow-up probe. For now the caller
+        // gets the correct slot boundary, from which the individual `MSH4` records can be
+        // walked once that reader lands.
+        let pack_bytes = std::fs::read(&e.pack_file)
+            .map_err(|err| format!("read {}: {err}", e.pack_file.display()))?;
+        let sub = Sbl4SubPack::parse(&pack_bytes)
+            .map_err(|err| format!("{}: {err}", e.pack_file.display()))?;
+        let rec = sub.find("meshes").ok_or_else(|| {
+            format!(
+                "{}: SBL4 sub-pack has no meshes slot (records: {:?})",
+                e.pack_file.display(),
+                sub.records
+                    .iter()
+                    .map(|r| r.kind_name.unwrap_or("?"))
+                    .collect::<Vec<_>>()
+            )
+        })?;
+        Ok(pack_bytes[rec.offset..rec.offset + rec.size].to_vec())
     }
 
     fn textures_for_material(&self, mat: u32) -> Option<[Option<u32>; 4]> {
@@ -329,15 +358,6 @@ fn normalize_windows_slash(s: &str) -> String {
     s.replace('\\', "/")
 }
 
-fn read_pack_slot(pack_file: &Path, start: u64, size: u64) -> Result<Vec<u8>, String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(pack_file).map_err(|e| format!("open {}: {e}", pack_file.display()))?;
-    f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; size as usize];
-    f.read_exact(&mut buf).map_err(|e| e.to_string())?;
-    Ok(buf)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,28 +427,91 @@ mod tests {
     }
 
     #[test]
-    fn stubbed_paths_return_explicit_errors() {
+    fn read_mesh_bytes_extracts_the_sbl4_meshes_slot() {
         let Some(root) = test_root() else {
             eprintln!("skip: no Bin360/ prototype");
             return;
         };
         let src = Prototype2008Source::open(&root).expect("open");
-        // The mesh handles are real (packlog gave us offsets + sizes) so raw-slot read should
-        // succeed for at least SOME handles — the extract has a handful of `.Pack` files whose
-        // trailing bytes are truncated relative to what the packlog manifests expected, so a
-        // walk to the first successful read (rather than the very first handle) is what proves
-        // the pathway works.
         let meshes = src.list_meshes();
         assert!(!meshes.is_empty(), "packlog inventory should yield meshes");
-        let mut ok = 0;
-        for m in meshes.iter().take(200) {
-            if src.read_mesh_bytes(m).map(|b| !b.is_empty()).unwrap_or(false) {
-                ok += 1;
+
+        // What "correct" looks like: a 2008 SBL4 meshes slot has the shape
+        //   u32 BE count  |  count × 24-byte records (BE)  |  zlib blobs
+        // where each inflated blob starts with the ASCII magic "MSH4". So the earmark
+        // is straightforward: parse the small outer header, chase the first record's
+        // offset, and expect a zlib stream (`78 01…`). If we grabbed the wrong bytes
+        // (the OLD packlog-driven path did — it landed in the middle of the textures
+        // blob), this check falls over.
+        //
+        // .Pack files that aren't SBL4 (SBLL, SBL8, …) surface as clean errors here;
+        // we walk to the first mesh whose containing pack IS an SBL4, so the presence
+        // of other container magics doesn't fail this test.
+        let mut probed = 0usize;
+        let mut ok_shape = 0usize;
+        let mut inflated_msh4 = 0usize;
+        for m in meshes.iter().take(500) {
+            probed += 1;
+            let Ok(bytes) = src.read_mesh_bytes(m) else { continue };
+            if bytes.len() < 4 {
+                continue;
+            }
+            let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+            if n == 0 || n > 4096 {
+                continue;
+            }
+            let dir_end = 4 + n * 24;
+            if dir_end > bytes.len() {
+                continue;
+            }
+            let first_off = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]])
+                as usize;
+            let first_comp = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]])
+                as usize;
+            if first_off + first_comp > bytes.len() || first_off < dir_end {
+                continue;
+            }
+            ok_shape += 1;
+            // Zlib magic 0x78 0x01/0x9C is the loader-friendly earmark: no other
+            // 2008 container starts that way, so seeing it at first_off proves we
+            // hit a meshes slot and not, say, a padded audio buffer.
+            let head = &bytes[first_off..first_off + first_comp.min(2)];
+            if head.len() < 2 || head[0] != 0x78 {
+                continue;
+            }
+            use std::io::Read;
+            let mut z = flate2::read::ZlibDecoder::new(&bytes[first_off..first_off + first_comp]);
+            let mut out = Vec::new();
+            if z.read_to_end(&mut out).is_err() {
+                continue;
+            }
+            if out.len() >= 4 && &out[0..4] == b"MSH4" {
+                inflated_msh4 += 1;
+                if inflated_msh4 >= 3 {
+                    break; // three concordant witnesses = the layout is real
+                }
             }
         }
-        assert!(ok > 0, "no mesh handle read cleanly out of the first 200");
+        eprintln!(
+            "[read_mesh_bytes] probed {probed} handles, {ok_shape} looked like a meshes slot, \
+             {inflated_msh4} inflated to a MSH4 record"
+        );
+        assert!(
+            inflated_msh4 > 0,
+            "no meshes slot round-tripped: read_mesh_bytes is still returning wrong bytes \
+             (probed={probed}, shape-ok={ok_shape})"
+        );
+    }
 
-        // Texture decode is stubbed with a clear error until format probing lands.
+    #[test]
+    fn stubbed_texture_decoder_still_returns_explicit_error() {
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        // Texture decode is still stubbed with a clear error until its format probe lands.
+        // Keep this asserting-the-shape-of-the-error test alive so we notice the day it flips.
         let err = match src.load_texture(0xdeadbeef) {
             Err(e) => e,
             Ok(_) => panic!("expected stub error, got a decoded texture"),

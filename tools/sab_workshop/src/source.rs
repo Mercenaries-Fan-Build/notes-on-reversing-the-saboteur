@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn detects_retail_pc_install() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no retail install detected");
             return;
         };

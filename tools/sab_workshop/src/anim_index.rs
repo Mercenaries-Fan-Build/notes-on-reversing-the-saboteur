@@ -281,7 +281,7 @@ mod tests {
     /// a stored reference catalog could only ever assert by having been generated from the same walk.
     #[test]
     fn every_clip_matches_the_havok_blobs_track_count() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };
@@ -325,7 +325,7 @@ mod tests {
     /// plausible-looking garbage rather than an obvious failure.
     #[test]
     fn clip_names_are_sane() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };

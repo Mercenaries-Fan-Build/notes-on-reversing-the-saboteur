@@ -212,7 +212,7 @@ mod tests {
     /// gets a rigged character. Booting must produce Sean, skinned, on the 191-bone biped rig.
     #[test]
     fn boots_from_a_bare_install() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };

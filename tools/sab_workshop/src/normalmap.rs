@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn saboteur_normalmaps_are_tangent_space() {
         use crate::{pack::Megapack, resolve};
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };

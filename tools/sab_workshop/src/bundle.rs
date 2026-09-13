@@ -679,7 +679,7 @@ mod tests {
     /// the glTF's accessors stay inside the buffer they point at. Skips when no install is present.
     #[test]
     fn real_character_bundle_round_trips() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };
@@ -751,7 +751,7 @@ mod tests {
     /// that the 3D viewer doesn't shade normal maps for a selected part.
     #[test]
     fn single_part_click_resolves_all_slots() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };
@@ -850,7 +850,7 @@ mod tests {
     /// `_NM` and `_SM` records existed in the pool but never reached the file system.
     #[test]
     fn bundle_exports_normal_and_spec_when_material_has_them() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };

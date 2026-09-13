@@ -3592,9 +3592,13 @@ mod tests {
     /// a literal path: the one setting everything derives from is `settings::game_dir`, and a test
     /// that hardcodes it passes or fails on where the game happens to live.
     fn install() -> Option<String> {
-        let dir = crate::settings::detected().map(|s| s.game_dir);
+        // Editor tests read retail-only files (`DLC/`, `Cinematics/Dialog/...`,
+        // `GameTemplates.wsd`). `detected_retail` filters out a 2008 folder configured in the
+        // same settings.json, so pointing the workshop at the prototype doesn't spuriously
+        // fail every editor test.
+        let dir = crate::settings::detected_retail().map(|s| s.game_dir);
         if dir.is_none() {
-            eprintln!("skip: no Saboteur install configured (set it in the app, or SAB_GAME_DIR)");
+            eprintln!("skip: no RETAIL Saboteur install configured (set it in the app, or SAB_GAME_DIR)");
         }
         dir
     }

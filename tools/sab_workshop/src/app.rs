@@ -430,6 +430,78 @@ pub fn run(mut cfg: Config) {
                         cfg.palettes = s.palettes();
                         cfg.pack = s.anim_pack();
                         cfg.wsao = Some(s.wsao());
+                        // Version dispatch mirrors initial boot. A 2008 folder has no
+                        // Megapack/Wsao/GameTemplates and would ERROR OUT of boot::load with a
+                        // path-not-found for Dynamic0.megapack. Detect + branch, exactly like
+                        // the entry-point path in `run()` above.
+                        let new_ver = crate::source::detect_version(std::path::Path::new(&cfg.game_dir))
+                            .map(|(v, _fp)| v);
+                        source_handles.clear();
+                        sel_source_handle = None;
+                        // Re-open the source unconditionally — retail or 2008, this is what the
+                        // browser/materials panels read through.
+                        source = match crate::source::open_source(std::path::Path::new(&cfg.game_dir)) {
+                            Ok(s) => {
+                                if s.version() == crate::source::GameVersion::Prototype2008Xbox360 {
+                                    source_handles.extend(s.list_meshes());
+                                    source_handles.extend(s.list_textures());
+                                    source_handles.extend(s.list_materials());
+                                }
+                                println!(
+                                    "[sab_workshop] source re-opened: {} — {} browse handles",
+                                    s.label(),
+                                    source_handles.len()
+                                );
+                                Some(std::sync::Arc::from(s))
+                            }
+                            Err(e) => {
+                                eprintln!("[sab_workshop] source open failed after install change: {e}");
+                                None
+                            }
+                        };
+                        // 2008: skip the retail assembler, install a placeholder scene, and let
+                        // the source-driven browser take over. `models_loading` off because no
+                        // background worker is running.
+                        if new_ver == Some(crate::source::GameVersion::Prototype2008Xbox360) {
+                            let pb = placeholder_boot();
+                            let nbones = pb.bones.len();
+                            renderer.set_mesh(&pb.mesh, nbones);
+                            skel = pb.bones;
+                            renderer.update_joints(&skinning::bind_pose(&skel));
+                            submeshes = renderer.submeshes().to_vec();
+                            mesh_stats = (pb.mesh.positions.len(), pb.mesh.indices.len() / 3, nbones);
+                            model_name = pb.name;
+                            current_parts.clear();
+                            bone_depth = bone_depths(&skel);
+                            let (c, r) = bounds(&pb.mesh);
+                            camera = OrbitCamera::framing(c, r);
+                            current = None;
+                            playback.time = 0.0;
+                            sel_submesh = None;
+                            sel_bone = None;
+                            sel_tex = None;
+                            thumbs.clear();
+                            assets = Vec::new();
+                            browse_assets = Vec::new();
+                            sel_asset = None;
+                            submesh_tex = vec![resolve::SubmeshBinding::default(); submeshes.len()];
+                            submesh_prov = vec![resolve::Prov::Unresolved; submeshes.len()];
+                            models_loading = false;
+                            settings_ctx.needs_install = false;
+                            settings_ctx.launched_with = cfg.game_dir.clone();
+                            settings_ctx.s = cfg.settings.clone();
+                            settings_ctx.dir_edit = cfg.game_dir.clone();
+                            let msg = format!(
+                                "Loaded 2008 prototype ({} source handles).",
+                                source_handles.len()
+                            );
+                            settings_ctx.note = Some((msg.clone(), false));
+                            load_status = Some((msg, false));
+                            page = Page::Inspect;
+                            // Skip the retail boot::load branch — its match arms below don't
+                            // apply. The `if let Some(new_dir)` block ends after this early
+                            // scope, so `continue`-equivalent: just don't fall through.
+                        } else {
                         match crate::boot::load(&cfg) {
                             Ok(b) => {
                                 // Upload the assembled protagonist — mirrors the click-swap path below.
@@ -497,6 +569,7 @@ pub fn run(mut cfg: Config) {
                                 load_status = Some((format!("Could not load install: {e}"), true));
                             }
                         }
+                        }  // end version-dispatch else (retail branch)
                     }
 
                     // Set by the verb bar, F10, or a texture resolve landing for a deferred

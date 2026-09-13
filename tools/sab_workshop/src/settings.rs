@@ -167,6 +167,13 @@ impl Settings {
     }
 
     /// Does this look like a Saboteur install, and if not, what is missing?
+    ///
+    /// Fingerprints the folder first — the 2008 Xbox 360 prototype has an entirely different
+    /// file layout (no `Global/*.megapack`, no `France.materials`, no `DLC/`; instead
+    /// `Bin360/Saboteur.xex` + `Bin360/**/*.Packlog` + `Bin360/Animations.pack`), and showing
+    /// the retail checklist for it would mislead the user into thinking a valid folder was
+    /// broken. When the folder fingerprints as 2008, the checklist reports 2008 files;
+    /// otherwise (retail, or unrecognized) it reports retail files.
     pub fn check(&self) -> Vec<Check> {
         let one = |label: &'static str, rel: &str, required: bool| Check {
             label,
@@ -175,14 +182,67 @@ impl Settings {
                 && std::path::Path::new(&format!("{}/{rel}", self.game_dir)).exists(),
             required,
         };
-        vec![
-            one("Model + texture pack", "Global/Dynamic0.megapack", true),
-            one("Shared palette pack", "Global/Palettes0.megapack", true),
-            one("Material library", "France.materials", true),
-            one("Animations", "Animations.pack", false),
-            one("UI text", "Cinematics/Dialog/English/GameText.dlg", false),
-            one("Game templates", "DLC/01/GameTemplates.wsd", false),
-        ]
+        let version = if self.game_dir.is_empty() {
+            None
+        } else {
+            crate::source::detect_version(std::path::Path::new(&self.game_dir)).map(|(v, _)| v)
+        };
+        match version {
+            Some(crate::source::GameVersion::Prototype2008Xbox360) => {
+                // Prototype root can be either the extract's outer dir (containing `Bin360/`)
+                // or Bin360 itself — both fingerprint. Report relative to what's actually
+                // there so the paths render meaningfully.
+                let bin_prefix = if std::path::Path::new(&format!("{}/Bin360", self.game_dir)).is_dir() {
+                    "Bin360/"
+                } else {
+                    ""
+                };
+                let p = |rel: &str| format!("{bin_prefix}{rel}");
+                vec![
+                    Check {
+                        label: "Xenon game binary",
+                        rel: p("Saboteur.xex"),
+                        ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("Saboteur.xex"))).exists(),
+                        required: true,
+                    },
+                    Check {
+                        label: "Engine PDB",
+                        rel: p("WildStar_d.pdb"),
+                        ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("WildStar_d.pdb"))).exists(),
+                        required: false,
+                    },
+                    Check {
+                        label: "Animations",
+                        rel: p("Animations.pack"),
+                        ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("Animations.pack"))).exists(),
+                        required: false,
+                    },
+                    Check {
+                        label: "Loose Lua scripts",
+                        rel: p("Scripts"),
+                        ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("Scripts"))).is_dir(),
+                        required: false,
+                    },
+                ]
+            }
+            _ => vec![
+                one("Model + texture pack", "Global/Dynamic0.megapack", true),
+                one("Shared palette pack", "Global/Palettes0.megapack", true),
+                one("Material library", "France.materials", true),
+                one("Animations", "Animations.pack", false),
+                one("UI text", "Cinematics/Dialog/English/GameText.dlg", false),
+                one("Game templates", "DLC/01/GameTemplates.wsd", false),
+            ],
+        }
+    }
+
+    /// Which build this folder is, if the fingerprint recognized it. `None` when the folder
+    /// isn't a known Saboteur install (empty picker / typo / partial extract).
+    pub fn detected_version(&self) -> Option<crate::source::GameVersion> {
+        if self.game_dir.is_empty() {
+            return None;
+        }
+        crate::source::detect_version(std::path::Path::new(&self.game_dir)).map(|(v, _)| v)
     }
 
     /// True when the folder fingerprints as SOME game version the workshop knows how to read —
@@ -211,6 +271,15 @@ pub fn detected() -> Option<Settings> {
     };
     s.clamp();
     s.is_valid().then_some(s)
+}
+
+/// Like `detected`, but returns Some ONLY when the configured folder fingerprints as retail
+/// (GOG/Steam PC). Used by retail-only test paths that assume `Megapack::open` succeeds — a
+/// 2008 folder passing `is_valid()` would otherwise route into those tests and fail with a
+/// path-not-found on `Global/Dynamic0.megapack`.
+pub fn detected_retail() -> Option<Settings> {
+    let s = detected()?;
+    (s.detected_version() == Some(crate::source::GameVersion::RetailPc)).then_some(s)
 }
 
 #[cfg(test)]

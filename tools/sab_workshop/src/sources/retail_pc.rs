@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn opens_retail_and_lists_meshes() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no retail install detected");
             return;
         };
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn retail_wsao_resolves_a_sean_material() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no retail install");
             return;
         };

@@ -592,7 +592,7 @@ mod tests {
     /// Skips cleanly when no install is detected — the location is never assumed.
     #[test]
     fn resolve_sean_diffuse_from_megapack() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };

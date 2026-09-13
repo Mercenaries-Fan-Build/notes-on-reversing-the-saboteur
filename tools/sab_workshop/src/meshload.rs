@@ -636,7 +636,7 @@ mod bbox_tests {
             "CH_AL_SeanDevlin_01_HD",
             "CH_AL_SeanDevlin_01_HAT",
         ];
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };
@@ -692,7 +692,7 @@ mod layout_tests {
 
     /// Open a megapack and hand back the raw MESH body of the first model matching `token`.
     fn a_real_mesh_body(token: &str) -> Option<Vec<u8>> {
-        let s = crate::settings::detected()?;
+        let s = crate::settings::detected_retail()?;
         let pack = crate::pack::Megapack::open(&s.megapack()).ok()?;
         let list = list_meshes(&pack);
         let buf = pack.raw();
@@ -797,7 +797,7 @@ mod tests {
     /// (3389 verts / 10044 indices / 5 prims, per docs/formats/mesh_geometry.md).
     #[test]
     fn load_sean_gr_from_megapack() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };
@@ -849,7 +849,7 @@ mod hat_tests {
     /// parentBone naming a head bone.
     #[test]
     fn hat_is_rigid_attachment_with_parent_bone() {
-        let Some(s) = crate::settings::detected() else {
+        let Some(s) = crate::settings::detected_retail() else {
             eprintln!("skip: no Saboteur install detected");
             return;
         };

@@ -96,11 +96,11 @@ record still holds things we have not reversed. So the bundle keeps both halves.
 ```
 workshop_export/CH_AL_SeanDevlin_01_FX/
   model.glb        skinned bind pose, ONE PRIMITIVE PER SUBMESH, each bound to its material
-  textures/*.png   the bound skins, plus their _N/_S siblings, BC-decoded and editable
+  textures/*.png   every bound slot (diffuse / normal / spec / mask) BC-decoded and editable
   raw/*.msha       every source part's original on-disk record, byte-exact (the guarantee)
-  manifest.json    the reassembly map: submesh → material hashes → texture → how we knew,
-                   the bone table with name hashes, the source parts, and the FULL texture
-                   pool the character offered (exported or not)
+  manifest.json    the reassembly map: submesh → material hashes → per-slot texture → how we
+                   knew, the bone table with name hashes, the source parts, and the FULL
+                   texture pool the character offered (exported or not)
 ```
 
 - Textures are referenced by relative `uri`, not embedded — repainting a skin is editing a PNG in
@@ -113,6 +113,48 @@ workshop_export/CH_AL_SeanDevlin_01_FX/
   texture resolve lands — the verb bar says so while that is pending.
 - The destination is a click on the verb bar's `→ path`; it persists in `settings.json`. Empty means
   `workshop_export/` beside the working directory — no machine path is baked in.
+
+## Inspecting an exported asset's normal maps
+
+The exporter now walks the WSMA slot vector — `[diffuse, spec, normal, mask]` per material — so
+every bound slot lands in `textures/` and rides into the glTF material. There are three ways to look
+at a `_NM` texture from a bundle, from lightweight to heavyweight:
+
+**1. Direct — open the PNG.** The `textures/` folder is just files. A Saboteur normal map file is
+named after its DTEX record, e.g. `CH_MB_SeanDevlinn_Head_NM.png`. Any image viewer works. Real
+tangent-space normals show the classic lavender-blue (R≈G≈128, B≈250) — see the [normalmap.rs
+guard test](src/normalmap.rs). If a `_NM` file looks *grey* rather than lavender you'd have a
+height-map (Mercs 2 ships those; measured Sab does not — the guard test asserts this).
+
+**2. In Blender — the glTF import already wires them up.** File → Import → glTF 2.0 → point at
+`model.glb`. The `normalTexture` reference in each material is resolved automatically and shows in
+Shader Editor as an Image Texture → Normal Map node driving the Principled BSDF's Normal input.
+Toggle Viewport Shading to Material Preview to see it lit; the `_NM` files load with **Non-Color**
+colorspace (glTF sets this) so no gamma is applied — that is what a tangent-space normal needs.
+Spec and mask ride in `extras.specularTexture` / `extras.maskTexture`; Blender's importer ignores
+`extras`, so if you need spec too, drop the file onto a fresh Image Texture and wire it into
+Specular by hand.
+
+**3. In the workshop itself — normal maps now shade the 3D viewer.** Load the character (from the
+navigator, or via boot), open the Materials panel: each submesh now has four combo boxes
+(`diffuse` / `spec` / `normal` / `mask`). Pick any `_NM` texture from the normal combo and the 3D
+viewport re-renders with tangent-space normal mapping via a screen-space cotangent-frame TBN
+(no per-vertex tangents required — Sab meshes don't carry them). A submesh with no `_NM` bound
+falls back to a flat (0.5, 0.5, 1.0) texel and lights exactly as before.
+
+To confirm what's actually bound: the exported `manifest.json` shows per-slot bindings under
+`submeshes[i].slots`, e.g.:
+
+```json
+"slots": {
+  "diffuse": { "texture": "CH_MB_SeanDevlinn_Head_D",  "file": "textures/CH_MB_SeanDevlinn_Head_D.png"  },
+  "spec":    { "texture": null,                        "file": null },
+  "normal":  { "texture": "CH_MB_SeanDevlinn_Head_NM", "file": "textures/CH_MB_SeanDevlinn_Head_NM.png" },
+  "mask":    { "texture": null,                        "file": null }
+}
+```
+
+If a material has no `_NM` (some props don't), the slot is `null` — nothing is invented.
 
 ## What it does
 
@@ -140,8 +182,11 @@ workshop_export/CH_AL_SeanDevlin_01_FX/
 6. **Skin** on the GPU: the CPU composes `world[i] = world[parent] * local[i]` and uploads
    `jointMatrix[i] = world[i] * inv_bind[i]` (191 mat4) to a storage buffer; the vertex shader
    does `skinnedPos = Σ weightₖ · jointMatrix[jointₖ] · pos`.
-7. **Render** one draw per submesh, each binding its own diffuse (1×1 white when unassigned),
-   modulated by two-sided lambert, with a ground grid, under an orbit camera.
+7. **Render** one draw per submesh, each binding its own diffuse + tangent-space normal (a shared
+   1×1 white / flat-normal texel when a slot is unassigned). Fragment reconstructs a per-pixel TBN
+   from `dpdx`/`dpdy` of world position and UV (no per-vertex tangents — Sab meshes don't carry
+   them) and does a two-sided lambert against the sampled normal, with a ground grid, under an
+   orbit camera.
 
 ## Materials: the engine's own binding, with a picker over it
 
@@ -150,18 +195,22 @@ names that material's textures. That library IS in the retail PC install, as the
 `France.materials` at the game root (an earlier note here said it was absent; it was looked for
 inside the archives, and it is not in them). So the binding is the game's own:
 
-`drawcall materialHash` → WSMA record → WSTX slot 0 (colour) → DTEX by name-hash.
+`drawcall materialHash` → WSMA record → WSTX slice `[diffuse, spec, normal, mask]` → four DTEX
+records by name-hash. All four are resolved and pooled — the picker + bundle export see every slot.
 
 That covers every submesh of every assembled character (`--texcheck FBS_RS_Sean`: 186/186 bound).
 Two things sit on top of it:
 
 - a **name-suffix auto-seed**, used ONLY where WSAO cannot answer (a submesh with no material, or a
-  material absent from the table) — a heuristic, and wrong wherever one part uses several textures.
-- the **Materials picker** in the inspector: reassign any submesh to any texture in the character's
-  bundles (accessories like `CH_AC_Eyes_*` / `CH_AC_Mouth` included). A pick is a decision, so it
-  outranks both of the above and persists — beside the mesh for a `--mesh` file, else in
+  material absent from the table) — a heuristic, diffuse-only, and wrong wherever one part uses
+  several textures.
+- the **Materials picker** in the inspector: reassign any of a submesh's four slots (diffuse / spec
+  / normal / mask) to any texture in the character's bundles (accessories like `CH_AC_Eyes_*` /
+  `CH_AC_Mouth` included). Each slot has its own combo, role-filtered but with a fallback to the
+  whole pool so a misclassified name stays reachable. A pick is a decision, so it outranks both of
+  the above and persists — beside the mesh for a `--mesh` file, else in
   `%APPDATA%/sab_workshop/materials/<model>.materials.json`, keyed by model so one character's
-  edits never land on another's.
+  edits never land on another's. Legacy diffuse-only sidecars round-trip cleanly (migrate on load).
 
 ## Architecture
 

@@ -16,6 +16,7 @@ mod app;
 mod assets;
 mod bone_names;
 mod boot;
+mod browse_2008;
 mod bundle;
 mod camera;
 mod dds;

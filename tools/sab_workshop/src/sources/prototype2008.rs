@@ -55,6 +55,10 @@ pub struct Prototype2008Source {
     /// on demand. Multiple DDS files can share a name (Branches/*/DiffuseCube.dds mirrors the
     /// root one), so we keep the FIRST match at the shallowest depth (root wins over branches).
     loose_dds: HashMap<u32, LooseDds>,
+    /// Per-sub-texture inventory mined from every `<hash>.textures` slot's inner directory
+    /// (see `parse_texslot`). Key is `pandemic_hash(sub_name)` — the game's own lookup — so
+    /// a material's `[d,s,n,wm]` slot vector round-trips here without a name resolution step.
+    slot_textures: HashMap<u32, SlotTex>,
     /// Decoded-texture cache — repeated preview / material-slot lookups don't re-decode.
     tex_cache: Mutex<HashMap<u32, CpuTexture>>,
     /// Global `material_uid → [d,s,n,wm]` lookup, populated from every readable
@@ -71,6 +75,36 @@ struct LooseDds {
     /// the compiler quiet without silencing warnings on the wider module.
     #[allow(dead_code)]
     path: PathBuf,
+}
+
+/// One texture living inside a `<hash>.textures` slot. Enough info to name it in the browser
+/// and to eventually extract + decode the pixel bytes once the Xbox 360 texture-format probe
+/// (the `1A 20 01 xx` code + XGI tiling) lands.
+#[derive(Clone, Debug)]
+struct SlotTex {
+    /// Plaintext name, from the payload's `BE u32 name_len + ascii name` header.
+    name: String,
+    /// Dimensions, from the header two u16-BE past the format tag.
+    width: u16,
+    height: u16,
+    /// Four bytes of format tag — Xbox 360 XGI format code (still under investigation, hence
+    /// stored raw for later decoding). Example: `1A 20 01 52`.
+    format_tag: [u8; 4],
+    /// The `.Pack` file the slot lives in. Where `load_texture` seeks to on demand.
+    pack_file: PathBuf,
+    /// Byte range within the `.Pack` file of the WHOLE `.textures` slot (i.e. the SubPack
+    /// record's slot bytes). Extraction reopens the file, parses the inner directory, and
+    /// finds THIS sub-texture by its offset into the slot.
+    #[allow(dead_code)]
+    slot_off: u64,
+    #[allow(dead_code)]
+    slot_len: u64,
+    /// Byte range of this sub-texture's PAYLOAD within the slot (relative to slot start).
+    /// `data_off` points at the `name_len` u32; the format bytes + pixels follow.
+    #[allow(dead_code)]
+    data_off: u32,
+    #[allow(dead_code)]
+    data_size: u32,
 }
 
 /// One line out of a `.packlog`: pointer to a slot inside a specific `.Pack` file.
@@ -324,6 +358,50 @@ impl Prototype2008Source {
             hash_names.entry(*uid).or_insert_with(|| name.clone());
         }
 
+        // Walk every `<hash>.textures` slot and mine its inner directory into a per-sub-texture
+        // inventory. Each slot's inner layout is `BE u32 count + N × 24-byte records + payloads`;
+        // each payload starts with `BE u32 name_len + ascii name + 4B format tag + u16 width +
+        // u16 height + …`. We index by `pandemic_hash(name)` so a material's `[d,s,n,wm]` slot
+        // vector round-trips here without a second name lookup. Format tag + pixel bytes stay
+        // where they are — decoding waits on the XGI format-code + Xbox 360 tiling probe.
+        let mut slot_textures: HashMap<u32, SlotTex> = HashMap::new();
+        let mut slot_tex_read = 0usize;
+        seen_packs.clear();
+        for e in &tex_index {
+            if !seen_packs.insert(e.pack_file.clone()) {
+                continue;
+            }
+            let Ok(buf) = std::fs::read(&e.pack_file) else { continue };
+            let Ok(sbl) = SubPack::parse(&buf) else { continue };
+            let Some(rec) = sbl.find("textures") else { continue };
+            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
+            // slot bytes lie at (rec.offset .. rec.offset + rec.size) in the file — keep those
+            // absolute so `load_texture` can re-open + re-seek without redoing SubPack parse.
+            let slot_off = rec.offset as u64;
+            let slot_len = rec.size as u64;
+            for sub in parse_texslot(slot) {
+                let h = pandemic_hash(&sub.name);
+                hash_names.entry(h).or_insert_with(|| sub.name.clone());
+                slot_textures.entry(h).or_insert(SlotTex {
+                    name: sub.name,
+                    width: sub.width,
+                    height: sub.height,
+                    format_tag: sub.format_tag,
+                    pack_file: e.pack_file.clone(),
+                    slot_off,
+                    slot_len,
+                    data_off: sub.data_off,
+                    data_size: sub.data_size,
+                });
+                slot_tex_read += 1;
+            }
+        }
+        fingerprint.matched(format!(
+            "slot textures: {} unique sub-textures across {} .textures slots",
+            slot_textures.len(),
+            slot_tex_read
+        ));
+
         Ok(Self {
             bin360,
             fingerprint,
@@ -332,10 +410,74 @@ impl Prototype2008Source {
             tex_index,
             mat_index,
             loose_dds,
+            slot_textures,
             tex_cache: Mutex::new(HashMap::new()),
             materials,
         })
     }
+}
+
+/// One record parsed from a `<hash>.textures` slot's inner directory.
+struct ParsedSlotTex {
+    name: String,
+    width: u16,
+    height: u16,
+    format_tag: [u8; 4],
+    /// Payload location within the containing slot.
+    data_off: u32,
+    data_size: u32,
+}
+
+/// Parse the inner directory of a `.textures` slot. Layout (BE throughout):
+/// - `u32 count`
+/// - `count × 24-byte record { hash, offset, size, unk, flag, block? }`
+/// - concatenated payloads (each: `u32 name_len + ascii name + 4B format + u16 W + u16 H + …`)
+///
+/// This is a fresh parser (not a SubPack call) because the container is HEADLESS — the outer
+/// `SBL4` magic and 8-byte header do not appear here; the slot bytes start straight at the u32
+/// count. Handling short/malformed records defensively so a single bad slot doesn't sink the
+/// whole `open()` walk.
+fn parse_texslot(slot: &[u8]) -> Vec<ParsedSlotTex> {
+    if slot.len() < 4 {
+        return Vec::new();
+    }
+    let count = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]) as usize;
+    if count == 0 || count > 256 {
+        return Vec::new();
+    }
+    let dir_end = 4 + count * 24;
+    if dir_end > slot.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let ro = 4 + i * 24;
+        let data_off = u32::from_be_bytes([slot[ro + 4], slot[ro + 5], slot[ro + 6], slot[ro + 7]]);
+        let data_size = u32::from_be_bytes([slot[ro + 8], slot[ro + 9], slot[ro + 10], slot[ro + 11]]);
+        let d = data_off as usize;
+        if d + 4 > slot.len() {
+            continue;
+        }
+        let name_len = u32::from_be_bytes([slot[d], slot[d + 1], slot[d + 2], slot[d + 3]]) as usize;
+        if name_len == 0 || name_len > 256 || d + 4 + name_len + 8 > slot.len() {
+            continue;
+        }
+        let name_bytes = &slot[d + 4..d + 4 + name_len];
+        let Ok(name) = std::str::from_utf8(name_bytes) else { continue };
+        let name = name.trim_end_matches('\0').to_string();
+        let hdr = d + 4 + name_len;
+        let format_tag = [slot[hdr], slot[hdr + 1], slot[hdr + 2], slot[hdr + 3]];
+        // Width + height as BE u16 pairs, 4 bytes after the format tag (a u32 gap we haven't
+        // named — flags or a variant field; probing left for later). See the probe output in
+        // this file's tests for the raw bytes at these positions.
+        if hdr + 12 > slot.len() {
+            continue;
+        }
+        let width = u16::from_be_bytes([slot[hdr + 8], slot[hdr + 9]]);
+        let height = u16::from_be_bytes([slot[hdr + 10], slot[hdr + 11]]);
+        out.push(ParsedSlotTex { name, width, height, format_tag, data_off, data_size });
+    }
+    out
 }
 
 impl GameSource for Prototype2008Source {
@@ -361,29 +503,30 @@ impl GameSource for Prototype2008Source {
     }
 
     fn list_textures(&self) -> Vec<AssetHandle> {
-        // Two population sources today: packlog-mined `<hash>.textures` slots (which still need
-        // SBL4 to unwrap before we can decode them — probe #1) and the loose `*.dds` files at
-        // Bin360 root and under Branches/. Both are surfaced so the browser can enumerate every
-        // texture; `load_texture` picks its decode path on the fly. Keys are the packlog index
-        // for slot rows and `u32::MAX - <loose_idx>` for loose rows — the discriminator lets us
-        // route without a second lookup and keeps a stable-order view for the UI (though only
-        // the hash is functionally used; the browser sorts by name/hash anyway).
+        // Two population sources: per-sub-texture handles mined from every `<hash>.textures`
+        // slot's inner directory (real textures, hundreds per block — decoded via the XGI
+        // format+tiling probe once it lands), and loose `*.dds` files at Bin360 root / under
+        // Branches/ (already decode via `dds::decode_bytes`). Both flow through `load_texture`
+        // by hash — the caller doesn't need to know which population owns the row.
         let mut out: Vec<AssetHandle> = self
-            .tex_index
+            .slot_textures
             .iter()
-            .enumerate()
-            .map(|(i, e)| AssetHandle {
-                key: i as u64,
-                hash: Some(e.hash),
-                name: self.hash_names.get(&e.hash).cloned().unwrap_or_default(),
+            .map(|(h, s)| AssetHandle {
+                key: *h as u64,
+                hash: Some(*h),
+                name: s.name.clone(),
                 kind: AssetKind::Texture,
             })
             .collect();
-        // Loose DDS handles sit in a distinct key namespace so consumers that round-trip a
-        // handle can tell packlog-slot from loose-file without a second table.
-        for (i, (h, entry)) in self.loose_dds.iter().enumerate() {
+        for (h, entry) in self.loose_dds.iter() {
+            // Skip if this loose DDS shadows a slot texture with the same hash — first-write
+            // in hash_names already picked one canonical name; the browser doesn't need two
+            // rows for the same asset.
+            if self.slot_textures.contains_key(h) {
+                continue;
+            }
             out.push(AssetHandle {
-                key: (u64::MAX - i as u64),
+                key: *h as u64,
                 hash: Some(*h),
                 name: entry.name.clone(),
                 kind: AssetKind::Texture,
@@ -464,24 +607,24 @@ impl GameSource for Prototype2008Source {
             self.tex_cache.lock().unwrap().insert(hash, tex.clone());
             return Ok(tex);
         }
-        // Path B: packlog-mined `<hash>.textures` slots inside a `.Pack`. The `.Pack` header
-        // starts with `SBL4`/`SBLL`/`SBL8`/etc. sub-pack magic (2612 of 4396 are SBL4) and the
-        // slot payload past the SBL4 header is opaque — not raw DDS, not raw DTEX, no DXT/DTEX
-        // 4CC anywhere. Scanned Act1_IntKey.Pack (999,201 B) for `DDS `, `DXT1/3/5`, `DTEX`:
-        // zero hits. Only `WSAO` + `MTLD` sit in cleartext, at the very start where the
-        // material record hasn't been swept up into whatever encoding follows. That's
-        // consistent with an SBL4 wrapper that batches every record type behind a single
-        // (possibly LZ / bit-packed) stream. Un-wrapping is probe #1's job; until it lands, we
-        // can't reach the pixel data even if the format were trivial.
-        if self.tex_index.iter().any(|e| e.hash == hash) {
+        // Path B: sub-textures mined from a `<hash>.textures` slot's inner directory. The SBL
+        // wrapper is decoded (probe #1) and the inner layout is known — see `parse_texslot`.
+        // We know the sub-texture's name / dimensions / format tag; the pixel bytes are also
+        // reachable via `slot.slot_off + s.data_off + 4 + name_len + fixed_header`. What is
+        // NOT yet decoded is the Xbox 360 format code (`1A 20 01 xx`) → BC family + tiling
+        // pattern. Until that probe lands, return a shaped error that carries what we DO know
+        // so the UI can display it (name, size, format tag) rather than a blank failure.
+        if let Some(s) = self.slot_textures.get(&hash) {
             return Err(format!(
-                "prototype 2008: texture {hash:08X} lives inside an SBL4-wrapped .Pack slot; \
-                 waiting on the SBL4 sub-pack probe (probe #1) — no plaintext DDS/DTEX bytes \
-                 present in the slot"
+                "prototype 2008: {} ({}×{}) — Xbox 360 texture format \
+                 0x{:02X}{:02X}{:02X}{:02X} not yet decoded (outer SBL wrapper + inner slot \
+                 directory both solved; XGI format-code + tile pattern is the next probe)",
+                s.name, s.width, s.height,
+                s.format_tag[0], s.format_tag[1], s.format_tag[2], s.format_tag[3]
             ));
         }
         Err(format!(
-            "prototype 2008: no loose .dds and no packlog-mined slot known for hash {hash:08X}"
+            "prototype 2008: no loose .dds and no slot-mined texture known for hash {hash:08X}"
         ))
     }
 
@@ -626,6 +769,89 @@ mod tests {
         } else {
             None
         }
+    }
+
+    /// Guard the discovered slot layout: at least one `.textures` slot in the extract must
+    /// parse into ≥1 sub-texture with a plausible name + power-of-two dimensions. Regresses
+    /// visibly if `parse_texslot` breaks (e.g. someone flips the endianness or the record
+    /// stride).
+    #[test]
+    fn slot_texture_directory_yields_named_subtextures() {
+        let Some(root) = test_root() else { eprintln!("skip"); return };
+        let src = Prototype2008Source::open(&root).expect("open");
+        assert!(
+            src.slot_textures.len() > 100,
+            "expected many slot sub-textures, got {}",
+            src.slot_textures.len()
+        );
+        // Any sub-texture with a real name + a plausible dimension proves the parser.
+        let ok = src.slot_textures.values().any(|s| {
+            !s.name.is_empty()
+                && s.name.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+                && s.width.is_power_of_two()
+                && s.height.is_power_of_two()
+                && s.width >= 16
+                && s.height >= 16
+        });
+        assert!(ok, "no slot sub-texture with plausible name + power-of-two dims");
+    }
+
+    /// Keep the raw probe as a manually-run diagnostic — `cargo test -- --nocapture
+    /// probe_inside_a_textures_slot` prints the first bytes of a few real slots for
+    /// eyeballing when the format needs a re-check.
+    #[test]
+    fn probe_inside_a_textures_slot() {
+        let Some(root) = test_root() else { eprintln!("skip"); return };
+        let src = Prototype2008Source::open(&root).expect("open");
+        let mut checked = 0;
+        for e in src.tex_index.iter().take(500) {
+            let Ok(buf) = std::fs::read(&e.pack_file) else { continue };
+            let Ok(sbl) = SubPack::parse(&buf) else { continue };
+            let Some(rec) = sbl.find("textures") else { continue };
+            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
+            if slot.len() < 32 { continue }
+            checked += 1;
+            let name = src.hash_names.get(&e.hash).cloned().unwrap_or_default();
+            println!("\n--- {} ({:08X}) — slot {} bytes ---", name, e.hash, slot.len());
+            let count = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]);
+            println!("  count (BE u32): {count}");
+            if count > 64 { println!("  ... too many for a real directory; format guess is wrong"); continue }
+            for i in 0..(count.min(3) as usize) {
+                let o = 4 + i * 24;
+                if o + 24 > slot.len() { break }
+                let hash = u32::from_be_bytes([slot[o], slot[o+1], slot[o+2], slot[o+3]]);
+                let dat_off = u32::from_be_bytes([slot[o+4], slot[o+5], slot[o+6], slot[o+7]]) as usize;
+                let dat_size = u32::from_be_bytes([slot[o+8], slot[o+9], slot[o+10], slot[o+11]]) as usize;
+                let f3 = u32::from_be_bytes([slot[o+12], slot[o+13], slot[o+14], slot[o+15]]);
+                let f4 = u32::from_be_bytes([slot[o+16], slot[o+17], slot[o+18], slot[o+19]]);
+                let f5 = u32::from_be_bytes([slot[o+20], slot[o+21], slot[o+22], slot[o+23]]);
+                println!("  rec[{i}] hash={hash:08X} off={dat_off} size={dat_size} f3={f3:08X} f4={f4:08X} f5={f5:08X}");
+                if dat_off + 4 > slot.len() { continue }
+                // Payload should start with BE u32 name_len then ascii name.
+                let name_len = u32::from_be_bytes([
+                    slot[dat_off], slot[dat_off+1], slot[dat_off+2], slot[dat_off+3]
+                ]) as usize;
+                if name_len == 0 || name_len > 256 || dat_off + 4 + name_len > slot.len() { continue }
+                let name_bytes = &slot[dat_off + 4 .. dat_off + 4 + name_len];
+                if let Ok(s) = std::str::from_utf8(name_bytes) {
+                    println!("      name_len={name_len}, name={s:?}");
+                    // The next 4 bytes after the name should be the D3D9 format code (retail
+                    // packs it BE-swapped as a u32 that reads as ASCII "DXT1"/"DXT5" etc, and
+                    // uncompressed formats as small ints). Dump them for eyeball.
+                    let after = dat_off + 4 + name_len;
+                    if after + 16 <= slot.len() {
+                        let hdr_be: [u8; 16] = slot[after..after+16].try_into().unwrap();
+                        print!("      after-name: ");
+                        for b in &hdr_be { print!("{b:02X} "); }
+                        println!();
+                        let fmt = std::str::from_utf8(&hdr_be[..4]).unwrap_or("?");
+                        println!("      fmt-ascii (be): {fmt:?}");
+                    }
+                }
+            }
+            if checked >= 6 { break }
+        }
+        assert!(checked > 0, "no textures slots probed");
     }
 
     #[test]
@@ -781,9 +1007,9 @@ mod tests {
                     assert_eq!(t.rgba.len() as u64, t.width as u64 * t.height as u64 * 4);
                 }
                 Err(e) => {
-                    if e.contains("SBL4-wrapped") {
+                    if e.contains("not yet decoded") {
                         blocked_any = true;
-                    } else if e.contains("no loose .dds and no packlog-mined slot") {
+                    } else if e.contains("no loose .dds and no slot-mined texture") {
                         // A hash that showed up in `hash_names` but not in either texture table
                         // — a block-name hash for a mesh/material. Fine.
                     } else {
@@ -895,7 +1121,7 @@ mod tests {
             Ok(_) => panic!("expected error for unknown hash, got a decoded texture"),
         };
         assert!(
-            err.contains("no loose .dds and no packlog-mined slot"),
+            err.contains("no loose .dds and no slot-mined texture"),
             "expected explicit unknown-hash error, got: {err}"
         );
     }

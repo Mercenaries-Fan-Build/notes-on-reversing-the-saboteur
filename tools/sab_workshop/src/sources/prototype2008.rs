@@ -145,10 +145,21 @@ impl Prototype2008Source {
     /// so today the returned `Smsh` has empty geometry vectors — the renderer draws nothing
     /// rather than crashing.
     pub fn read_mesh_smsh(&self, handle: &AssetHandle) -> Result<crate::formats::Smsh, String> {
+        let body = self.read_mesh_body(handle)?;
+        Ok(crate::sources::prototype2008_mesh::to_smsh(&body))
+    }
+
+    /// Read the full parsed `Msh4Body` — geometry + skeleton + diagnostics — so callers that
+    /// need more than the retail-shaped `Smsh` (renderer wiring that wants real bones, tests
+    /// asserting stream shape) can consume it directly. `read_mesh_smsh` delegates through
+    /// this, so any decode change reaches both paths.
+    pub fn read_mesh_body(
+        &self,
+        handle: &AssetHandle,
+    ) -> Result<crate::sources::prototype2008_mesh::Msh4Body, String> {
         let slot = <Self as GameSource>::read_mesh_bytes(self, handle)?;
         let raw = crate::sources::prototype2008_mesh::inflate_first_msh4_stream(&slot)?;
-        let body = crate::sources::prototype2008_mesh::parse_msh4(&raw)?;
-        Ok(crate::sources::prototype2008_mesh::to_smsh(&body))
+        crate::sources::prototype2008_mesh::parse_msh4(&raw)
     }
 
     pub fn open(root: &Path) -> Result<Self, String> {

@@ -2183,57 +2183,84 @@ fn load_2008_mesh_into_renderer(
         .as_any()
         .and_then(|a| a.downcast_ref::<crate::sources::prototype2008::Prototype2008Source>())
         .ok_or("source is not the 2008 prototype")?;
-    let smsh = src2008.read_mesh_smsh(handle)?;
+    let body = src2008.read_mesh_body(handle)?;
+    let smsh = crate::sources::prototype2008_mesh::to_smsh(&body);
     let name = if handle.name.is_empty() {
         format!("{:08X}", handle.key as u32)
     } else {
         handle.name.clone()
     };
 
-    // Identity skeleton: one bone per palette-local index the vertex data references,
-    // capped at 256 (MSH4 stores u8 bone indices, so 0..=255 is the whole range). Every
-    // bone is a root with identity TRS + identity inv_bind, so `skinning::bind_pose` hands
-    // the shader identity `jointMatrix` for every joint — vertices pass through unposed.
-    let max_joint = smsh
-        .joints
-        .iter()
-        .flatten()
-        .copied()
-        .max()
-        .unwrap_or(0);
-    let bone_count = (max_joint as usize + 1).max(1).min(256);
-    let mut identity_skel: Vec<Bone> = Vec::with_capacity(bone_count);
-    let identity_inv_bind = {
-        let mut m = [0f32; 16];
-        m[0] = 1.0;
-        m[5] = 1.0;
-        m[10] = 1.0;
-        m[15] = 1.0;
-        Some(m)
+    // Prefer the real parsed skeleton (bones + parents + bind-pose TRS + inverse-bind
+    // matrices, joined by pandemic_hash) when the mesh ships one. Fall back to an identity
+    // skeleton sized to the palette-local joint range only when the trailing region didn't
+    // decode into a skeleton — small props, cloth-only meshes, and anything the parser
+    // returned `Ok(None)` on. Once the track_to_bone resolver lands, the real skeleton
+    // is what makes posed 2008 animation actually pose the character.
+    let rig: Vec<Bone> = if let Some(skel_data) = body.skeleton.as_ref() {
+        // Build a name-hash -> bone-index side table so remaps (keyed by hash in retail
+        // convention, keyed by bone_index in 2008) can find their target bone.
+        use std::collections::HashMap;
+        let mut ibm_by_index: HashMap<u32, [f32; 16]> =
+            HashMap::with_capacity(skel_data.remaps.len());
+        for r in &skel_data.remaps {
+            ibm_by_index.insert(r.bone_index, r.matrix);
+        }
+        skel_data
+            .bones
+            .iter()
+            .enumerate()
+            .map(|(i, b)| Bone {
+                parent: b.parent,
+                name: format!("bone_{:08X}", b.name_hash),
+                t: b.translation,
+                r: b.rotation,
+                s: b.scale,
+                inv_bind: ibm_by_index.get(&(i as u32)).copied(),
+                local_m: None,
+            })
+            .collect()
+    } else {
+        let max_joint = smsh
+            .joints
+            .iter()
+            .flatten()
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let bone_count = (max_joint as usize + 1).max(1).min(256);
+        let identity_inv_bind = {
+            let mut m = [0f32; 16];
+            m[0] = 1.0;
+            m[5] = 1.0;
+            m[10] = 1.0;
+            m[15] = 1.0;
+            Some(m)
+        };
+        (0..bone_count)
+            .map(|i| Bone {
+                parent: -1,
+                name: format!("bone_{i}"),
+                t: [0.0, 0.0, 0.0],
+                r: [0.0, 0.0, 0.0, 1.0],
+                s: [1.0, 1.0, 1.0],
+                inv_bind: identity_inv_bind,
+                local_m: None,
+            })
+            .collect()
     };
-    for i in 0..bone_count {
-        identity_skel.push(Bone {
-            parent: -1,
-            name: format!("bone_{i}"),
-            t: [0.0, 0.0, 0.0],
-            r: [0.0, 0.0, 0.0, 1.0],
-            s: [1.0, 1.0, 1.0],
-            inv_bind: identity_inv_bind,
-            local_m: None,
-        });
-    }
 
     // Upload geometry + rig, then let the renderer recompute its submesh cover.
-    renderer.set_mesh(&smsh, identity_skel.len());
-    renderer.update_joints(&skinning::bind_pose(&identity_skel));
+    renderer.set_mesh(&smsh, rig.len());
+    renderer.update_joints(&skinning::bind_pose(&rig));
     *submeshes = renderer.submeshes().to_vec();
     *mesh_stats = (
         smsh.positions.len(),
         smsh.indices.len() / 3,
-        identity_skel.len(),
+        rig.len(),
     );
     *model_name = name;
-    *skel = identity_skel;
+    *skel = rig;
     *bone_depth = bone_depths(skel);
 
     // Frame the camera on the fresh geometry — the retail path does the same after every

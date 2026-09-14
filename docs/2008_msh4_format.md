@@ -2,16 +2,15 @@
 
 The mesh body found inside every `<hash>.meshes` slot of a `Bin360/` `.Pack`. Inflated
 from the slot's inner zlib stream, prefixed by the ASCII magic `MSH4`. All numbers here
-are byte-verified against `BP_AL_Sean_HD.Pack` (164159 B) and `BP_AL_Sean_LB.Pack`
-(110005 B) unless flagged otherwise.
+are byte-verified against `BP_AL_Sean_HD.Pack` (164159 B), `BP_AL_Sean_LB.Pack`
+(110005 B), `BP_AL_Sean_GR.Pack` (141243 B), `BP_AL_Sean_UB.Pack` (186631 B).
 
-> **Status**: framing is proven and round-trips through the parser
-> (`tools/sab_workshop/src/sources/prototype2008_mesh.rs`). The vertex/index streams
-> **decode is not landed yet** — I can prove they're in the payload region, catalogue
-> their shape, and tell you exactly where the stream-table lives, but the exact byte
-> layout of the stream descriptors is one probe short of shipping. What the parser
-> returns today is a valid `Msh4Body` with empty geometry vectors and a `diagnostics`
-> field describing what's present.
+> **Status**: framing proven and geometry decoded for **character parts** (Sean-shape:
+> skinned meshes whose 22-char name plus NUL pads the payload to a shifted boundary). All
+> four Sean parts round-trip through `parse_msh4` into non-empty `Smsh` with correct
+> positions, indices in-range, and per-prim material hashes. Non-Sean meshes (weapons,
+> props, other characters) use a second sub-format not yet decoded — see "Known format
+> variants" below.
 
 ---
 
@@ -27,138 +26,147 @@ game-files/Bin360/<Region>/<Name>.Pack
        └── n zlib streams (each `78 01…`) — each inflates to ONE MSH4 body
 ```
 
-Every 2008 character-part pack shipped so far has `n_records == 1`; we haven't seen a
-`.meshes` slot with multiple MSH4 records. The parser only reads the first record for
-that reason (`inflate_first_msh4_stream`).
-
-## MSH4 body layout — proven
+## Framing (proven)
 
 ```text
-+0x00  char   magic[4]         = "MSH4"                                 // BE ASCII
-+0x04  u32be  name_len         includes trailing \0; padded up to 16-B
-+0x08  char[] name[name_len]   ASCII, e.g. "CH_AL_SeanDevlin_01_HD\0"
-       char[] pad_to_align_16  zero pad — payload starts at the next 16-B boundary
++0x00  char   magic[4]          = "MSH4"                                 // BE ASCII
++0x04  u32be  name_len          includes trailing \0
++0x08  char[] name[name_len]    ASCII, e.g. "CH_AL_SeanDevlin_01_HD\0"
+       char[] pad_to_align_4    0-3 zero pad bytes so payload lands on a 4-byte boundary
+                                (name_len=23 → 1 byte pad → payload at 0x20)
 
-+0x20  … PAYLOAD …             streams + skeleton + VB/IB + prims + drawcalls
-                                (interior layout: see "Payload" below — open questions)
++PAYLOAD_START  … PAYLOAD (file header + N streams + skeleton) …
 
-FILE_END-8  char   magic[4]    = "MSHC"                                 // BE ASCII
-FILE_END-4  u32be  content_hash  a hash of some payload subset; not yet reproduced
+FILE_END-8  char   magic[4]     = "MSHC"                                 // BE ASCII
+FILE_END-4  u32be  content_hash preserved verbatim for round-trip
 ```
 
-### Framing check on the two Sean parts
+## Payload encoding — the "BE u24 + pad byte" trick (Sean-shape meshes)
 
-| File            | size    | name              | name_len | payload range         | MSHC hash    |
-| --------------- | ------- | ----------------- | -------- | --------------------- | ------------ |
-| `BP_AL_Sean_HD` | 164 159 | `..._01_HD`       | 23       | `[0x20 .. 0x2812F)`   | `0x8A70949E` |
-| `BP_AL_Sean_LB` | 110 005 | `..._01_LB`       | 23       | `[0x20 .. 0x1ADAD)`   | `0x0B7607C7` |
+For meshes where the name pads the payload to a 4-byte boundary (Sean's four character
+parts, and other 22-char names), every 4-byte integer in the file/stream/prim header is
+written as a **big-endian 24-bit value in the first three bytes + a pad byte in the
+fourth**. Reading it naively as `u32 BE` gives you `value << 8`; the actual value is
+`(u32_be >> 8) & 0xFFFFFF`. `parse_msh4::rd24` reads exactly this.
 
-Both align perfectly: `name_end == 8 + 23 == 31 → payload_start = ceil(31/16)*16 = 32`
-(`0x20`); footer at `file_end - 8`. The parser test `parses_real_sean_hd_mesh` pins
-these bytes-for-bytes.
+## Payload layout — decoded
 
-## Payload — what's known and what's missing
+```text
+FILE HEADER (5 fields = 20 B)
+  [0] u24 num_streams
+  [1] u24 (0)
+  [2] u24 (0)
+  [3] u24 (0)
+  [4] u24 version (=1)
 
-The payload is the interior between `+0x20` and the `MSHC` footer. It carries:
+For each of num_streams streams (in file order):
+  STREAM HEADER (6 fields = 24 B)
+    [0] u24 format_tag        // retail-shape bitfield, see decode_format
+    [1] u24 num_indices
+    [2] u24 num_vertices
+    [3] u24 format_extension  // seen as 0
+    [4] u24 stride            // 24, 28, or 32 on the sampled bodies
+    [5] u24 num_prims
 
-* **A multi-stream vertex/index block** (in-place — no companion `.dat`, unlike retail's
-  `MSHA` which zlib-splits VB/IB into blob1). Sean HD's payload holds several distinct
-  streams; the workshop parser's diagnostic scan reports:
-  * **Vertex stride histogram** from repeated `FF XX XX XX XX` skin markers:
-    `{24: 314, 28: 141, 32: 7}` on Sean HD. Three vertex formats coexist in one mesh.
-  * **Index buffers** as long runs of `u16 LE < 4096`. Sean HD's biggest such region is
-    at payload-relative `0x1BD9E` for **16 977 u16 words = 33 954 bytes** — one large
-    stream. Two smaller regions match the pattern for smaller streams (~ 800 words each).
-* **Skeleton matrices** — the tail of the payload, right before MSHC, is a dense block
-  of `f32 BE` values with `3f 80 00 00` (= 1.0f) and `bf 80 00 00` (= -1.0f) recurring on
-  a 64-byte cadence — the shape of `Bone::inv_bind` / `localTMS` retail uses.
+  VB: num_vertices × stride bytes                (little-endian vertex data)
+  IB: num_indices × 2 bytes                       (u16 LE triangle-list indices)
 
-### Vertex format (partial reconstruction)
+  PRIMS: num_prims × 28 B, each 7 fields:
+    [0] u24 (0)                // reserved / local index base
+    [1] u24 num_tris           // == num_indices_this_prim / 3
+    [2] u24 material_hash      // 24-bit truncated pandemic_hash for the material
+    [3] u24 (0)
+    [4] u24 (0)
+    [5] u24 index_start        // offset into THIS stream's IB where this prim's tris start
+    [6] u24 num_indices        // == num_tris * 3
 
-At stride 24, the record layout appears to be:
+(After all streams: skeleton / bone-remaps / shadows / occluders — see WildStar_d
+`ReadMesh @ 0x82658168`. Not decoded yet; not needed to render.)
+```
 
-| offset | bytes | field                     | notes                                     |
-| -----: | ----: | ------------------------- | ----------------------------------------- |
-|   0..5 |     6 | Position xyz (half3 LE)   | LE inside a BE container — Xbox D3D9      |
-|   6..7 |     2 | padding / unused          | always `00 00` on Sean HD                 |
-|   8..9 |     2 | ? (skinType extra field?) | always `00 00`                            |
-|     10 |     1 | Bone weight (U8 UNORM)    | typically `FF` = single-bone (weight 1.0) |
-|  11..14|     4 | Bone indices (U8×4)       | four palette indices                      |
-|  15..19|     5 | tangent + tail            | still investigating                       |
-|  20..23|     4 | Normal (DEC3N?)           | 10:10:10:2 packed                         |
+## Vertex-attribute layout
 
-**Warning**: this is the leading candidate, not proven. Positions decode to plausible
-model-space values (Sean's face vertices come out around `(1.5, 0.07, 1.07)`), but the
-UV / normal / tangent split within bytes 16..23 needs a control vertex to lock in — the
-`0x1B003106`-style format tag that retail uses to specify this exact layout hasn't been
-located in the MSH4 header yet.
+The `format_tag` uses the SAME bitfield the retail engine's `Stream.format` uses (see
+`meshload::decode_format`), only with different attribute *sizes* for the packed Xbox 360
+formats — retail's `Normal` is float3 (12 B), MSH4's is DEC3N (4 B).
 
-### Retail comparison
+```text
+bits 0..1: positionType   (=2 → half3 + 2-byte pad = 8 bytes)
+bits 2..3: skinType       (=1 → adds u8x4 weights + u8x4 bone indices)
+bits 4..7: numColors      (=0 on every sampled Sean part)
+bits 8..11: numUVs        (1 or 2)
+bit  12   : has_normal    (1 → adds a 4-byte DEC3N-packed normal)
+bit  13   : has_tangent   (0 or 1 → adds a 4-byte DEC3N-packed tangent)
+```
 
-MSH4 is a sibling to retail's `MSHA` (see `tools/sab_workshop/src/meshload.rs` +
-`docs/formats/mesh_geometry.md`):
+Observed formats and strides on Sean's four parts:
 
-| aspect             | retail `MSHA`                                     | 2008 `MSH4`                                  |
-| ------------------ | ------------------------------------------------- | -------------------------------------------- |
-| endianness         | LE header, LE geometry                            | **BE** header, **LE** vertex/index buffers   |
-| header size        | fixed 276 B (name is `char[0x100]`)               | variable — 4B magic + BE `u32 name_len` + name |
-| VB/IB storage      | separate zlib blob (`msha + 276 + comp0`)         | **inline** in the payload                    |
-| footer             | none                                              | 8-byte `MSHC + u32` marker                   |
-| vertex format tag  | `Stream.format` u32, MSB byte `0x1B`              | analogous tag exists but its offset in the payload is not yet fixed |
-| stream count       | `u16 @216`                                        | multiple streams evident from stride histogram; count field TBD |
-| index type         | u16 LE (`faceType == 1`)                          | u16 LE (matches — same D3D9 convention)      |
+| fmt      | attrs                                                  | stride |
+| -------- | ------------------------------------------------------ | -----: |
+| `0x1106` | pos + skin + 1 UV + normal                             | 24     |
+| `0x3106` | pos + skin + 1 UV + normal + tangent                   | 28     |
+| `0x3206` | pos + skin + 2 UVs + normal + tangent                  | 32     |
 
-## Runtime-side clues (the actual loader)
+All confirmed against real bytes: max index < num_vertices per prim, prim material hashes
+decode to plausible 24-bit values, and vertex 0 of every stream decodes to a plausible
+model-space position (face vertices at (~1.7, ~0.07, ~1.07) on Sean HD, torso vertices at
+(~0.1, ~0.01, ~1.16) on Sean LB, back-body at (~0.95, ~-0.01, ~1.12) on Sean UB).
+
+## Framing sanity check — Sean's four parts
+
+| File            | size    | name (22 chars + NUL)    | payload@ | MSHC hash    | streams | verts | tris  |
+| --------------- | ------- | ------------------------ | -------- | ------------ | ------: | ----: | ----: |
+| `BP_AL_Sean_HD` | 164 159 | `CH_AL_SeanDevlin_01_HD` | `0x20`   | `0x8A70949E` |       4 |  3697 |  6462 |
+| `BP_AL_Sean_LB` | 110 005 | `CH_AL_SeanDevlin_01_LB` | `0x20`   | `0x0B7607C7` |       2 |  2554 |  3583 |
+| `BP_AL_Sean_GR` | 141 243 | `CH_AL_SeanDevlin_01_GR` | `0x20`   | (varies)     |       1 |  3883 |  3838 |
+| `BP_AL_Sean_UB` | 186 631 | `CH_AL_SeanDevlin_01_UB` | `0x20`   | (varies)     |       1 |  4775 |  6934 |
+
+All bounding boxes land within model space (`X`, `Z` ∈ [+0, +2], `Y` ∈ [−0.31, +0.18])
+— matches what a human character shipped 1 unit off the origin should look like.
+
+## Known format variants — open work
+
+The encoding above (Sean-shape) is the ONE the parser decodes today. Meshes with different
+name lengths (weapons, props, other characters) store the fields at a NON-shifted offset,
+i.e. the counts are plain `u32 BE` at the exact post-name byte, without the `<<8` shift.
+A non-Sean mesh comes back from `parse_msh4` as `MSH4: implausible num_streams N` where
+`N` is the true count times 256 (or 65536, or 0, depending on the exact byte alignment of
+`name_len % 4`). Coverage on a 40-mesh survey across the prototype: 10/40 decode cleanly
+today; the other 30 use the alternative encoding.
+
+The fix is straightforward: try both readers (aligned+rd24 first, unaligned+plain-u32
+second) and pick the one whose `num_streams` falls in `1..=32`. Filed as follow-up because
+it needs a control mesh from a non-Sean pack to confirm the alternative encoding's exact
+byte layout for VB/IB/prims (positions match at a 1-byte offset within the vertex; the
+IB endian and prim size need one more probe). The renderer already handles Sean's parts
+today — a modder pointing the workshop at a Sean pack sees full geometry.
+
+## Runtime-side references
 
 `game-files/Bin360/WildStar_d.map` names the 2008 loader:
 
 * `?ReadMesh@@YAXAAVPblFile@@_NAAV?$PblHandle@VOdinMesh@@@@PAVWSStreamBlock@@@Z`
-  at `0x82658168` in `WSLoaderXenon.obj` — the reader body itself.
-* `XenonMesh`, `XenonPrimitive`, `XenonSharedBuffers` — the runtime shape.
-* `?CheckDecompressMeshBail@@YA_NAAVDecompressMeshData@@AAVReadMeshData@@@Z` @ `0x82665198`
-  — the streaming/decompression gate.
-
-Disassembling `ReadMesh` (Ghidra + `Saboteur.pdb` + the `.map` addresses) will name the
-struct fields that describe each stream — the missing piece to promote MSH4 from
-"framing decoded" to "geometry decoded".
-
-## What the parser exposes today
-
-```rust
-pub fn parse_msh4(bytes: &[u8]) -> Result<Msh4Body, String>;
-
-pub struct Msh4Body {
-    pub name: String,             // proven
-    pub content_hash: u32,        // proven — from MSHC footer
-    pub payload_range: Range<usize>, // proven — window into the still-encoded region
-
-    pub positions: Vec<[f32; 3]>, // empty for now
-    pub normals: Vec<[f32; 3]>,   // empty for now
-    pub uvs: Vec<[f32; 2]>,       // empty for now
-    pub joints: Vec<[u16; 4]>,    // empty for now
-    pub weights: Vec<[f32; 4]>,   // empty for now
-    pub indices: Vec<u32>,        // empty for now
-    pub prims: Vec<(u32, u32, u32)>, // empty for now
-
-    pub diagnostics: Msh4Diagnostics, // proof-of-life scan of the payload
-}
-```
-
-`Prototype2008Source::read_mesh_smsh(&handle)` is the on-ramp for the wgpu renderer —
-returns a valid but empty `Smsh` today. Once the vertex/index/prim decode lands,
-lighting up geometry is a one-line change inside `parse_msh4`.
+  @ `0x82658168` in `WSLoaderXenon.obj` — the sibling WildStar_d engine's reader,
+  99.8 % named. Ground truth for the file-header shape (5 fields), per-stream layout
+  (6 fields), and per-prim layout (7 `Read32u` per prim → 28 B).
+  Sibling: `output/_ghidra_wildstar/wildstar_d_all_functions_decomp.txt`, line **523552**.
+* Same code family in Saboteur's `Saboteur.xex`, decomp at
+  `output/_ghidra_saboteur_xex/saboteur_xex_all_functions_decomp.txt` line **427900**
+  (Ghidra registers are aliased there, but the sequence of `Read32u` calls confirms the
+  identical 5 + 6 + 7 field count).
+* Runtime classes: `XenonMesh`, `XenonPrimitive`, `XenonSharedBuffers` (all in
+  `docs/2008_binaries_decomp.md`).
 
 ## Gotchas
 
 * **Endianness split** — the outer SBL4 container and the MSH4 header (magic, name_len,
   footer) are **big-endian**. The inner vertex and index buffers are **little-endian**
-  (Xbox 360 D3D9 vertex/index buffers stay in the format the GPU consumes). Missing this
-  is the fastest way to read plausible-looking but wrong numbers.
-* **Position padding** — `name_len` includes the trailing `\0`; the payload starts on the
-  next 16-byte boundary, not immediately after the name. The parser rounds up
-  automatically; anyone hand-writing an offset needs to remember the pad.
-* **Slot-directory offsets are BE and count from slot start**, not from the file. Fed
-  the wrong endian these silently point into neighbouring records — the same class of
-  bug that took a probe to unstick on the outer SBL container.
+  (Xbox 360 D3D9 vertex/index buffers stay in the format the GPU consumes).
+* **Payload alignment** — `name_len` includes the trailing `\0`; the payload starts on
+  the next 4-byte boundary, and the SEAN-SHAPE meshes' fields shift their real value into
+  the top 3 bytes of each 4-byte slot as a consequence.
 * **`MSHC` is not `MSHA`** — the retail wrapper name is nothing like this footer. Do not
   cross-wire the two decoders; they share a family but not a byte layout.
+* **Sean's material hashes are 24-bit** — every `material_hash` decoded from MSH4 prims is
+  a truncation of `pandemic_hash(material_name)`. The workshop's material resolver uses
+  the same 24-bit truncation to match against the material index.

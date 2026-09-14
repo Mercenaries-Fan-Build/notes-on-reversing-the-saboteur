@@ -681,7 +681,25 @@ impl GameSource for Prototype2008Source {
             return Ok(tex);
         }
         if let Some(s) = self.slot_textures.get(&hash) {
-            return Err(format!("{} ({}×{})", s.name, s.width, s.height));
+            // Path B: slot-hosted DXT record. Open the containing .Pack, seek to the whole
+            // .textures slot's byte range (SubPack directory offset the mining pass captured),
+            // slice the sub-texture's payload, hand it to the shared Xbox 360 decoder.
+            let pack = std::fs::read(&s.pack_file)
+                .map_err(|e| format!("read {}: {e}", s.pack_file.display()))?;
+            let slot_start = s.slot_off as usize;
+            let slot_end = slot_start + s.slot_len as usize;
+            if slot_end > pack.len() {
+                return Err(format!("slot overruns pack file for {}", s.name));
+            }
+            let slot = &pack[slot_start..slot_end];
+            let sub_start = s.data_off as usize;
+            let sub_end = sub_start + s.data_size as usize;
+            if sub_end > slot.len() {
+                return Err(format!("sub-texture bytes overrun slot for {}", s.name));
+            }
+            let tex = crate::sources::prototype2008_texture::decode_slot_texture(&slot[sub_start..sub_end])?;
+            self.tex_cache.lock().unwrap().insert(hash, tex.clone());
+            return Ok(tex);
         }
         Err(format!("no texture with hash {hash:08X}"))
     }

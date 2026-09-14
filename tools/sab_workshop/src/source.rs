@@ -105,6 +105,13 @@ pub trait GameSource: Send + Sync {
     /// the trait stays additive. The 2008 impl has a real answer because its `.materials`
     /// slots are pre-parsed at open time and every UID is known before any drawcall fires.
     fn list_materials(&self) -> Vec<AssetHandle> { Vec::new() }
+    /// Every animation clip the source can enumerate. Retail's clips live in `Animations.pack`
+    /// (`AP0L`/`ANIM` -> concatenated Havok `hkaSplineCompressedAnimation` blob) and are
+    /// consumed via `crate::anim_index` + `crate::havok` — those already have first-class
+    /// entry points, so this trait method is only implemented by the 2008 impl for now, whose
+    /// clips are Pandemic-custom `ANM0(WAV|DEL|NOC)0` records with no Havok blob at all.
+    /// Default returns empty so the trait stays additive.
+    fn list_animations(&self) -> Vec<AssetHandle> { Vec::new() }
 
     // ── read / resolve ───────────────────────────────────────────────────────────────────────
 

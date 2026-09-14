@@ -34,6 +34,7 @@ use crate::dds;
 use crate::dtex::CpuTexture;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
+use crate::sources::prototype2008_anim::{Anim2008Catalog, Clip2008};
 use crate::sources::prototype2008_material::MaterialIndex;
 use crate::sources::prototype2008_subpack::SubPack;
 
@@ -64,6 +65,12 @@ pub struct Prototype2008Source {
     /// Global `material_uid → [d,s,n,wm]` lookup, populated from every readable
     /// `<hash>.materials` slot at open time. What `textures_for_material` consults.
     materials: MaterialIndex,
+    /// Every loose `.hkx` + every `Animations.pack` record enumerated at open time. The
+    /// browser's Nav Anims tab walks `.handles()`; `load_clip(hash)` fetches by key. See
+    /// `prototype2008_anim.rs` for why the pack rows are anonymous today (outer-header
+    /// layout only partially reversed) and why they're still worth showing (the count and
+    /// codec breakdown match the pack's declared 1605-record table exactly).
+    anim_catalog: Anim2008Catalog,
 }
 
 #[derive(Clone, Debug)]
@@ -402,6 +409,38 @@ impl Prototype2008Source {
             slot_tex_read
         ));
 
+        // Enumerate the animation catalog last — it's cheap (header-only reads over the
+        // loose tree + a byte-scan of the pack), and produces an immediately visible win
+        // for the Nav Anims tab. See `prototype2008_anim.rs` for the format spec and the
+        // reason we don't have a spline-anim-style per-frame decoder for this build yet
+        // (the 2008 clips are Pandemic-custom ANM0*0 records, not Havok packfiles — the
+        // magic `57 E0 E0 57` and every `hka*` classname is absent from the pack).
+        let anim_catalog = Anim2008Catalog::open(&bin360);
+        fingerprint.matched(format!(
+            "animations: {} clips ({} loose + {} pack) — {}·WAV0 {}·DEL0 {}·NOC0",
+            anim_catalog.clips.len(),
+            anim_catalog.loose_count,
+            anim_catalog.pack_count,
+            anim_catalog.codec_counts[0],
+            anim_catalog.codec_counts[1],
+            anim_catalog.codec_counts[2],
+        ));
+        if anim_catalog.pack_path.is_none() {
+            fingerprint.warn(
+                "no Animations.pack found — the loose animations/ tree still provides the \
+                 named clip catalog, but the pack's 1605 curated records are absent",
+            );
+        }
+        // Fold the loose animation names into the global hash→name inventory. Every named
+        // loose clip contributes one entry, keyed by pandemic_hash(stem) — the same
+        // namespace as retail's asset lookups, so a hash pulled from any FSM/AI/AnimBank
+        // reference round-trips to a friendly name here.
+        for c in &anim_catalog.clips {
+            if !c.name.is_empty() {
+                hash_names.entry(c.hash).or_insert_with(|| c.name.clone());
+            }
+        }
+
         Ok(Self {
             bin360,
             fingerprint,
@@ -413,8 +452,22 @@ impl Prototype2008Source {
             slot_textures,
             tex_cache: Mutex::new(HashMap::new()),
             materials,
+            anim_catalog,
         })
     }
+
+    /// Load one clip by its handle key (pandemic_hash of the loose stem, or the synthetic
+    /// offset-based key for pack-only anonymous records). Exposed on the concrete type so
+    /// the app's future "play this 2008 clip" path can reach it without going through the
+    /// version-agnostic trait; the trait doesn't expose a Clip payload yet because retail
+    /// and 2008 return different structs (retail's `SplineAnim` vs the 2008 `Clip2008`).
+    pub fn load_2008_clip(&self, key: u32) -> Result<Clip2008, String> {
+        self.anim_catalog.load_clip(key)
+    }
+
+    /// Read-only accessor for the concrete anim catalog. Used by tests + the app's Nav
+    /// Anims tab detail card (codec breakdown + duration histogram).
+    pub fn anim_catalog(&self) -> &Anim2008Catalog { &self.anim_catalog }
 }
 
 /// One record parsed from a `<hash>.textures` slot's inner directory.
@@ -566,6 +619,13 @@ impl GameSource for Prototype2008Source {
             )
         })?;
         Ok(pack_bytes[rec.offset..rec.offset + rec.size].to_vec())
+    }
+
+    fn list_animations(&self) -> Vec<AssetHandle> {
+        // Loose entries (named) and packed entries (anonymous, synthetic-keyed) both flow
+        // through the same handle list. The `AssetKind::Animation` discriminator flags them
+        // for the Nav Anims tab; the `name`/`hash` shape mirrors what `list_meshes` does.
+        self.anim_catalog.handles()
     }
 
     fn list_materials(&self) -> Vec<AssetHandle> {

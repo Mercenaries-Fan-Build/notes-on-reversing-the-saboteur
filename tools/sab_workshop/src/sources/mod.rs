@@ -3,6 +3,7 @@
 //! `source::detect_version`.
 
 pub mod prototype2008;
+pub mod prototype2008_anim;
 pub mod prototype2008_material;
 pub mod prototype2008_subpack;
 pub mod retail_pc;

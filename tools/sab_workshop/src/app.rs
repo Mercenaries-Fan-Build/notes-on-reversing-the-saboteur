@@ -299,6 +299,7 @@ pub fn run(mut cfg: Config) {
                     source_handles.extend(s.list_meshes());
                     source_handles.extend(s.list_textures());
                     source_handles.extend(s.list_materials());
+                    source_handles.extend(s.list_animations());
                 }
                 println!(
                     "[sab_workshop] source opened: {} — {} browse handles",
@@ -446,6 +447,7 @@ pub fn run(mut cfg: Config) {
                                     source_handles.extend(s.list_meshes());
                                     source_handles.extend(s.list_textures());
                                     source_handles.extend(s.list_materials());
+                                    source_handles.extend(s.list_animations());
                                 }
                                 println!(
                                     "[sab_workshop] source re-opened: {} — {} browse handles",
@@ -3133,8 +3135,51 @@ fn build_ui(
                     });
                 }
                 (Page::Inspect, NavTab::Animations) if nav.source.map(|s| s.version()) == Some(crate::source::GameVersion::Prototype2008Xbox360) => {
-                    // Empty state for 2008 anims — no rows, no explanation. When the BE/Xenon
-                    // clip decoder lands, this arm collapses back into the retail one.
+                    use crate::source::AssetKind;
+                    let anim_rows: Vec<usize> = nav
+                        .source_handles
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, h)| (h.kind == AssetKind::Animation).then_some(i))
+                        .collect();
+                    ui.label(theme::data_text(
+                        format!("{} clips", anim_rows.len()),
+                        10.0,
+                        theme::FAINT,
+                    ));
+                    ui.separator();
+                    ui.add_space(4.0);
+                    let needle_lo = needle.to_ascii_lowercase();
+                    let n_hex: Option<u32> =
+                        u32::from_str_radix(needle_lo.trim_start_matches("0x"), 16).ok();
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+                        ui,
+                        18.0,
+                        anim_rows.len(),
+                        |ui, range| {
+                            for r in range {
+                                let i = anim_rows[r];
+                                let h = &nav.source_handles[i];
+                                let hash_match = n_hex
+                                    .and_then(|q| h.hash.map(|hh| hh == q))
+                                    .unwrap_or(false);
+                                if !needle_lo.is_empty()
+                                    && !h.name.to_ascii_lowercase().contains(&needle_lo)
+                                    && !hash_match
+                                {
+                                    continue;
+                                }
+                                let sel = *nav.sel_source_handle == Some(i);
+                                let label = match (h.name.as_str(), h.hash) {
+                                    ("", _) => format!("{:08X}", h.key as u32),
+                                    (n, _) => n.to_string(),
+                                };
+                                if ui.selectable_label(sel, label).clicked() {
+                                    *nav.sel_source_handle = Some(i);
+                                }
+                            }
+                        },
+                    );
                 }
                 (Page::Inspect, NavTab::Animations) => {
                     if theme::pill(ui, "show all (incl. non-rig)", *show_all).clicked() {

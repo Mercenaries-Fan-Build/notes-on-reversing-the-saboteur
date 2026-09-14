@@ -2785,15 +2785,13 @@ fn build_ui(
                 if r.clicked() && !ed_disabled {
                     *page = *p;
                 }
-                let note = if ed_disabled {
-                    "retail only (loaded source is 2008)".to_string()
-                } else {
-                    match p.editor() {
+                if !ed_disabled {
+                    let note = match p.editor() {
                         None => format!("{textured}/{} submeshes textured", mats.submeshes.len()),
                         Some(ep) => ed.status(ep),
-                    }
-                };
-                r.on_hover_text(format!("{}  ({})", p.label(), note));
+                    };
+                    r.on_hover_text(format!("{}  ({})", p.label(), note));
+                }
             }
         });
 
@@ -3273,9 +3271,7 @@ fn build_ui(
                                                 theme::kv(ui, names[i], egui::RichText::new(val).monospace());
                                             }
                                         }
-                                        None => {
-                                            ui.label(egui::RichText::new("(not indexed — likely container-wrapped, awaiting variant unwrap)").color(theme::FAINT).size(10.5));
-                                        }
+                                        None => {}
                                     }
                                 }
                             } else if handle.kind == crate::source::AssetKind::Mesh {

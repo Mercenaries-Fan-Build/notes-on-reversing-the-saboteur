@@ -8,12 +8,11 @@
 //!
 //! ```text
 //! +0x00  char   magic[4]          = "MSH4"                              // BE ASCII
-//! +0x04  u32be  name_len          includes trailing \0; pad up to 4-B
+//! +0x04  u32be  name_len          includes trailing \0
 //! +0x08  char[] name[name_len]    ASCII, e.g. "CH_AL_SeanDevlin_01_HD\0"
-//!        char[] pad_to_align_4    zero pad — payload starts at the next 4-B boundary
-//!                                 (name_len=23 → 1 byte pad → payload at 0x20)
+//!        u8     pad               ONE zero byte, unconditional; not an "align to 4"
 //!
-//! +0x20  … PAYLOAD (file header + N streams + skeleton) …
+//! +NAME_END+1  … PAYLOAD (file header + N streams + skeleton) …
 //!
 //! FILE_END-8  char   magic[4]     = "MSHC"                              // BE ASCII
 //! FILE_END-4  u32be  content_hash preserved verbatim for round-trip
@@ -91,18 +90,18 @@
 //! model-space position (face vertices at (~1.7, ~0.07, ~1.07) on Sean HD, torso vertices
 //! at (~0.1, ~0.01, ~1.16) on Sean LB, etc.).
 //!
-//! ## Known format variants — open work
+//! ## Format uniformity — no second encoder needed
 //!
-//! The encoding above (aligned payload + rd24 fields) is what Sean's four character parts
-//! use — every mesh whose name is a 22-character string plus NUL pads the name to a 4-byte
-//! boundary with one byte and shifts the u32 slots into the rd24 pattern. Meshes with
-//! different name lengths (weapons, props, other characters) store the SAME fields at a
-//! non-shifted offset, i.e. plain `u32 BE` at the exact post-name byte, without the shift.
-//! `parse_msh4` today decodes only the shifted variant; a non-Sean mesh will come back with
-//! `implausible num_streams N` where `N` is the count times 256 (or, less commonly, 0). Two
-//! encoders is one probe short of shipping — the fix is to try both readers and pick the
-//! one whose `num_streams` falls in `1..=32`. Filed as follow-up; the workshop still shows
-//! Sean rendered correctly today.
+//! An earlier probe suspected two sub-formats and proposed an auto-detect on `num_streams`
+//! sanity. There is only ONE encoding: fixed 1-byte pad after the name + rd24 slots for
+//! every 4-byte field. The current parser accidentally worked for Sean because Sean's names
+//! land at `name_end % 4 == 3`, where `align_to_4(name_end) == name_end + 1` (i.e. the old
+//! "align" rule happens to agree with the fixed pad). For every other name length the
+//! aligned offset landed the reader on the wrong byte and produced the well-known
+//! `implausible num_streams 0 / 256 / 65536 / …` errors. Byte-fingerprinted `NZ`, `Grenade`,
+//! `Trap01_ORD` (name lengths 22 / 16 / 16) all decode cleanly under the fixed-1-byte rule.
+//! `FBP_Debug_UB` remains the only known outlier — a truly different sub-format we don't
+//! decode yet.
 //!
 //! ## References
 //!
@@ -124,11 +123,10 @@ pub const MSH4_MAGIC: &[u8; 4] = b"MSH4";
 /// The 4-byte magic of the 8-byte footer at the end of every MSH4 record.
 pub const MSHC_FOOTER_MAGIC: &[u8; 4] = b"MSHC";
 
-/// The alignment the payload starts on relative to the file. After the ASCII name (variable
-/// length, includes NUL), the writer pads up to the next 4-byte boundary before writing the
-/// payload. For every sampled Sean part `name_len == 23`, giving a 1-byte pad and payload
-/// at 0x20. A shorter or longer name simply lands the payload at a different 4-B boundary.
-const PAYLOAD_ALIGN: usize = 4;
+/// Fixed number of pad bytes between the trailing NUL of `name` and the first byte of the
+/// payload. Empirically 1 for every sampled body — see the module doc for the fingerprints
+/// that ruled out the earlier "align to 4" hypothesis.
+const NAME_PAD_BYTES: usize = 1;
 
 /// One MSH4 record, parsed out of the raw inflated bytes. `positions/normals/uvs/joints/
 /// weights/indices/prims` are populated by `parse_msh4` when the payload decodes cleanly;
@@ -566,12 +564,19 @@ pub fn parse_msh4(bytes: &[u8]) -> Result<Msh4Body, String> {
     ]);
 
     // ── payload window ───────────────────────────────────────────────────────────────────
-    // Name is followed by a pad up to the next 4-byte boundary, then the payload starts.
-    let payload_start = name_end.div_ceil(PAYLOAD_ALIGN) * PAYLOAD_ALIGN;
+    // Name is followed by a FIXED 1-byte pad, then the payload starts. This is unconditional:
+    // regardless of `name_len`, the writer emits exactly one byte before the payload. The old
+    // hypothesis was "align to a 4-byte boundary" — that happens to coincide with a 1-byte pad
+    // when `name_len % 4 == 3` (which is Sean's name shape: 22 chars + NUL = 23 bytes), but
+    // fails on every other name length. Verified by byte-fingerprinting `BP_AL_Sean_HD`
+    // (name_len 23), `BP_NZ_TerSqdSldOfc_HD` (22), `GB_WP_Grenade01` (16), `Trap01_ORD` (16):
+    // for each, VB half3 positions decode to plausible model-space coords only when the payload
+    // is anchored `name_end + 1`.
+    let payload_start = name_end + NAME_PAD_BYTES;
     if payload_start > footer_off {
         return Err(format!(
-            "MSH4: aligned name-pad end 0x{payload_start:X} overruns MSHC footer at \
-             0x{footer_off:X} — malformed header"
+            "MSH4: name+pad end 0x{payload_start:X} overruns MSHC footer at 0x{footer_off:X} \
+             — malformed header"
         ));
     }
     let payload_range = payload_start..footer_off;
@@ -585,7 +590,12 @@ pub fn parse_msh4(bytes: &[u8]) -> Result<Msh4Body, String> {
         ));
     }
     let num_streams = rd24(payload, 0);
-    if num_streams == 0 || num_streams > 32 {
+    // Vehicles carry many streams: `VH_CV_CR_AlfaRomera_01` reads 37, `VH_CV_CR_Citroen15_01`
+    // reads 49 under the fixed-1-byte-pad encoding — one stream per doorway/wheel/window/LOD
+    // sub-mesh. The old sanity ceiling of 32 was tuned to character parts alone. 128 keeps
+    // us from spending gigabytes on a genuinely corrupted body while accepting every real
+    // asset the prototype ships.
+    if num_streams == 0 || num_streams > 128 {
         return Err(format!("MSH4: implausible num_streams {num_streams}"));
     }
     // The remaining four file-header fields are always zero except [4] which is the format
@@ -944,12 +954,9 @@ mod tests {
     }
 
     /// Cover many meshes at once — walk a broad slice of the prototype's mesh table, count
-    /// how many decode cleanly with the aligned + rd24 encoding, and record the failures.
-    /// This is intentionally NOT a "must-decode-N" gate: the prototype ships at least two
-    /// MSH4 sub-formats (see `docs/2008_msh4_format.md` — "Known format variants" section).
-    /// The follow-up work is to auto-detect and swap decoders; today, Sean's character parts
-    /// decode via the aligned+rd24 path in `parse_msh4`, and the test reports what OTHER
-    /// meshes need the alternative path.
+    /// how many decode cleanly. Under the fixed-1-byte-pad encoding, the prototype has ONE
+    /// sub-format for every named mesh we ship (see the module doc's "Format uniformity"
+    /// section). Before the fix, only Sean-shape meshes (name_len == 23) decoded — 10/40.
     #[test]
     fn survey_wide_sample_of_prototype_meshes() {
         let Some(root) = bin360_root() else {
@@ -1008,10 +1015,176 @@ mod tests {
         for (n, e) in &failed {
             eprintln!("  FAIL {n}: {e}");
         }
-        // Character parts (Sean-shape meshes: skinned, 22-char-plus-NUL names that pad
-        // payload to a 1-byte-shifted offset) MUST decode. The rest is best-effort while
-        // the second sub-format is investigated.
-        assert!(ok > 0, "no meshes decoded at all — the primary format is broken");
+        // Regression floor for the pad-rule fix. Baseline was 10/40 (Sean-shape only); the
+        // fix takes us to 40/40 on the current prototype. Keep 35 as the acceptance bar so
+        // an isolated new outlier can slip through without breaking the build, but a bulk
+        // regression (payload-start off by 1, rd24 replaced with plain BE u32, …) fails
+        // loudly.
+        assert!(ok >= 35, "survey regression: only {ok}/{attempted} decoded (want ≥35)");
+    }
+
+    /// Explicit coverage on 40 NON-Sean meshes across weapons, props, vehicles, and other
+    /// characters — the categories the previous probe called out as "30 of 40 fail". Every
+    /// distinct name-length shape (%4 in 0/1/2, plus %4 == 3 for non-Sean names) must
+    /// decode; if a category regresses we surface it name-by-name.
+    #[test]
+    fn survey_non_sean_meshes_by_category() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let handles = src.list_meshes();
+        // Pick the first ≤40 mesh handles whose NAME does not start with "BP_AL_Sean". We
+        // want breadth across categories, not depth into one. `list_meshes` returns handles
+        // in packlog-scan order, which is naturally spread across packs.
+        let non_sean: Vec<_> = handles
+            .iter()
+            .filter(|h| !h.name.starts_with("BP_AL_Sean"))
+            .take(40)
+            .collect();
+        assert!(
+            non_sean.len() >= 40,
+            "prototype install has fewer than 40 non-Sean mesh handles ({})",
+            non_sean.len()
+        );
+
+        let mut ok = 0usize;
+        let mut fails: Vec<(String, String)> = Vec::new();
+        for h in &non_sean {
+            let Ok(slot) = src.read_mesh_bytes(h) else {
+                fails.push((h.name.clone(), "read_mesh_bytes failed".into()));
+                continue;
+            };
+            let Ok(raw) = inflate_first_msh4_stream(&slot) else {
+                fails.push((h.name.clone(), "inflate failed".into()));
+                continue;
+            };
+            match parse_msh4(&raw) {
+                Ok(body) if !body.positions.is_empty() && !body.indices.is_empty() => {
+                    let max_idx = body.indices.iter().copied().max().unwrap_or(0);
+                    if (max_idx as usize) < body.positions.len() && body.indices.len() % 3 == 0 {
+                        ok += 1;
+                    } else {
+                        fails.push((h.name.clone(), "index bounds/parity".into()));
+                    }
+                }
+                Ok(_) => fails.push((h.name.clone(), "empty geometry".into())),
+                Err(e) => fails.push((h.name.clone(), e)),
+            }
+        }
+        eprintln!("[non-Sean survey] ok={ok}/{}", non_sean.len());
+        for (n, e) in &fails {
+            eprintln!("  FAIL {n}: {e}");
+        }
+        assert!(
+            ok >= 35,
+            "non-Sean regression: only {ok}/40 decoded — the fixed-1-byte pad rule slipped"
+        );
+    }
+
+    /// One focused non-Sean mesh with hand-verified byte-level expectations. The `NZ`
+    /// terror-squad-officer part sits `name_len == 22`, exactly the case the old parser
+    /// misread (`num_streams 256`). Under the pad-fix it must decode into a single skinned
+    /// stream with realistic bounds.
+    #[test]
+    fn decodes_specific_non_sean_mesh_ter_sqd_ofc() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let Some(handle) =
+            src.list_meshes().into_iter().find(|h| h.name == "BP_NZ_TerSqdSldOfc_HD")
+        else {
+            eprintln!("skip: BP_NZ_TerSqdSldOfc_HD not in packlog");
+            return;
+        };
+        let slot = src.read_mesh_bytes(&handle).expect("read slot");
+        let raw = inflate_first_msh4_stream(&slot).expect("inflate MSH4");
+        let body = parse_msh4(&raw).expect("parse the NZ officer");
+        assert_eq!(body.name, "CH_NZ_TerSqdSldOfc_HD", "mesh name preserved");
+        assert!(body.positions.len() >= 1000, "want a real character mesh, got {}", body.positions.len());
+        assert_eq!(body.indices.len() % 3, 0, "index count divisible by 3");
+        let max_idx = body.indices.iter().copied().max().unwrap_or(0);
+        assert!((max_idx as usize) < body.positions.len(), "max index in range");
+        // The character stands in typical model space, not inside a debug cube.
+        let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in &body.positions {
+            for k in 0..3 {
+                mn[k] = mn[k].min(p[k]);
+                mx[k] = mx[k].max(p[k]);
+            }
+        }
+        for k in 0..3 {
+            assert!(mn[k] >= -3.0 && mx[k] <= 3.0, "bounds axis {k} out of model space: [{}, {}]", mn[k], mx[k]);
+        }
+        // The old parser returned `Err("MSH4: implausible num_streams 256")` for this exact
+        // input; capture the ex-failure mode so a regression to the align-to-4 rule stops
+        // the build here.
+        assert!(!body.diagnostics.streams.is_empty(), "expected non-empty stream table");
+    }
+
+    /// The pad-rule fingerprint. For every name-length residue we care about, verify that
+    /// the fixed-1-byte-pad rule reads the num_streams field at the same byte as the
+    /// engine — i.e. produces a small non-zero count. The pre-fix `align_to_4` rule
+    /// reads through 1/2/3 bytes of pad and pulls out a wildly wrong u24; that difference
+    /// is what this test pins.
+    #[test]
+    fn payload_start_is_fixed_one_byte_pad_not_align_to_four() {
+        // Build a synthetic MSH4 body for each name-length residue class. Each body puts
+        // `num_streams = 3` at the fixed-1-byte-pad offset, stubs 3 zero u32 slots, then a
+        // stub stream that immediately errors on stride 0 (we don't care about the geometry
+        // — only about the header offsets).
+        for name_len_no_nul in [1usize, 2, 3, 4] {
+            let mut b = Vec::new();
+            b.extend_from_slice(MSH4_MAGIC);
+            let name_len = name_len_no_nul + 1; // include the trailing NUL
+            b.extend_from_slice(&(name_len as u32).to_be_bytes());
+            for _ in 0..name_len_no_nul {
+                b.push(b'A');
+            }
+            b.push(0); // NUL
+            b.push(0); // the fixed 1-byte pad the fix depends on
+            // File header — 5 rd24 slots. num_streams=3 in slot 0, zeros in the rest.
+            fn wr(dst: &mut Vec<u8>, v: u32) {
+                let v = v & 0x00FF_FFFF;
+                dst.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8, 0]);
+            }
+            wr(&mut b, 3); // num_streams
+            wr(&mut b, 0);
+            wr(&mut b, 0);
+            wr(&mut b, 0);
+            wr(&mut b, 1); // version
+            // Stream 0 stub — stride 0 to fail parse_stream after the header sanity read,
+            // but the file-header num_streams check must have already passed.
+            wr(&mut b, 0x1106);
+            wr(&mut b, 0);
+            wr(&mut b, 0);
+            wr(&mut b, 0);
+            wr(&mut b, 0); // stride == 0 → parse_stream returns Err
+            wr(&mut b, 0);
+            // Footer.
+            b.extend_from_slice(MSHC_FOOTER_MAGIC);
+            b.extend_from_slice(&0u32.to_be_bytes());
+
+            let r = parse_msh4(&b);
+            // Header must have accepted; the stride-0 stream trips a per-stream error
+            // that's swallowed (partial body). So we get back an Ok body whose num_streams
+            // diagnostic is 0 (walked zero streams because the first stream errored) but
+            // whose file header parse succeeded — the alternative (aligned) offset would
+            // read a garbage num_streams and Err at "implausible num_streams".
+            assert!(
+                r.is_ok(),
+                "name_len_no_nul={name_len_no_nul}: parse_msh4 rejected the header, means \
+                 the payload_start rule is wrong. Err: {:?}",
+                r.err()
+            );
+        }
     }
 
     /// Passing a TRUNCATED prototype MSH4 must return `Err`, never panic. A missing MSHC

@@ -73,6 +73,21 @@
 //!   are the loader functions (Puckel:PclAnimationManager.obj, `d:/projects/wildstar/code/puckel/`).
 //! * `Bin360/AnimText/*.txt` — the human-readable metadata for `SeqTrans`, `AnimSettings`,
 //!   `EdgeTransitions_v*`, `MeleeCombos_v*` etc. Cross-references clip names to sequences.
+//!
+//! # Per-frame sampling
+//!
+//! Given a `Clip2008`, a track index, and a time in seconds, [`Clip2008::sample_track`]
+//! returns a `SampledTransform { pos, rot, scale }`. Only **NOC0** is decoded end-to-end —
+//! the layout was recovered from six loose files whose sizes match `24 + eff_tracks*4 +
+//! aux*48` byte-for-byte and whose 12-float transforms yield unit quaternions and
+//! ~identity scales for identifiable reference poses (see `sample_track` docs). **WAV0**
+//! and **DEL0** return `Err`: their bodies are variable-length compressed bitstreams
+//! whose per-frame decoder is unreversed here. The Havok-4.6 middleware sampler code IS
+//! in the Saboteur.xex Ghidra decomp (`hkWaveletSkeletalAnimation::samplePartialPose`
+//! @ 0x82a57a10, `hkDeltaCompressedSkeletalAnimation::samplePartialWithDataChunks` @
+//! 0x82a58cc8, `hkInterleavedSkeletalAnimation::samplePose` @ 0x82a59b80) but is inlined
+//! PPC VMX128 that resists automated recovery; the WAV0/DEL0 branches carry a diagnostic
+//! pointing to those addresses so a follow-up pass has a starting handhold.
 
 #![allow(dead_code)]
 
@@ -227,6 +242,300 @@ pub struct Clip2008 {
     /// record (not a body-only slice) means every downstream consumer sees identical bytes
     /// whether the clip came from a loose file or the pack.
     pub bytes: Vec<u8>,
+}
+
+/// One track's local transform at a moment in time. TRS in bone-local space, in the same
+/// convention the Havok runtime hands back from `samplePose`: right-handed, quaternion
+/// `(x, y, z, w)`, per-axis scale. The workshop's skinning already consumes this shape
+/// via `havok::QsTransform`; the sampled values here are drop-in compatible.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SampledTransform {
+    pub pos: [f32; 3],
+    /// Unit quaternion `(x, y, z, w)`; normalized by the sampler so callers can trust it.
+    pub rot: [f32; 4],
+    pub scale: [f32; 3],
+}
+
+impl SampledTransform {
+    pub const IDENTITY: SampledTransform = SampledTransform {
+        pos: [0.0, 0.0, 0.0],
+        rot: [0.0, 0.0, 0.0, 1.0],
+        scale: [1.0, 1.0, 1.0],
+    };
+}
+
+// ── NOC0 on-disk layout — recovered from six loose files ──────────────────────────────────
+//
+// Post-header structure (verified byte-for-byte AND numerically on six shipped files:
+// aurora_dead_idle_drvr, back_prone_pose, Bugatti_drive_turn_left, KD_head_front,
+// Rope_horiz_down_long_start, Ledge_Backjump_prep_loop — every 12-float transform decodes
+// to a unit quaternion and ~identity-or-plausible TRS):
+//
+//   +0x18    aux × 48 bytes         frame-major hkQsTransform array (see below);
+//                                   transforms[f * eff_tracks + t]
+//   +TRAILER eff_tracks × u32 BE    per-track descriptor (pandemic_hash of the driven
+//                                   bone; the same bone-hash values recur across clips —
+//                                   correlate against a skeleton to name each track)
+//
+// where TRAILER = 0x18 + aux * 48 and file_len = TRAILER + eff_tracks * 4.
+//
+//   eff_tracks = num_tracks if num_tracks > 0 else aux_count (the ntt=0 "static pose"
+//                                 special case where the header hands the track count off
+//                                 to the aux slot; every dead-idle / static-pose file
+//                                 shipped goes down this branch — for those, aux == the
+//                                 pose-track count and there is exactly one frame)
+//   frames     = aux_count / eff_tracks  (integer; exact division has held on every
+//                                 sampled file — no float-frame in the shipped corpus)
+//
+// Each 48-byte hkQsTransform is 12 f32-BE floats laid out as:
+//   [0..2]   translation (x, y, z)
+//   [3..6]   rotation quaternion (x, y, z, w) — stored explicitly. Verified unit across
+//            every transform in the sample set (all 180 for back_prone_pose, all 52 for
+//            aurora, all 336 for Bugatti_drive_turn_left; |R| = 1.0 ± 1e-4)
+//   [7..9]   scale (x, y, z) — near-identity (1.0) across the sample set
+//   [10..11] trailing padding / per-transform aux (usually 0.0; a small varying float on
+//            some tracks — not used by the sampler)
+
+const NOC0_TRANSFORM_STRIDE: usize = 48;
+const NOC0_FLOATS_PER_TRANSFORM: usize = 12;
+
+/// Frame count and trailer length derived from the header. Returns `Err` for a header
+/// whose (eff_tracks × frames_per_track) does not equal aux_count (would mean the
+/// shipped file uses a codec-body layout we don't understand yet).
+fn noc0_shape(header: &Anim2008Header) -> Result<(usize, usize, usize), String> {
+    let eff_tracks = if header.num_tracks > 0 {
+        header.num_tracks as usize
+    } else {
+        header.aux_count as usize
+    };
+    if eff_tracks == 0 {
+        return Err("NOC0 clip has zero tracks (num_tracks=0 and aux_count=0)".into());
+    }
+    let total = header.aux_count as usize;
+    if total % eff_tracks != 0 {
+        return Err(format!(
+            "NOC0 clip has aux_count={total} not divisible by eff_tracks={eff_tracks}",
+        ));
+    }
+    let frames = (total / eff_tracks).max(1);
+    let trailer_bytes = eff_tracks * 4; // per-track u32 descriptors at end-of-file
+    Ok((eff_tracks, frames, trailer_bytes))
+}
+
+/// Read a single 48-byte hkQsTransform at absolute offset `off` from a NOC0 body.
+/// Returns `Err` if the range is out of bounds. Normalizes the quaternion so callers can
+/// trust the unit invariant (a stray non-unit sample would otherwise slip past the
+/// downstream skinning quat-to-matrix conversion).
+fn noc0_read_transform(bytes: &[u8], off: usize) -> Result<SampledTransform, String> {
+    if off + NOC0_TRANSFORM_STRIDE > bytes.len() {
+        return Err(format!(
+            "NOC0 transform read past end: off={off}, need={NOC0_TRANSFORM_STRIDE}, have={}",
+            bytes.len()
+        ));
+    }
+    let mut fl = [0.0f32; NOC0_FLOATS_PER_TRANSFORM];
+    for (i, v) in fl.iter_mut().enumerate() {
+        let base = off + i * 4;
+        *v = f32::from_be_bytes([bytes[base], bytes[base + 1], bytes[base + 2], bytes[base + 3]]);
+    }
+    if !fl.iter().all(|f| f.is_finite()) {
+        return Err(format!("NOC0 transform contains non-finite float at off={off}"));
+    }
+    let mut rot = [fl[3], fl[4], fl[5], fl[6]];
+    let mag_sq = rot[0] * rot[0] + rot[1] * rot[1] + rot[2] * rot[2] + rot[3] * rot[3];
+    if mag_sq > 1e-12 {
+        let inv = 1.0 / mag_sq.sqrt();
+        rot[0] *= inv;
+        rot[1] *= inv;
+        rot[2] *= inv;
+        rot[3] *= inv;
+    } else {
+        // Degenerate quat — return identity rather than propagate NaN into the skinning.
+        rot = [0.0, 0.0, 0.0, 1.0];
+    }
+    Ok(SampledTransform { pos: [fl[0], fl[1], fl[2]], rot, scale: [fl[7], fl[8], fl[9]] })
+}
+
+/// Shortest-arc slerp of two `(x, y, z, w)` unit quaternions. Falls back to a normalized
+/// lerp near-parallel to avoid a divide-by-tiny on `sin(theta0)` — same shape as retail's
+/// `havok::sample_at` slerp so we don't introduce a second numerical convention.
+fn slerp_quat(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
+    let mut dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    if dot < 0.0 {
+        for c in b.iter_mut() {
+            *c = -*c;
+        }
+        dot = -dot;
+    }
+    if dot > 0.9995 {
+        let mut q = [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        ];
+        let m = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+        if m > 0.0 {
+            for c in q.iter_mut() {
+                *c /= m;
+            }
+        }
+        return q;
+    }
+    let theta0 = dot.clamp(-1.0, 1.0).acos();
+    let s0 = ((1.0 - t) * theta0).sin() / theta0.sin();
+    let s1 = (t * theta0).sin() / theta0.sin();
+    [
+        a[0] * s0 + b[0] * s1,
+        a[1] * s0 + b[1] * s1,
+        a[2] * s0 + b[2] * s1,
+        a[3] * s0 + b[3] * s1,
+    ]
+}
+
+/// Linear interpolation of the two bracketing NOC0 frames for one track. `frac` is the
+/// unit interval position between `f0` and `f1`.
+fn lerp_transform(a: SampledTransform, b: SampledTransform, frac: f32) -> SampledTransform {
+    let f = frac.clamp(0.0, 1.0);
+    let lerp3 = |x: [f32; 3], y: [f32; 3]| {
+        [x[0] + (y[0] - x[0]) * f, x[1] + (y[1] - x[1]) * f, x[2] + (y[2] - x[2]) * f]
+    };
+    SampledTransform {
+        pos: lerp3(a.pos, b.pos),
+        rot: slerp_quat(a.rot, b.rot, f),
+        scale: lerp3(a.scale, b.scale),
+    }
+}
+
+impl Clip2008 {
+    /// Sample one track's local transform at `time_s` seconds. Time is clamped to
+    /// `[0, duration_s]`. Returns `Err` for unimplemented codecs — the caller decides
+    /// whether to surface that or fall back to a rest pose.
+    ///
+    /// **NOC0** (interleaved uncompressed): implemented end-to-end. Reads the two
+    /// bracketing frames from the frame-major transform array and lerps translation and
+    /// scale linearly, slerps the quaternion. Time-line is uniform: frame `i` sits at
+    /// `t = i * duration_s / (frames-1)`.
+    ///
+    /// **WAV0** (wavelet-compressed) and **DEL0** (delta-compressed): unimplemented —
+    /// the codec bodies are variable-length quantized bitstreams whose per-frame decoder
+    /// is not yet reversed here (see the module doc for the Havok-4.6 sampler addresses
+    /// in the Saboteur.xex decomp). Returns `Err` with a diagnostic — do **not** silently
+    /// hand back an identity pose from this branch, because that would look like a rig
+    /// bug to a caller doing a sanity check.
+    pub fn sample_track(&self, track_idx: u32, time_s: f32) -> Result<SampledTransform, String> {
+        match self.header.codec {
+            ClipCodec::None => self.sample_track_noc0(track_idx, time_s),
+            ClipCodec::Wavelet => Err(format!(
+                "ANM0WAV0 sampler unimplemented for clip '{}' — wavelet body is a \
+                 Pandemic-serialized Havok-4.6 hkWaveletSkeletalAnimation, decoder lives \
+                 in Saboteur.xex at 0x82a56850 (getBlockDataAndSize), 0x82a577a0 \
+                 (decompressBlockToCache), 0x82a57a10 (samplePartialPose). Not decoded here.",
+                self.info.name
+            )),
+            ClipCodec::Delta => Err(format!(
+                "ANM0DEL0 sampler unimplemented for clip '{}' — delta body is a \
+                 Pandemic-serialized Havok-4.6 hkDeltaCompressedSkeletalAnimation, decoder \
+                 lives in Saboteur.xex at 0x82a58448 (_decompress), 0x82a58520 (samplePose), \
+                 0x82a58cc8 (samplePartialWithDataChunks). Not decoded here.",
+                self.info.name
+            )),
+        }
+    }
+
+    /// NOC0 (uncompressed / interleaved) sampler — the shape recovered from the sample
+    /// corpus (see module doc + `noc0_shape`). Frame-major transforms; slerp between the
+    /// two bracketing key frames. Time outside `[0, duration_s]` is clamped.
+    fn sample_track_noc0(&self, track_idx: u32, time_s: f32) -> Result<SampledTransform, String> {
+        let (eff_tracks, frames, trailer_bytes) = noc0_shape(&self.header)?;
+        if (track_idx as usize) >= eff_tracks {
+            return Err(format!(
+                "track_idx {track_idx} out of range (eff_tracks={eff_tracks} for clip '{}')",
+                self.info.name
+            ));
+        }
+        // Transforms live directly after the 24-byte header (no per-track prefix); the
+        // per-track descriptor table is a trailer after the transform array.
+        let body_start = Anim2008Header::FIXED_HEADER_LEN;
+        let needed = body_start + eff_tracks * frames * NOC0_TRANSFORM_STRIDE + trailer_bytes;
+        if self.bytes.len() < needed {
+            return Err(format!(
+                "NOC0 clip '{}' truncated: have {} bytes, need {} for {} tracks × {} frames + {}-byte trailer",
+                self.info.name,
+                self.bytes.len(),
+                needed,
+                eff_tracks,
+                frames,
+                trailer_bytes
+            ));
+        }
+        // Static-pose special case (frames == 1): no interpolation, just read the one
+        // frame's slot for this track.
+        if frames == 1 {
+            let off = body_start + (track_idx as usize) * NOC0_TRANSFORM_STRIDE;
+            return noc0_read_transform(&self.bytes, off);
+        }
+        // Interpolated case. Time-line: uniform, last frame sits at duration_s.
+        let dur = self.header.duration_s.max(0.0);
+        let last = frames - 1;
+        let t = time_s.clamp(0.0, dur);
+        let (f0, frac) = if dur > 0.0 && last > 0 {
+            let step = dur / last as f32;
+            let g = if step > 0.0 { t / step } else { 0.0 };
+            let f = (g.floor() as usize).min(last);
+            (f, (g - f as f32).clamp(0.0, 1.0))
+        } else {
+            (0usize, 0.0)
+        };
+        let f1 = (f0 + 1).min(last);
+        let off0 =
+            body_start + (f0 * eff_tracks + track_idx as usize) * NOC0_TRANSFORM_STRIDE;
+        let off1 =
+            body_start + (f1 * eff_tracks + track_idx as usize) * NOC0_TRANSFORM_STRIDE;
+        let a = noc0_read_transform(&self.bytes, off0)?;
+        let b = noc0_read_transform(&self.bytes, off1)?;
+        Ok(lerp_transform(a, b, frac))
+    }
+
+    /// The per-track descriptor trailer (typically the pandemic_hash of each track's
+    /// driven bone). Useful for correlating tracks against a skeleton to name them; the
+    /// same bone-hash values recur across clips so a hash→name table built from the rig
+    /// resolves the whole clip's track names.
+    pub fn track_descriptors_noc0(&self) -> Result<Vec<u32>, String> {
+        if !matches!(self.header.codec, ClipCodec::None) {
+            return Err("track_descriptors_noc0: not a NOC0 clip".into());
+        }
+        let (eff_tracks, frames, trailer_bytes) = noc0_shape(&self.header)?;
+        let trailer_start =
+            Anim2008Header::FIXED_HEADER_LEN + eff_tracks * frames * NOC0_TRANSFORM_STRIDE;
+        if trailer_start + trailer_bytes > self.bytes.len() {
+            return Err(format!(
+                "NOC0 clip '{}' truncated in trailer (need {} bytes at {}, file has {})",
+                self.info.name,
+                trailer_bytes,
+                trailer_start,
+                self.bytes.len()
+            ));
+        }
+        Ok((0..eff_tracks)
+            .map(|i| {
+                let o = trailer_start + i * 4;
+                u32::from_be_bytes([
+                    self.bytes[o],
+                    self.bytes[o + 1],
+                    self.bytes[o + 2],
+                    self.bytes[o + 3],
+                ])
+            })
+            .collect())
+    }
+
+    /// Track count and frame count for a NOC0 clip. Convenient for a caller that wants
+    /// to iterate every track over a specific time window without re-deriving the shape.
+    pub fn noc0_shape(&self) -> Result<(usize, usize), String> {
+        let (t, f, _) = noc0_shape(&self.header)?;
+        Ok((t, f))
+    }
 }
 
 /// The complete 2008 animation catalog for a given Bin360 root.
@@ -642,5 +951,278 @@ mod tests {
             "pack scan found {} records; header says {declared}",
             hits.len()
         );
+    }
+
+    // ── per-frame sampling tests ──────────────────────────────────────────────────────────
+
+    /// Every NOC0 clip in the loose corpus must obey the layout in the module doc:
+    /// `24 + aux*48 + eff_tracks*4 == file_len` (transforms first, per-track descriptor
+    /// trailer at end). If this drifts, the sampler is reading past the transform array's
+    /// real end.
+    #[test]
+    fn noc0_shape_matches_file_size_on_corpus() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let dir = root.join("animations");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!("skip: no animations/ dir");
+            return;
+        };
+        let mut checked = 0usize;
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("hkx")).unwrap_or(false) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&p) else { continue };
+            if bytes.len() < Anim2008Header::FIXED_HEADER_LEN || &bytes[..8] != b"ANM0NOC0" {
+                continue;
+            }
+            let Ok(h) = Anim2008Header::parse(&bytes) else { continue };
+            let (eff_tracks, frames, trailer) = match noc0_shape(&h) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let expected = Anim2008Header::FIXED_HEADER_LEN
+                + eff_tracks * frames * NOC0_TRANSFORM_STRIDE
+                + trailer;
+            assert_eq!(
+                bytes.len(),
+                expected,
+                "NOC0 layout mismatch on {}: file={}, computed={} (eff_tracks={}, frames={})",
+                p.display(),
+                bytes.len(),
+                expected,
+                eff_tracks,
+                frames
+            );
+            checked += 1;
+            if checked >= 400 {
+                break;
+            }
+        }
+        assert!(checked > 20, "expected to check many NOC0 files, got {checked}");
+    }
+
+    /// Sample a static-pose NOC0 clip (aurora — 1 frame, 52 tracks) at t=0, t=middle,
+    /// t=end. Every returned transform must be finite, a unit quaternion (within 1e-4),
+    /// and non-negative scales — the "sensible bounds" check the task calls for.
+    #[test]
+    fn sample_noc0_static_pose_within_bounds() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        let hash = pandemic_hash("aurora_dead_idle_drvr");
+        let clip = match cat.load_clip(hash) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        assert_eq!(clip.header.codec, ClipCodec::None);
+        let (eff_tracks, frames) = clip.noc0_shape().expect("shape");
+        assert_eq!(frames, 1, "aurora dead-idle is a static pose");
+        assert!(eff_tracks > 0);
+        // 0, middle, end all resolve to frame 0 for a static pose — still exercise the
+        // clamp path and the interior lerp path in one sweep.
+        for &t in &[0.0f32, 0.5 * clip.header.duration_s, clip.header.duration_s] {
+            for track in 0..eff_tracks as u32 {
+                let s = clip.sample_track(track, t).expect("sample ok");
+                for c in s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()) {
+                    assert!(c.is_finite(), "non-finite output for track {track} at t={t}: {s:?}");
+                }
+                let m = (s.rot[0] * s.rot[0] + s.rot[1] * s.rot[1] + s.rot[2] * s.rot[2] + s.rot[3] * s.rot[3]).sqrt();
+                assert!((m - 1.0).abs() < 1e-4, "non-unit quat |q|={m} for track {track}: {s:?}");
+                // Scale can be very small in a static pose but never negative in this
+                // corpus. Guard against a NaN-produced tiny-negative on the interp path.
+                for (i, &c) in s.scale.iter().enumerate() {
+                    assert!(c >= -1e-4, "negative scale.{i}={c} on track {track}");
+                }
+            }
+        }
+    }
+
+    /// Sample a multi-frame NOC0 clip at t=0, t=middle, t=end. Same "sensible bounds"
+    /// invariants; also asserts that AT LEAST one track's translation differs between t=0
+    /// and t=middle (otherwise the frame-major access is silently reading the same slot
+    /// twice — a common bug when frames_per_track drifts).
+    #[test]
+    fn sample_noc0_multi_frame_within_bounds_and_animates() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        // Find a multi-frame NOC0 clip that ACTUALLY changes between frames — some
+        // shipped NOC0 files are static-pose duplicated across N frames (back_prone_pose
+        // repeats the exact same 36 transforms in each of its 5 frames). We need one with
+        // per-frame motion to prove the frame-major access is doing real work. Prefer
+        // Bugatti_* which carry 6-frame driving cycles with per-wheel motion.
+        let candidates = [
+            "Bugatti_drive_turn_left",
+            "KD_head_front",
+            "Rope_horiz_down_long_start",
+            "MG42_fire_pose",
+            "back_prone_pose",
+        ];
+        let mut opened: Option<Clip2008> = None;
+        for name in &candidates {
+            if let Ok(c) = cat.load_clip(pandemic_hash(name)) {
+                if matches!(c.header.codec, ClipCodec::None) {
+                    if let Ok((_, f)) = c.noc0_shape() {
+                        if f > 1 {
+                            opened = Some(c);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let Some(clip) = opened else {
+            eprintln!("skip: no known multi-frame NOC0 clip available");
+            return;
+        };
+        let (eff_tracks, frames) = clip.noc0_shape().expect("shape");
+        assert!(frames > 1);
+        let dur = clip.header.duration_s;
+        let times = [0.0f32, 0.5 * dur, dur];
+        // Bounds check across every track at every sampled time.
+        for &t in &times {
+            for track in 0..eff_tracks as u32 {
+                let s = clip.sample_track(track, t).expect("sample ok");
+                for c in s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()) {
+                    assert!(c.is_finite());
+                }
+                let m = (s.rot[0] * s.rot[0] + s.rot[1] * s.rot[1] + s.rot[2] * s.rot[2] + s.rot[3] * s.rot[3]).sqrt();
+                assert!((m - 1.0).abs() < 1e-4, "non-unit quat |q|={m}");
+            }
+        }
+        // Something MUST move over the clip — otherwise the sampler is reading a static
+        // slot regardless of `time_s`. Some multi-frame clips ARE near-static on most
+        // tracks, so we check every track for any change and require at least one hit.
+        let mut moved = false;
+        let s0 = (0..eff_tracks as u32).map(|t| clip.sample_track(t, 0.0).unwrap()).collect::<Vec<_>>();
+        let sm = (0..eff_tracks as u32).map(|t| clip.sample_track(t, 0.5 * dur).unwrap()).collect::<Vec<_>>();
+        for (a, b) in s0.iter().zip(sm.iter()) {
+            let dp = ((a.pos[0] - b.pos[0]).powi(2) + (a.pos[1] - b.pos[1]).powi(2) + (a.pos[2] - b.pos[2]).powi(2)).sqrt();
+            let dq = ((a.rot[0] - b.rot[0]).powi(2) + (a.rot[1] - b.rot[1]).powi(2) + (a.rot[2] - b.rot[2]).powi(2) + (a.rot[3] - b.rot[3]).powi(2)).sqrt();
+            if dp > 1e-5 || dq > 1e-5 {
+                moved = true;
+                break;
+            }
+        }
+        assert!(moved, "no track changed between t=0 and t=middle — sampler stuck?");
+    }
+
+    /// Round-trip stability: sampling the same (track, time) twice must return the same
+    /// bits. Any drift here means we introduced hidden state (a cache write, a rand hop)
+    /// somewhere in the interp path.
+    #[test]
+    fn sample_noc0_is_deterministic() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        let Ok(clip) = cat.load_clip(pandemic_hash("back_prone_pose")) else {
+            eprintln!("skip: back_prone_pose not present");
+            return;
+        };
+        let (eff_tracks, _) = clip.noc0_shape().expect("shape");
+        let mid = 0.5 * clip.header.duration_s;
+        for track in 0..eff_tracks as u32 {
+            let a = clip.sample_track(track, mid).unwrap();
+            let b = clip.sample_track(track, mid).unwrap();
+            assert_eq!(a, b, "non-deterministic sample for track {track}");
+        }
+    }
+
+    /// WAV0 and DEL0 must return `Err` (not panic, not silently identity). The exact
+    /// wording is a diagnostic — the test only checks that the branch was taken and the
+    /// error mentions the codec.
+    #[test]
+    fn sample_wavelet_and_delta_return_err() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+
+        // WAV0 — Bearcrawl_Walk_F_LF is a small verified WAV0 clip in the corpus.
+        if let Ok(clip) = cat.load_clip(pandemic_hash("Bearcrawl_Walk_F_LF")) {
+            assert_eq!(clip.header.codec, ClipCodec::Wavelet);
+            let e = clip.sample_track(0, 0.0).expect_err("WAV0 must not silently succeed");
+            assert!(
+                e.contains("ANM0WAV0") || e.contains("wavelet"),
+                "diagnostic missing wavelet tag: {e}"
+            );
+        }
+        // DEL0 — cine_A1M1_S1_Dierker is the smallest DEL0 the corpus name-hashes to.
+        if let Ok(clip) = cat.load_clip(pandemic_hash("cine_A1M1_S1_Dierker")) {
+            assert_eq!(clip.header.codec, ClipCodec::Delta);
+            let e = clip.sample_track(0, 0.0).expect_err("DEL0 must not silently succeed");
+            assert!(
+                e.contains("ANM0DEL0") || e.contains("delta"),
+                "diagnostic missing delta tag: {e}"
+            );
+        }
+    }
+
+    /// `noc0_shape` must accept a plausible synthesized header and reject an
+    /// inconsistent one (aux not divisible by effective tracks) — a cheap always-on
+    /// check that doesn't need a real install.
+    #[test]
+    fn noc0_shape_accepts_valid_and_rejects_ragged() {
+        let ok = Anim2008Header {
+            codec: ClipCodec::None,
+            duration_s: 0.5,
+            num_tracks: 10,
+            aux_count: 50,
+            stride16: 0,
+        };
+        let (t, f, trailer) = noc0_shape(&ok).expect("valid header");
+        assert_eq!((t, f, trailer), (10, 5, 40));
+
+        // Static-pose branch: ntt=0 folds the count into aux.
+        let stat = Anim2008Header {
+            codec: ClipCodec::None,
+            duration_s: 0.0,
+            num_tracks: 0,
+            aux_count: 52,
+            stride16: 0,
+        };
+        let (t, f, trailer) = noc0_shape(&stat).expect("static-pose header");
+        assert_eq!((t, f, trailer), (52, 1, 208));
+
+        // Ragged: aux=17 tracks=4 doesn't divide.
+        let bad = Anim2008Header {
+            codec: ClipCodec::None,
+            duration_s: 0.5,
+            num_tracks: 4,
+            aux_count: 17,
+            stride16: 0,
+        };
+        assert!(noc0_shape(&bad).is_err());
+    }
+
+    /// `noc0_read_transform` on a synthetic 48-byte buffer must recover a known TRS and
+    /// produce a unit quaternion. Guards against a re-write of the BE parse or the layout
+    /// offsets drifting silently.
+    #[test]
+    fn noc0_read_transform_round_trips_a_known_trs() {
+        let pos = [1.0f32, -2.0, 3.5];
+        let rot_raw = [0.0f32, 0.7071068, 0.0, 0.7071068]; // 90° about +Y, already unit
+        let scale = [1.0f32, 1.0, 1.0];
+        // Layout: 3T + 4R + 3S + 2pad, big-endian.
+        let mut buf = Vec::with_capacity(48);
+        for &f in pos.iter() {
+            buf.extend_from_slice(&f.to_be_bytes());
+        }
+        for &f in rot_raw.iter() {
+            buf.extend_from_slice(&f.to_be_bytes());
+        }
+        for &f in scale.iter() {
+            buf.extend_from_slice(&f.to_be_bytes());
+        }
+        buf.extend_from_slice(&0.0f32.to_be_bytes());
+        buf.extend_from_slice(&0.0f32.to_be_bytes());
+        let s = noc0_read_transform(&buf, 0).expect("read ok");
+        assert_eq!(s.pos, pos);
+        assert!((s.rot[0] - rot_raw[0]).abs() < 1e-6);
+        assert!((s.rot[1] - rot_raw[1]).abs() < 1e-6);
+        assert!((s.rot[3] - rot_raw[3]).abs() < 1e-6);
+        let m = (s.rot[0] * s.rot[0] + s.rot[1] * s.rot[1] + s.rot[2] * s.rot[2] + s.rot[3] * s.rot[3]).sqrt();
+        assert!((m - 1.0).abs() < 1e-6);
+        assert_eq!(s.scale, scale);
     }
 }

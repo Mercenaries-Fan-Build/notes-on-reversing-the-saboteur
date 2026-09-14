@@ -118,6 +118,49 @@
 //!   Xbox 360 decomp at `output/_ghidra_saboteur_xex/...` @ line 427900 confirms the same
 //!   count and order of 4-byte reads.
 //! * `docs/2008_msh4_format.md` — the format writeup, kept in sync with this module.
+//!
+//! ## Trailing skeleton block
+//!
+//! Everything after the last stream's prim table is the mesh's rig. Byte-fingerprinted on
+//! Sean HD (104 bones, 33 remaps), NZ officer HD (70 / 5), FBP_Debug_UB (70 / 38), and
+//! Alfa Romera (43 / 0):
+//!
+//! ```text
+//! + 0                u24 BE num_bones          (3 bytes; NO trailing pad — a 0 pad would put
+//!                                                the first name-hash byte one lane too far
+//!                                                and mis-decode the whole tree)
+//! + 3                num_bones × 77-byte bone entry:
+//!                      + 0  u32 BE  name_hash            (pandemic_hash of the bone name)
+//!                      + 4  i32 BE  parent_index         (-1 = root, else index into bones[])
+//!                      + 8  f32 BE  translation.xyz       (3 × 4 = 12)
+//!                      +20  f32 BE  rotation.xyzw         (quat; 4 × 4 = 16)
+//!                      +36  f32 BE  scale.xyz             (3 × 4 = 12)
+//!                      +48  f32 BE  aabb.min.xyz          (PclAABB.min PblVector3; 12)
+//!                      +60  f32 BE  aabb.max.xyzw         (PclAABB.max PblVector4; 16)
+//!                      +76  u8      flag                  (PclBone::Setup's uchar param)
+//! + 3 + N·77         u32 BE num_bone_remaps     (per-skinned-bone inverse bind matrices)
+//! + …                num_bone_remaps × 68-byte remap:
+//!                      + 0  u32 BE  bone_index            (index into bones[]; retail keys
+//!                                                          the same array by hash, 2008 by
+//!                                                          index — verified by observing
+//!                                                          Sean's remap 0's first u32 = 15)
+//!                      + 4  f32 BE  ibm (16 floats)        (4 × PblVector4 = 64; row-major)
+//! + END - 28         f32 BE mesh_bbox.min.xyz  (12) + max.xyzw (16) — the WSModel bounds
+//! ```
+//!
+//! Ground truth: WildStar_d `ReadMesh` @ lines 524507–524660 for the skeleton loop and 524600–
+//! 524659 for the bone-remap loop. Cross-checked against `PclAABB::PclAABB` (@ line 393792,
+//! 28-byte class = PblVector3 min + PblVector4 max) and `?Setup@PclBone` in
+//! `output/pdb_dumps/wildstar_d_pdb_combined.txt`.
+//!
+//! ## num_bones encoding — u24 without pad byte
+//!
+//! Every other u32-shaped field in MSH4 is "u24 in top 3 bytes, 0 pad byte in the low byte"
+//! (see the file-header note above). num_bones is the ONE place that departs from that: it's
+//! stored as 3 tight bytes with no pad, and the next field (bone 0's name_hash) begins at
+//! offset 3, not 4. This is the arithmetic that pins it — every sampled mesh's trail_len
+//! matches `3 + num_bones·77 + 4 + num_remaps·68 + 28` to the byte. Under the "u24+pad"
+//! rule the total would be off by 1 and no combination of counts would ever balance.
 
 use std::io::Read;
 
@@ -162,6 +205,72 @@ pub struct Msh4Body {
     /// What the parser observed — per-stream metadata + payload byte-range, kept structured
     /// for the UI.
     pub diagnostics: Msh4Diagnostics,
+
+    /// The rig that lives in the trailing region of every MSH4 record, or `None` when the
+    /// mesh ships no skeleton (or the trailing region doesn't decode). See `Msh4Skeleton`
+    /// for the shape and the module doc for the byte layout.
+    pub skeleton: Option<Msh4Skeleton>,
+}
+
+/// One bone in the mesh's skeleton — matches the 77-byte on-disk entry with cooked f32/i32.
+/// `parent` is an INDEX into the bones list (`-1` for the root), unlike retail's parent-hash
+/// convention — the 2008 build stores an int, not a `PblCRC`, per WildStar_d
+/// `PclSkeleton::CreateBone(int index, int parent, ...)`.
+#[derive(Debug, Clone)]
+pub struct Msh4Bone {
+    /// `pandemic_hash(name)` — the same key the animation system uses for its bone tracks.
+    pub name_hash: u32,
+    /// Parent bone index, or `-1` for the root. Every non-root bone's parent lands in
+    /// `0..bones.len()`.
+    pub parent: i32,
+    /// Local-space translation relative to the parent, in metres.
+    pub translation: [f32; 3],
+    /// Local-space rotation as a unit quaternion `(x, y, z, w)`. Root bones ship the
+    /// identity `(0, 0, 0, 1)`.
+    pub rotation: [f32; 4],
+    /// Local-space scale relative to the parent. Typical value is `(1, 1, 1)`.
+    pub scale: [f32; 3],
+    /// The `PclAABB::min` half — a `PblVector3`, in model space.
+    pub aabb_min: [f32; 3],
+    /// The `PclAABB::max` half — a `PblVector4`; `w` is not documented (radius, or padding
+    /// the engine writes but nobody reads). Kept as-is for byte-round-trip.
+    pub aabb_max: [f32; 4],
+    /// The `unsigned char` `PclBone::Setup` takes as its 5th arg. Meaning unknown; retained
+    /// verbatim so a future writer can round-trip it.
+    pub flag: u8,
+}
+
+/// One inverse-bind matrix, keyed by bone INDEX (not hash — the 2008 build stores the u32
+/// index into the bones list, unlike retail which keys by hash). Only bones the mesh
+/// actually SKINS ship a remap; the rest are chain-derived from the bones' local
+/// transforms.
+#[derive(Debug, Clone)]
+pub struct Msh4BoneRemap {
+    /// Index of the bone this ibm binds to — `bones[bone_index]`. Every observed value on
+    /// Sean HD / NZ officer / FBP_Debug_UB is small (≤ num_bones), matching the retail
+    /// `BoneRemaps.bone_id` shape.
+    pub bone_index: u32,
+    /// 16 floats — a 4×4 matrix stored as 4 consecutive `PblVector4` rows on disk. The engine
+    /// treats it as an inverse bind matrix (`matrix = inverse(world_bind)`); the workshop's
+    /// glue is free to transpose or invert as its own convention requires.
+    pub matrix: [f32; 16],
+}
+
+/// The complete rig for one MSH4 record — bones + per-skinned-bone inverse-bind matrices +
+/// the mesh's own bounding volume (a `PblVector3` position and a `PblVector4` extent, per
+/// WildStar_d `WSModel` field layout at offsets 0x20 / 0x2c).
+#[derive(Debug, Clone)]
+pub struct Msh4Skeleton {
+    /// Bones in file order. The root's `parent == -1`; all other parents are valid indices.
+    pub bones: Vec<Msh4Bone>,
+    /// One entry per skinned bone. Empty for meshes the engine doesn't skin (vehicles,
+    /// static props). Not indexed by bone position — join with `Msh4Bone::name_hash`.
+    pub remaps: Vec<Msh4BoneRemap>,
+    /// The `WSModel` position `PblVector3` at 0x20 — probably a bind-pose pivot, kept as-is.
+    pub model_pos: [f32; 3],
+    /// The `WSModel` `PblVector4` at 0x2c. Semantics undocumented (bounding sphere +
+    /// radius? extent?), preserved verbatim.
+    pub model_sphere: [f32; 4],
 }
 
 /// What the parser learned about the payload. Per-stream metadata is captured for the UI so
@@ -173,6 +282,9 @@ pub struct Msh4Diagnostics {
     /// Per-stream (format_tag, nverts, nidx, stride, nprims). Written in file order; a stream
     /// that fails mid-decode is still recorded so the UI knows how far the walk got.
     pub streams: Vec<Msh4StreamInfo>,
+    /// Byte offset within the payload one past the last stream's prim table. Everything from
+    /// here to `payload_len` is trailing content (occluders / shadows / skeleton / …).
+    pub trailing_start: usize,
 }
 
 /// One row of the per-stream table shown in the UI. Six fields, matches the on-disk stream
@@ -498,6 +610,157 @@ fn parse_stream(payload: &[u8], off: usize) -> Result<(DecodedStream, usize), St
     ))
 }
 
+/// Byte size of a single on-disk bone entry (see the module doc for the field breakdown).
+const BONE_ENTRY_SIZE: usize = 77;
+/// Byte size of a single bone-remap entry (`u32 bone_hash + 16 × f32 matrix`).
+const BONE_REMAP_SIZE: usize = 68;
+/// Byte size of the trailing model-bounds block (`PblVector3` + `PblVector4`).
+const MODEL_BOUNDS_SIZE: usize = 28;
+
+/// Read a big-endian `f32` from `bytes[off..off+4]`. Xbox 360 is BE for scalars outside the
+/// GPU-facing vertex buffers.
+fn rd_f32_be(bytes: &[u8], off: usize) -> f32 {
+    f32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+fn rd_u32_be(bytes: &[u8], off: usize) -> u32 {
+    u32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+fn rd_i32_be(bytes: &[u8], off: usize) -> i32 {
+    i32::from_be_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+fn rd_vec3_be(bytes: &[u8], off: usize) -> [f32; 3] {
+    [rd_f32_be(bytes, off), rd_f32_be(bytes, off + 4), rd_f32_be(bytes, off + 8)]
+}
+fn rd_vec4_be(bytes: &[u8], off: usize) -> [f32; 4] {
+    [
+        rd_f32_be(bytes, off),
+        rd_f32_be(bytes, off + 4),
+        rd_f32_be(bytes, off + 8),
+        rd_f32_be(bytes, off + 12),
+    ]
+}
+
+/// Parse the trailing skeleton region of an MSH4 payload. `trail` is the payload slice from
+/// the byte one past the last stream's prim table to the byte before the `MSHC` footer.
+///
+/// Returns `Ok(None)` for meshes with no meaningful rig — an empty trail, a bone count that
+/// wouldn't fit the trail length, or (equivalently) trailing bytes that don't add up under
+/// the fixed layout. Returns `Err` only when a well-shaped trail decodes to something
+/// obviously wrong (parent index out of range, quaternion far from unit-length). The bar for
+/// `Err` is deliberately narrow: everything renders as "no rig" rather than blocking a mesh
+/// from decoding at all.
+pub fn parse_skeleton(trail: &[u8]) -> Result<Option<Msh4Skeleton>, String> {
+    // A skeleton needs at minimum: 3-byte count + 4-byte remap-count + 28-byte bounds = 35 B.
+    // Anything smaller can't hold even an empty rig.
+    if trail.len() < 3 + 4 + MODEL_BOUNDS_SIZE {
+        return Ok(None);
+    }
+
+    // num_bones is a BE u24 stored in exactly 3 bytes — no trailing pad byte, unlike every
+    // other u32 slot in MSH4 (see the module doc). The next field starts at offset 3.
+    let num_bones = u32::from_be_bytes([0, trail[0], trail[1], trail[2]]) as usize;
+
+    // The whole trail must fit `head + bones + remap_count + remaps + bounds`. If it
+    // doesn't, we're either at the CLOT-marker case (WildStar_d ReadMesh @0x82658168 line
+    // 524508) or the mesh writer emitted something we don't yet understand — either way,
+    // give the caller back `None` rather than smearing garbage across the bone list.
+    let bones_end = 3usize.saturating_add(num_bones.saturating_mul(BONE_ENTRY_SIZE));
+    if bones_end + 4 + MODEL_BOUNDS_SIZE > trail.len() {
+        return Ok(None);
+    }
+    let num_remaps = rd_u32_be(trail, bones_end) as usize;
+    let remaps_end =
+        (bones_end + 4).saturating_add(num_remaps.saturating_mul(BONE_REMAP_SIZE));
+    if remaps_end + MODEL_BOUNDS_SIZE != trail.len() {
+        // Under the fixed layout every mesh's trail_len is `3 + N·77 + 4 + M·68 + 28` to
+        // the byte. If it isn't, the u24 we read wasn't a bone count — punt.
+        return Ok(None);
+    }
+
+    // ── bones ────────────────────────────────────────────────────────────────────────────
+    let mut bones = Vec::with_capacity(num_bones);
+    for i in 0..num_bones {
+        let bo = 3 + i * BONE_ENTRY_SIZE;
+        let name_hash = rd_u32_be(trail, bo);
+        let parent = rd_i32_be(trail, bo + 4);
+        // The root's parent is written as -1; all other parents are indices into `bones`.
+        // A parent that lies outside `[0, i)` would either mean we're mid-decode of the
+        // wrong layout, or the writer produced a forward reference — reject rather than
+        // silently accept a broken hierarchy.
+        if parent != -1 && !(0..(num_bones as i32)).contains(&parent) {
+            return Err(format!(
+                "MSH4 skeleton: bone {i} has out-of-range parent {parent} (num_bones={num_bones})"
+            ));
+        }
+        let translation = rd_vec3_be(trail, bo + 8);
+        let rotation = rd_vec4_be(trail, bo + 20);
+        let scale = rd_vec3_be(trail, bo + 36);
+        let aabb_min = rd_vec3_be(trail, bo + 48);
+        let aabb_max = rd_vec4_be(trail, bo + 60);
+        let flag = trail[bo + 76];
+        // A unit-quaternion sanity check catches "we're reading the wrong bytes" without
+        // rejecting numerical drift from the exporter. The observed root ships an EXACT
+        // identity (0,0,0,1); other bones vary by ±1e-6 from unit magnitude.
+        let qmag2 = rotation[0] * rotation[0]
+            + rotation[1] * rotation[1]
+            + rotation[2] * rotation[2]
+            + rotation[3] * rotation[3];
+        if !qmag2.is_finite() || !(0.5..2.0).contains(&qmag2) {
+            return Err(format!(
+                "MSH4 skeleton: bone {i} rotation magnitude^2 = {qmag2} is far from 1.0 \
+                 (rotation={:?})",
+                rotation
+            ));
+        }
+        bones.push(Msh4Bone {
+            name_hash,
+            parent,
+            translation,
+            rotation,
+            scale,
+            aabb_min,
+            aabb_max,
+            flag,
+        });
+    }
+
+    // ── bone remaps ──────────────────────────────────────────────────────────────────────
+    let mut remaps = Vec::with_capacity(num_remaps);
+    for i in 0..num_remaps {
+        let ro = bones_end + 4 + i * BONE_REMAP_SIZE;
+        let bone_index = rd_u32_be(trail, ro);
+        if (bone_index as usize) >= num_bones {
+            return Err(format!(
+                "MSH4 skeleton: bone_remap {i} names bone_index {bone_index} but skeleton \
+                 has only {num_bones} bones"
+            ));
+        }
+        let mut matrix = [0f32; 16];
+        for k in 0..16 {
+            matrix[k] = rd_f32_be(trail, ro + 4 + k * 4);
+        }
+        remaps.push(Msh4BoneRemap { bone_index, matrix });
+    }
+
+    // ── mesh model bounds (last 28 bytes) ────────────────────────────────────────────────
+    let bo = remaps_end;
+    let model_pos = rd_vec3_be(trail, bo);
+    let model_sphere = rd_vec4_be(trail, bo + 12);
+
+    Ok(Some(Msh4Skeleton { bones, remaps, model_pos, model_sphere }))
+}
+
+impl Msh4Body {
+    /// Return the raw bytes of the trailing skeleton region for the caller who wants to
+    /// re-parse it themselves (or round-trip it verbatim). This is the same slice
+    /// `parse_skeleton` walks and always sums to
+    /// `3 + N·77 + 4 + M·68 + 28` bytes when the rig decodes cleanly.
+    pub fn trailing_bytes<'a>(&self, raw: &'a [u8]) -> &'a [u8] {
+        let payload = &raw[self.payload_range.clone()];
+        &payload[self.diagnostics.trailing_start..]
+    }
+}
+
 /// Parse one MSH4 body — the inflated bytes from a `.meshes` slot's zlib stream.
 ///
 /// Errors on:
@@ -668,7 +931,18 @@ pub fn parse_msh4(bytes: &[u8]) -> Result<Msh4Body, String> {
         }
     }
 
-    let diagnostics = Msh4Diagnostics { payload_len: payload.len(), streams: diag_streams };
+    let diagnostics = Msh4Diagnostics {
+        payload_len: payload.len(),
+        streams: diag_streams,
+        trailing_start: off,
+    };
+
+    // ── trailing skeleton block ──────────────────────────────────────────────────────────
+    // Bytes from `off` (one past the last stream's prim table) to the end of the payload.
+    // A mesh with no skeleton returns `Ok(None)`; a malformed one returns `Err`. Bubble the
+    // error up so the UI sees it rather than pretending the mesh had no rig.
+    let trail = if off <= payload.len() { &payload[off..] } else { &payload[payload.len()..] };
+    let skeleton = parse_skeleton(trail).map_err(|e| format!("MSH4 '{name}': {e}"))?;
 
     Ok(Msh4Body {
         name,
@@ -682,6 +956,7 @@ pub fn parse_msh4(bytes: &[u8]) -> Result<Msh4Body, String> {
         indices,
         prims,
         diagnostics,
+        skeleton,
     })
 }
 
@@ -801,6 +1076,8 @@ mod tests {
         assert!(m.positions.is_empty());
         assert!(m.indices.is_empty());
         assert!(m.prims.is_empty());
+        // Synthetic body has no trailing skeleton region (0 bytes past the empty stream).
+        assert!(m.skeleton.is_none(), "synthetic body must yield no skeleton");
     }
 
     /// Every "obviously wrong" input must return `Err`, never panic. Each subcase names
@@ -1281,6 +1558,435 @@ mod tests {
         let raw = inflate_first_msh4_stream(&slot).expect("inflate MSH4");
         let truncated = &raw[..raw.len() - 32];
         assert!(parse_msh4(truncated).is_err(), "truncated body must Err, not panic");
+    }
+
+    /// Pandemic FNV-1a hash — copied verbatim from `tools/sab_skeleton`. The 2008 build
+    /// keys bones by the same `pandemic_hash(name)` as retail, so we can hash a known
+    /// bone name and check it appears in the parsed rig.
+    fn pandemic_hash(s: &str) -> u32 {
+        let mut h: u32 = 0x811C_9DC5;
+        for c in s.bytes() {
+            h = (h ^ ((c | 0x20) as u32)).wrapping_mul(0x0100_0193);
+        }
+        (h ^ 0x2A).wrapping_mul(0x0100_0193)
+    }
+
+    /// Sean's HD part must yield a bone table with >30 bones, exactly one root, every
+    /// non-root parent pointing to a valid earlier bone, and unit-length quaternions —
+    /// the acceptance test for "we can pose the 2008 character".
+    #[test]
+    fn parses_skeleton_from_sean_hd() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let handle = src
+            .list_meshes()
+            .into_iter()
+            .find(|h| h.name == "BP_AL_Sean_HD")
+            .expect("BP_AL_Sean_HD present");
+        let slot = src.read_mesh_bytes(&handle).expect("read slot");
+        let raw = inflate_first_msh4_stream(&slot).expect("inflate MSH4");
+        let body = parse_msh4(&raw).expect("parse MSH4");
+        let skel = body.skeleton.as_ref().expect("Sean HD must ship a skeleton");
+        assert!(
+            skel.bones.len() > 30,
+            "expected a rigged character mesh — got {} bones",
+            skel.bones.len()
+        );
+        // Exactly one root (parent == -1), and every other parent lies inside the bones.
+        let root_count = skel.bones.iter().filter(|b| b.parent == -1).count();
+        assert_eq!(root_count, 1, "expected exactly one root bone, got {root_count}");
+        for (i, b) in skel.bones.iter().enumerate() {
+            if b.parent == -1 {
+                continue;
+            }
+            assert!(
+                (0..(skel.bones.len() as i32)).contains(&b.parent),
+                "bone {i}: parent {} out of range 0..{}",
+                b.parent,
+                skel.bones.len()
+            );
+        }
+        // Root's known hash. WildStar's canonical root is `GlobalSRT` (0xCBC1EB51).
+        assert!(
+            skel.bones.iter().any(|b| b.name_hash == pandemic_hash("GlobalSRT")),
+            "expected GlobalSRT (0x{:08X}) in the bone list",
+            pandemic_hash("GlobalSRT")
+        );
+        // Every quaternion is (near) unit length. Retail's tolerance is ~1e-6; the
+        // 2008-build data has floats packed once so we allow 1e-3.
+        for (i, b) in skel.bones.iter().enumerate() {
+            let m2 = b.rotation[0] * b.rotation[0]
+                + b.rotation[1] * b.rotation[1]
+                + b.rotation[2] * b.rotation[2]
+                + b.rotation[3] * b.rotation[3];
+            assert!(
+                (m2 - 1.0).abs() < 1e-3,
+                "bone {i} ({:#010X}) rotation not unit-length: {:?} (|q|^2 = {})",
+                b.name_hash,
+                b.rotation,
+                m2
+            );
+        }
+        // Sean's HD mesh skins a subset of bones — remaps must be non-empty and every
+        // bone_index must fall inside the bones list.
+        assert!(!skel.remaps.is_empty(), "Sean HD must ship at least one bone remap");
+        for r in &skel.remaps {
+            assert!(
+                (r.bone_index as usize) < skel.bones.len(),
+                "remap references out-of-range bone_index {} (num_bones={})",
+                r.bone_index,
+                skel.bones.len()
+            );
+        }
+        eprintln!(
+            "  Sean HD: {} bones, {} skinned bones, root idx {}",
+            skel.bones.len(),
+            skel.remaps.len(),
+            skel.bones.iter().position(|b| b.parent == -1).unwrap()
+        );
+    }
+
+    /// Same-shape validation on a different character part — pins that the parser handles
+    /// the smaller-rig case, not just Sean's shape.
+    #[test]
+    fn parses_skeleton_from_nz_officer_hd() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let Some(handle) =
+            src.list_meshes().into_iter().find(|h| h.name == "BP_NZ_TerSqdSldOfc_HD")
+        else {
+            eprintln!("skip: BP_NZ_TerSqdSldOfc_HD not in packlog");
+            return;
+        };
+        let slot = src.read_mesh_bytes(&handle).expect("read slot");
+        let raw = inflate_first_msh4_stream(&slot).expect("inflate MSH4");
+        let body = parse_msh4(&raw).expect("parse MSH4");
+        let skel = body.skeleton.as_ref().expect("NZ officer must ship a skeleton");
+        assert!(skel.bones.len() > 30, "expected >30 bones, got {}", skel.bones.len());
+        // Same invariants as Sean's.
+        let root_count = skel.bones.iter().filter(|b| b.parent == -1).count();
+        assert_eq!(root_count, 1);
+        assert!(
+            skel.bones.iter().any(|b| b.name_hash == pandemic_hash("GlobalSRT")),
+            "expected GlobalSRT root"
+        );
+        for b in &skel.bones {
+            if b.parent != -1 {
+                assert!((b.parent as usize) < skel.bones.len());
+            }
+            let m2 = b.rotation.iter().map(|x| x * x).sum::<f32>();
+            assert!((m2 - 1.0).abs() < 1e-3);
+        }
+    }
+
+    /// A prototype mesh whose trailing region genuinely doesn't decode as a skeleton must
+    /// yield `Ok(None)` rather than `Err`. Uses a synthetic body: no bones, all bytes
+    /// past the file header laid out as a "no-skeleton" 4-byte remap count of 0 + a
+    /// 28-byte model bounds block. Also probes the "trail too short" path.
+    #[test]
+    fn handles_empty_or_absent_skeleton() {
+        // A synthetic MSH4 body with an empty stream and a trailing region whose length is
+        // too small to even hold a skeleton header — expect `body.skeleton == None`.
+        let mut b = Vec::new();
+        b.extend_from_slice(MSH4_MAGIC);
+        b.extend_from_slice(&3u32.to_be_bytes());
+        b.extend_from_slice(b"AB\0");
+        b.push(0);
+        fn wr(dst: &mut Vec<u8>, value: u32) {
+            let v = value & 0x00FF_FFFF;
+            dst.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8, 0]);
+        }
+        wr(&mut b, 1); // num_streams
+        wr(&mut b, 0);
+        wr(&mut b, 0);
+        wr(&mut b, 0);
+        wr(&mut b, 1); // version
+        wr(&mut b, 0x1106); // fmt
+        wr(&mut b, 0); // nidx
+        wr(&mut b, 0); // nverts
+        wr(&mut b, 0); // fmt_ext
+        wr(&mut b, 24); // stride
+        wr(&mut b, 0); // nprims
+        b.extend_from_slice(MSHC_FOOTER_MAGIC);
+        b.extend_from_slice(&0xDEADBEEFu32.to_be_bytes());
+        let body = parse_msh4(&b).expect("parse synthetic MSH4");
+        assert!(
+            body.skeleton.is_none(),
+            "synthetic body with an empty trailing region must yield no skeleton"
+        );
+
+        // parse_skeleton called directly on a too-short slice must also give None.
+        assert!(parse_skeleton(&[]).unwrap().is_none());
+        assert!(parse_skeleton(&[0u8; 3]).unwrap().is_none());
+        assert!(parse_skeleton(&[0u8; 34]).unwrap().is_none()); // one short of the minimum
+
+        // A trail with a plausible byte-count that doesn't add up under the fixed layout
+        // (i.e., trail_len != 3 + N·77 + 4 + M·68 + 28 for any N, M): expect None, not Err.
+        //   n=1 bone would consume 3+77+4+28 = 112 minimum; give it 113 bytes → mismatch.
+        let mut junk = vec![0u8; 113];
+        junk[2] = 1; // BE u24 num_bones = 1
+        assert!(parse_skeleton(&junk).unwrap().is_none());
+    }
+
+    /// Byte-perfect round-trip: re-emit the skeleton's fields at the exact same offsets
+    /// with big-endian encoding, and check the reconstructed buffer equals the source
+    /// trailing region byte-for-byte. This proves the parse is complete (all bytes
+    /// consumed and every field's semantics correctly identified — a wrong endian or a
+    /// missing pad byte would flunk here even if `skeleton_size_matches_trailing_bytes_exactly`
+    /// passed).
+    #[test]
+    fn skeleton_round_trips_bytewise_on_real_mesh() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        // Cover a rigged character and a bone-remap-less vehicle, plus the small debug prop:
+        // three different flavours of the trailing block through the same emitter.
+        for target in ["BP_AL_Sean_HD", "VH_CV_CR_AlfaRomera_01", "FBP_Debug_UB"] {
+            let Some(handle) = src.list_meshes().into_iter().find(|h| h.name == target) else {
+                eprintln!("skip {target}: not in packlog");
+                continue;
+            };
+            let slot = src.read_mesh_bytes(&handle).expect("read slot");
+            let raw = inflate_first_msh4_stream(&slot).expect("inflate MSH4");
+            let body = parse_msh4(&raw).expect("parse MSH4");
+            let trail = body.trailing_bytes(&raw).to_vec();
+            let skel = body
+                .skeleton
+                .as_ref()
+                .unwrap_or_else(|| panic!("{target}: expected a skeleton"));
+
+            // Re-emit the trailing region from the parsed skeleton, using the exact same
+            // byte layout the parser reads.
+            let mut out = Vec::with_capacity(trail.len());
+            // num_bones — BE u24 with NO pad byte.
+            let n = skel.bones.len() as u32;
+            out.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+            for b in &skel.bones {
+                out.extend_from_slice(&b.name_hash.to_be_bytes());
+                out.extend_from_slice(&b.parent.to_be_bytes());
+                for x in b.translation {
+                    out.extend_from_slice(&x.to_be_bytes());
+                }
+                for x in b.rotation {
+                    out.extend_from_slice(&x.to_be_bytes());
+                }
+                for x in b.scale {
+                    out.extend_from_slice(&x.to_be_bytes());
+                }
+                for x in b.aabb_min {
+                    out.extend_from_slice(&x.to_be_bytes());
+                }
+                for x in b.aabb_max {
+                    out.extend_from_slice(&x.to_be_bytes());
+                }
+                out.push(b.flag);
+            }
+            let m = skel.remaps.len() as u32;
+            out.extend_from_slice(&m.to_be_bytes());
+            for r in &skel.remaps {
+                out.extend_from_slice(&r.bone_index.to_be_bytes());
+                for x in r.matrix {
+                    out.extend_from_slice(&x.to_be_bytes());
+                }
+            }
+            for x in skel.model_pos {
+                out.extend_from_slice(&x.to_be_bytes());
+            }
+            for x in skel.model_sphere {
+                out.extend_from_slice(&x.to_be_bytes());
+            }
+
+            assert_eq!(
+                out.len(),
+                trail.len(),
+                "{target}: reserialized len {} != trail len {}",
+                out.len(),
+                trail.len()
+            );
+            if out != trail {
+                // Locate the first mismatching byte to help diagnose.
+                let mismatch = out
+                    .iter()
+                    .zip(trail.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(out.len());
+                panic!(
+                    "{target}: byte-round-trip differs — first mismatch at offset 0x{:X} \
+                     (emitted {:02X}, source {:02X})",
+                    mismatch, out[mismatch], trail[mismatch]
+                );
+            }
+        }
+    }
+
+    /// The trailing skeleton region must decode into a skeleton whose serialized size
+    /// matches the raw trail length byte-for-byte — proving the parse consumes every byte
+    /// and there's no unaccounted-for tail. Run against the four sampled real meshes.
+    #[test]
+    fn skeleton_size_matches_trailing_bytes_exactly() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let mut checked = 0;
+        for target in [
+            "BP_AL_Sean_HD",
+            "BP_NZ_TerSqdSldOfc_HD",
+            "FBP_Debug_UB",
+            "VH_CV_CR_AlfaRomera_01",
+        ] {
+            let Some(handle) = src.list_meshes().into_iter().find(|h| h.name == target) else {
+                eprintln!("skip {target}: not in packlog");
+                continue;
+            };
+            let slot = src.read_mesh_bytes(&handle).expect("read slot");
+            let raw = inflate_first_msh4_stream(&slot).expect("inflate MSH4");
+            let body = parse_msh4(&raw).expect("parse MSH4");
+            let trail = body.trailing_bytes(&raw);
+            let skel = body
+                .skeleton
+                .as_ref()
+                .unwrap_or_else(|| panic!("{target}: expected a skeleton"));
+            // The three fixed pieces + the two variable-length arrays must sum to exactly
+            // the trail length. This is the ground-truth check for "we fully understand
+            // the layout".
+            let expected = 3
+                + skel.bones.len() * BONE_ENTRY_SIZE
+                + 4
+                + skel.remaps.len() * BONE_REMAP_SIZE
+                + MODEL_BOUNDS_SIZE;
+            assert_eq!(
+                expected,
+                trail.len(),
+                "{target}: skeleton size {} != trail_len {} (bones={}, remaps={})",
+                expected,
+                trail.len(),
+                skel.bones.len(),
+                skel.remaps.len()
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no real meshes reachable");
+    }
+
+    /// Byte-fingerprint probe left as `#[ignore]`d documentation. Dumps the first 64 bytes
+    /// of each mesh's trailing region and validates the trial layout arithmetic. Handy when
+    /// diagnosing a mesh whose skeleton doesn't parse (`cargo test ... --ignored`).
+    #[test]
+    #[ignore]
+    fn probe_trailing_region_hexdump() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let handles = src.list_meshes();
+        for target in [
+            "BP_AL_Sean_HD",
+            "BP_NZ_TerSqdSldOfc_HD",
+            "FBP_Debug_UB",
+            "VH_CV_CR_AlfaRomera_01",
+        ] {
+            let Some(h) = handles.iter().find(|h| h.name == target) else {
+                eprintln!("skip {target}: not in packlog");
+                continue;
+            };
+            let Ok(slot) = src.read_mesh_bytes(h) else { continue };
+            let Ok(raw) = inflate_first_msh4_stream(&slot) else { continue };
+            let body = match parse_msh4(&raw) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("{target}: parse err {e}");
+                    continue;
+                }
+            };
+            let d = &body.diagnostics;
+            let trail_start = d.trailing_start;
+            let trail_len = d.payload_len - trail_start;
+            eprintln!(
+                "\n=== {target} name='{}' payload={} trail_start=0x{:X} trail_len={} nstreams={} ===",
+                body.name, d.payload_len, trail_start, trail_len, d.streams.len()
+            );
+            let payload = &raw[body.payload_range.clone()];
+            let trail = &payload[trail_start..];
+            let dump_first = &trail[..(0x40.min(trail.len()))];
+            eprintln!("  HEAD:");
+            for (i, row) in dump_first.chunks(16).enumerate() {
+                let mut hx = String::new();
+                for b in row {
+                    hx.push_str(&format!("{b:02X} "));
+                }
+                eprintln!("    {:04X}: {hx}", i * 16);
+            }
+            // Trial layout: 3-byte u24 BE num_bones, then N × 77-byte bones, then
+            // u32 BE num_remaps, then M × 68-byte remaps, then 28-byte mesh_bbox.
+            let n = u32::from_be_bytes([0, trail[0], trail[1], trail[2]]) as usize;
+            let bones_end = 3 + n * 77;
+            eprintln!(
+                "  trial: num_bones = {} (BE u24 @0), bones end at 0x{:X}, trail_len={}",
+                n, bones_end, trail.len()
+            );
+            if bones_end + 4 <= trail.len() {
+                let nr = u32::from_be_bytes([
+                    trail[bones_end],
+                    trail[bones_end + 1],
+                    trail[bones_end + 2],
+                    trail[bones_end + 3],
+                ]);
+                let remaps_bytes_avail = trail.len() - bones_end - 4 - 28;
+                eprintln!(
+                    "  trial: num_remaps = {} (BE u32 @0x{:X}), remaps_avail bytes={}, expected={}",
+                    nr,
+                    bones_end,
+                    remaps_bytes_avail,
+                    nr as usize * 68
+                );
+                // Peek at last 28 bytes as mesh bbox floats.
+                let tail_off = trail.len() - 28;
+                let f = |o: usize| {
+                    f32::from_be_bytes([trail[o], trail[o + 1], trail[o + 2], trail[o + 3]])
+                };
+                eprintln!(
+                    "  tail_bbox: min=({:.3}, {:.3}, {:.3}) max=({:.3}, {:.3}, {:.3}, {:.3})",
+                    f(tail_off),
+                    f(tail_off + 4),
+                    f(tail_off + 8),
+                    f(tail_off + 12),
+                    f(tail_off + 16),
+                    f(tail_off + 20),
+                    f(tail_off + 24),
+                );
+            }
+            // Dump the LAST 64 bytes.
+            let tail_start = trail.len().saturating_sub(64);
+            eprintln!("  TAIL @{:X}:", tail_start);
+            for (i, row) in trail[tail_start..].chunks(16).enumerate() {
+                let mut hx = String::new();
+                for b in row {
+                    hx.push_str(&format!("{b:02X} "));
+                }
+                eprintln!("    {:04X}: {hx}", tail_start + i * 16);
+            }
+        }
     }
 
     /// The prototype MSH4 for BP_AL_Sean_HD must round-trip through `read_mesh_smsh` into a

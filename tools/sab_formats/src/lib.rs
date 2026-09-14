@@ -23,6 +23,7 @@
 //!
 //! Each module exposes a pure parser over `&[u8]` plus the structural facts a validator needs.
 
+pub mod ap0l;
 pub mod dtex;
 pub mod editnodes;
 pub mod gametemplates;

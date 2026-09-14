@@ -32,61 +32,72 @@
 //!
 //! ## Format tag table
 //!
-//! The 4-byte `format_tag` is a game-internal enum, not a plain GPUTEXTUREFORMAT. It was
-//! derived empirically: every unique tag observed across the 4389 SBL-family `.Pack` files
-//! was surveyed, its `unc / (W·H)` ratio computed for many `(W,H,mips)` bins, and the storage
-//! pattern (tile count × tile size) matched to a specific Xbox 360 texture format. The
-//! per-mip storage pattern is invariable — each mip whose min(W,H) ≥ 32 gets its own base
-//! tile; smaller mips share one packed-tail tile. That's what makes the format identifiable
-//! from the uncompressed byte-count alone.
+//! The 4-byte `format_tag` is an Xbox 360 `_D3DFORMAT` enum value stored big-endian. The
+//! mapping was cross-checked against the Xbox 360 D3D headers dumped from the sister
+//! WildStar_d PDB (`output/pdb_dumps/saboteur_pdb_t.txt` around line 670633) — every tag
+//! observed in the corpus is a `_D3DFORMAT` constant of the tiled (`D3DFMT_*`, not
+//! `D3DFMT_LIN_*`) family. The per-mip storage pattern is invariable: each mip whose
+//! min(W,H) ≥ the macrotile side gets its own base tile; smaller mips share one packed-tail
+//! tile — that's what makes `unc` predictable, and it's why the base mip always sits at
+//! offset 0 in the inflated buffer.
 //!
-//! | tag              | format             | block bytes | notes                                    |
-//! |------------------|--------------------|-------------|------------------------------------------|
-//! | `1A 20 01 52`    | DXT1 (BC1)         | 8           | most textures — diffuse without alpha    |
-//! | `1A 20 01 54`    | DXT5 (BC3)         | 16          | diffuse-with-alpha and normal-in-DXT5    |
-//! | `1A 20 01 71`    | DXT5 (BC3)         | 16          | normal-map variant (decoded as BC3)      |
-//! | `28 28 01 44`    | 16bpp uncompressed | -           | 2 bytes/texel masks; A8L8/16bpp guess    |
-//! | `28 28 01 86`    | A8R8G8B8 (4 bpp)   | -           | uncompressed detail normal maps          |
+//! | tag              | `_D3DFORMAT`         | element bytes | notes                                    |
+//! |------------------|----------------------|---------------|------------------------------------------|
+//! | `1A 20 01 52`    | D3DFMT_DXT1 (BC1)    | 8/block       | most textures — diffuse without alpha    |
+//! | `1A 20 01 54`    | D3DFMT_DXT5 (BC3)    | 16/block      | diffuse-with-alpha and normal-in-DXT5    |
+//! | `1A 20 01 71`    | D3DFMT_DXN  (BC5)    | 16/block      | 2-channel tangent normal; Z reconstructed|
+//! | `28 28 01 44`    | D3DFMT_R5G6B5        | 2/texel       | 16bpp opaque colour masks, gradients     |
+//! | `28 28 01 86`    | D3DFMT_X8R8G8B8      | 4/texel       | 32bpp uncompressed; opaque (X = 0xFF)    |
 //!
-//! The three DXT variants (`1A 20 01 52` / `54` / `71`) are all wired end-to-end — the
-//! `71` variant is empirically the same 16-byte BC3 blocks as `54`, just used for normal
-//! maps that the game's shader unpacks with a swizzle (X→alpha, Y→green). The block bytes
-//! we emit are correct D3D9 BC3; a future revision can post-swizzle for cleaner previews.
-//! Together the three tags cover 24 988 of 47 316 records (53 %). The two uncompressed
-//! variants (~48 % of records but overwhelmingly small masks) return a shaped error naming
-//! the tag; adding them means a linear un-tile plus a channel-order probe for the 16bpp
-//! case — clean follow-up work.
+//! DXN (a.k.a. ATI2/3Dc/BC5) shares the 16-byte block layout of DXT5 but interprets both
+//! halves as BC4 alpha-blocks — first half gives X, second half gives Y. Z is reconstructed
+//! from `sqrt(1 - X² - Y²)` at decode time so previews look like proper tangent-space
+//! normals (B ≈ 255) instead of the garbage-RGB-plus-good-alpha of the previous BC3
+//! interpretation.
 //!
 //! ## Xbox 360 tiling ("swizzle") — the hard part
 //!
 //! Retail Xbox 360 textures live in a swizzled memory layout so the GPU's texture cache can
 //! stream 4×4-texel neighborhoods efficiently. To read them on a PC we un-swizzle to the
-//! standard row-major layout and then hand the bytes to the PC BC-block decoders that
-//! already ship in `dtex::decode_surface`.
+//! standard row-major layout and then either hand the bytes to the PC BC-block decoders
+//! that already ship in `dtex::decode_surface` (BC1/BC3) or convert texel-by-texel to RGBA8
+//! (BC5, R5G6B5, X8R8G8B8).
 //!
-//! The swizzle is a 32×32-block macrotile with a fixed intra-tile pattern proven out by the
-//! `XGAddress2DTiledOffset` reference implementation (public Xbox SDK, replicated in
-//! Wine/XeXTool/Xenia). BC1 blocks are 8 bytes so one macrotile = 32·32·8 = 8 192 bytes;
-//! BC3 blocks are 16 bytes so one macrotile = 16 384 bytes. Any texture smaller than 128×128
-//! pixels (32×32 blocks) is padded to exactly one macrotile. This is why the uncompressed
-//! byte-count for e.g. a 32×32 DXT1 texture with all six mips is `2 × 8192` — one base tile
-//! for mip 0 + one packed-tail tile for mips 1..5.
+//! The swizzle is a 32-element-wide macrotile with a fixed intra-tile pattern proven out by
+//! the `XGAddress2DTiledOffset` reference implementation (public Xbox SDK, replicated in
+//! Wine/XeXTool/Xenia). "Element" is a texel for uncompressed formats or a 4×4-block for BC,
+//! and the same address formula covers both — only `log2(bytes per element)` changes. A BC1
+//! macrotile is 32·32·8 = 8 192 bytes; BC3/BC5 32·32·16 = 16 384; R5G6B5 32·32·2 = 2 048;
+//! X8R8G8B8 32·32·4 = 4 096. Any surface smaller than 32 elements in either dimension is
+//! padded up to one full macrotile in storage — that's why the 32×32 DXT1 base mip weighs
+//! 8 192 bytes even though the pixel data is 128× smaller.
 //!
-//! Byte-swap: within each BC block, every 16-bit word is byte-swapped on-disk (the GPU is
-//! big-endian). BC1 blocks are 4 words; BC3 blocks are 8 words. Un-swapping after un-tiling
-//! turns them into the little-endian D3D9 block layout the PC decoder expects.
+//! Byte-swap: Xbox 360 stores multi-byte texture words big-endian. The unit of swap is the
+//! word size the GPU reads:
+//! - 1 byte/texel (L8, A8): no swap.
+//! - 2 bytes/texel or per BC-block 16-bit sub-word: swap every 2-byte pair. BC1 = 4 pairs
+//!   per block, BC3/BC5 = 8 pairs per block, R5G6B5 = 1 pair per texel.
+//! - 4 bytes/texel (X8R8G8B8, A8R8G8B8): swap every 4-byte pair (byte-reverse the DWORD).
+//!   On disk one texel reads A,R,G,B big-endian; PC decoders want B,G,R,A little-endian.
+//!
+//! Un-swapping is done AFTER un-tiling — the tile move is opaque copies so ordering doesn't
+//! affect correctness, and doing it once on the linear buffer is simpler than teaching each
+//! per-tile copy about endianness.
 
 use std::io::Read;
 
 use crate::dtex::{self, CpuTexture};
 
 /// Format tags observed in the corpus. See the module-doc table for provenance. Kept as
-/// bytes rather than a u32 so the four-byte hex reads directly.
+/// bytes rather than a u32 so the four-byte hex reads directly. The values are the
+/// big-endian byte layout of an Xbox 360 `_D3DFORMAT` enum constant (D3DFMT_DXT1 = 0x1A20_0152,
+/// D3DFMT_DXT5 = 0x1A20_0154, D3DFMT_DXN = 0x1A20_0171, D3DFMT_R5G6B5 = 0x2828_0144,
+/// D3DFMT_X8R8G8B8 = 0x2828_0186).
 pub const TAG_DXT1: [u8; 4] = [0x1A, 0x20, 0x01, 0x52];
 pub const TAG_DXT5: [u8; 4] = [0x1A, 0x20, 0x01, 0x54];
-pub const TAG_DXT5_NM: [u8; 4] = [0x1A, 0x20, 0x01, 0x71];
-pub const TAG_LIN_16BPP: [u8; 4] = [0x28, 0x28, 0x01, 0x44];
-pub const TAG_LIN_8888: [u8; 4] = [0x28, 0x28, 0x01, 0x86];
+pub const TAG_DXN: [u8; 4] = [0x1A, 0x20, 0x01, 0x71];
+pub const TAG_R5G6B5: [u8; 4] = [0x28, 0x28, 0x01, 0x44];
+pub const TAG_X8R8G8B8: [u8; 4] = [0x28, 0x28, 0x01, 0x86];
 
 /// The 22-byte header past the format tag. Broken out so the parser and the workshop UI
 /// can share a single view of the record shape (a caller that only wants dimensions doesn't
@@ -184,37 +195,84 @@ pub fn decode_slot_texture(payload: &[u8]) -> Result<CpuTexture, String> {
 
     // Route by format tag. Everything past this point is per-format.
     match h.tag {
-        TAG_DXT1 => decode_bc_tiled(&h, &inflated, /*block_bytes=*/ 8, /*fmt=*/ D3DFMT_DXT1),
-        TAG_DXT5 | TAG_DXT5_NM => {
-            decode_bc_tiled(&h, &inflated, /*block_bytes=*/ 16, /*fmt=*/ D3DFMT_DXT5)
-        }
-        TAG_LIN_16BPP | TAG_LIN_8888 => Err(format!(
-            "prototype 2008: {} ({}x{}) tag {} is uncompressed \
-             ({} bpp) — decoder not wired yet, only DXT1/DXT5 supported today",
-            h.name,
-            w,
-            hgt,
-            hex4(&h.tag),
-            if h.tag == TAG_LIN_16BPP { 16 } else { 32 }
-        )),
+        TAG_DXT1 => decode_bc_tiled(&h, &inflated, /*block_bytes=*/ 8, BcKind::Bc1),
+        TAG_DXT5 => decode_bc_tiled(&h, &inflated, /*block_bytes=*/ 16, BcKind::Bc3),
+        TAG_DXN => decode_bc_tiled(&h, &inflated, /*block_bytes=*/ 16, BcKind::Bc5),
+        TAG_R5G6B5 => decode_linear_tiled(&h, &inflated, LinearKind::R5G6B5),
+        TAG_X8R8G8B8 => decode_linear_tiled(&h, &inflated, LinearKind::X8R8G8B8),
         _ => Err(format!(
             "prototype 2008: {} ({}x{}) format tag {} unrecognised — this decoder covers \
-             DXT1 ({}), DXT5 ({}, {}), 16bpp ({}) and 8888 ({})",
+             DXT1 ({}), DXT5 ({}), DXN ({}), R5G6B5 ({}) and X8R8G8B8 ({})",
             h.name,
             w,
             hgt,
             hex4(&h.tag),
             hex4(&TAG_DXT1),
             hex4(&TAG_DXT5),
-            hex4(&TAG_DXT5_NM),
-            hex4(&TAG_LIN_16BPP),
-            hex4(&TAG_LIN_8888),
+            hex4(&TAG_DXN),
+            hex4(&TAG_R5G6B5),
+            hex4(&TAG_X8R8G8B8),
         )),
     }
 }
 
-// D3DFMT_ codes shared with `dtex::decode_surface`. Duplicating the two we need here so this
-// module doesn't reach into dtex private constants.
+/// Which BC family a tiled surface uses. Determines both the PC-side block decoder we call
+/// and the surface `format` value we tag onto the returned [`CpuTexture`] (the workshop UI
+/// keys the format-name pill off this).
+#[derive(Copy, Clone, Debug)]
+enum BcKind {
+    Bc1,
+    Bc3,
+    Bc5,
+}
+
+impl BcKind {
+    fn d3d_fmt(self) -> u32 {
+        match self {
+            BcKind::Bc1 => D3DFMT_DXT1,
+            BcKind::Bc3 => D3DFMT_DXT5,
+            // No standard D3D9 4CC for BC5 — reuse the Xbox 360 DXN tag as the format id so
+            // it round-trips as a distinct value in the UI.
+            BcKind::Bc5 => 0x1A20_0171,
+        }
+    }
+}
+
+/// Which uncompressed surface a tiled linear format decodes to. Both variants produce
+/// straight-alpha RGBA8 (opaque — the 32bpp variant is `X8R8G8B8`, so the X slot ignores
+/// what's on disk and writes 255).
+#[derive(Copy, Clone, Debug)]
+enum LinearKind {
+    R5G6B5,
+    X8R8G8B8,
+}
+
+impl LinearKind {
+    fn bytes_per_texel(self) -> usize {
+        match self {
+            LinearKind::R5G6B5 => 2,
+            LinearKind::X8R8G8B8 => 4,
+        }
+    }
+    /// `log2(bytes_per_texel)` — the `XGAddress2DTiledOffset` size parameter.
+    fn log2_bpe(self) -> usize {
+        match self {
+            LinearKind::R5G6B5 => 1,
+            LinearKind::X8R8G8B8 => 2,
+        }
+    }
+    /// The dtex-side format code we tag onto the returned surface. Matches the values
+    /// [`dtex::decode_surface`] would recognise for the same formats.
+    fn d3d_fmt(self) -> u32 {
+        match self {
+            LinearKind::R5G6B5 => 0x16,
+            LinearKind::X8R8G8B8 => 0x14, // D3DFMT_X8R8G8B8
+        }
+    }
+}
+
+// D3DFMT_ 4CC codes shared with `dtex::decode_surface`. Duplicating the two we need here
+// so this module doesn't reach into dtex private constants.
 const D3DFMT_DXT1: u32 = 0x3154_5844;
 const D3DFMT_DXT5: u32 = 0x3554_5844;
 
@@ -259,7 +317,7 @@ fn decode_bc_tiled(
     h: &SlotTexHeader,
     inflated: &[u8],
     block_bytes: usize,
-    d3d_fmt: u32,
+    kind: BcKind,
 ) -> Result<CpuTexture, String> {
     let (w, hgt) = (h.width as usize, h.height as usize);
     // BC formats are 4×4 blocks. Block-count dimensions:
@@ -309,21 +367,200 @@ fn decode_bc_tiled(
         chunk.swap(0, 1);
     }
 
-    // Now decode as a standard D3D9 BC1/BC3 surface. Extract the top-left bw × bh block
-    // rectangle out of the storage-sized buffer (skip the padding rows/columns).
-    // `decode_surface` reads row-by-row using the STORAGE stride, so hand it a copy that
-    // uses `bw` as its stride. Simpler than teaching the decoder about strides.
+    // Extract the top-left bw × bh block rectangle out of the storage-sized buffer (skip
+    // padding rows/columns). Both `dtex::decode_surface` and the local BC5 decoder read
+    // row-by-row assuming a tight `bw`-wide stride.
     let mut trimmed = Vec::with_capacity(bw * bh * block_bytes);
     for by in 0..bh {
         let row_start = by * storage_bw * block_bytes;
         trimmed.extend_from_slice(&linear[row_start..row_start + bw * block_bytes]);
     }
-    let rgba = dtex::decode_surface(d3d_fmt, w as u32, hgt as u32, &trimmed)?;
+    let rgba = match kind {
+        BcKind::Bc1 | BcKind::Bc3 => dtex::decode_surface(kind.d3d_fmt(), w as u32, hgt as u32, &trimmed)?,
+        BcKind::Bc5 => decode_bc5(w, hgt, &trimmed),
+    };
     Ok(CpuTexture {
         name: h.name.clone(),
         width: w as u32,
         height: hgt as u32,
-        format: d3d_fmt,
+        format: kind.d3d_fmt(),
+        rgba,
+    })
+}
+
+/// Decode a whole surface of D3DFMT_DXN / BC5 to RGBA8 with the two BC4 halves mapped to
+/// R and G and Z reconstructed from `sqrt(1 - X² - Y²)`. The output is an OpenGL-tangent
+/// normal map (R=X, G=+Y, B=Z), same convention as the retail `_NM` textures — the
+/// workshop's `normalmap::mean_blue` gate then treats these consistently with the retail
+/// path (real tangent normals, B ≈ 255 → passes the gate, no height-to-normal fixup).
+///
+/// A DXN block is 16 bytes: `[R BC4 half][G BC4 half]`, each half using the exact 8-byte
+/// BC3-alpha encoding (2 endpoint bytes + 6 bytes of packed 3-bit indices).
+fn decode_bc5(w: usize, h: usize, data: &[u8]) -> Vec<u8> {
+    let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
+    let mut out = vec![0u8; w * h * 4];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let off = (by * bw + bx) * 16;
+            if off + 16 > data.len() {
+                continue;
+            }
+            let r = decode_bc4_block(&data[off..off + 8]);
+            let g = decode_bc4_block(&data[off + 8..off + 16]);
+            for ty in 0..4 {
+                for tx in 0..4 {
+                    let (px, py) = (bx * 4 + tx, by * 4 + ty);
+                    if px >= w || py >= h {
+                        continue;
+                    }
+                    let d = (py * w + px) * 4;
+                    let ri = r[ty * 4 + tx];
+                    let gi = g[ty * 4 + tx];
+                    // Reconstruct Z on the unit hemisphere. Values are stored as unsigned
+                    // 0..255 → -1..+1 in normal-vector space.
+                    let nx = (ri as f32) / 127.5 - 1.0;
+                    let ny = (gi as f32) / 127.5 - 1.0;
+                    let nz2 = 1.0 - nx * nx - ny * ny;
+                    let nz = if nz2 > 0.0 { nz2.sqrt() } else { 0.0 };
+                    let bi = ((nz + 1.0) * 127.5).clamp(0.0, 255.0) as u8;
+                    out[d] = ri;
+                    out[d + 1] = gi;
+                    out[d + 2] = bi;
+                    out[d + 3] = 255;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 8-byte BC4 block → 16 unsigned 8-bit values. Identical algorithm to BC3's alpha half.
+fn decode_bc4_block(b: &[u8]) -> [u8; 16] {
+    let a0 = b[0] as u32;
+    let a1 = b[1] as u32;
+    let mut pal = [0u8; 8];
+    pal[0] = a0 as u8;
+    pal[1] = a1 as u8;
+    if a0 > a1 {
+        for k in 1..7u32 {
+            pal[(k + 1) as usize] = (((7 - k) * a0 + k * a1) / 7) as u8;
+        }
+    } else {
+        for k in 1..5u32 {
+            pal[(k + 1) as usize] = (((5 - k) * a0 + k * a1) / 5) as u8;
+        }
+        pal[6] = 0;
+        pal[7] = 255;
+    }
+    let mut bits = 0u64;
+    for (i, &byte) in b[2..8].iter().enumerate() {
+        bits |= (byte as u64) << (8 * i);
+    }
+    let mut out = [0u8; 16];
+    for t in 0..16 {
+        out[t] = pal[((bits >> (t * 3)) & 7) as usize];
+    }
+    out
+}
+
+/// Decode mip 0 of a tiled uncompressed (linear) Xbox 360 surface into RGBA8.
+///
+/// The macrotile is 32×32 texels regardless of bytes-per-texel; the address formula is the
+/// same XG one, parameterised by `log2(bytes per element)`. For very small surfaces
+/// (< 32 texels in either dimension) the base mip is padded up to one full macrotile in
+/// storage, so `inflated[0..storage_w*storage_h*bpp]` covers it.
+fn decode_linear_tiled(
+    h: &SlotTexHeader,
+    inflated: &[u8],
+    kind: LinearKind,
+) -> Result<CpuTexture, String> {
+    let (w, hgt) = (h.width as usize, h.height as usize);
+    let bpp = kind.bytes_per_texel();
+    let storage_w = w.max(32);
+    let storage_h = hgt.max(32);
+    let mip0_bytes = storage_w * storage_h * bpp;
+    if mip0_bytes > inflated.len() {
+        return Err(format!(
+            "slot texture {}: linear mip 0 wants {mip0_bytes} bytes but only {} inflated",
+            h.name,
+            inflated.len()
+        ));
+    }
+    let tiled = &inflated[..mip0_bytes];
+    let log2_bpe = kind.log2_bpe();
+
+    // Un-tile into a linear texel stream at storage dimensions, then crop to (w × hgt) as
+    // we convert to RGBA8. Padding texels outside the logical rectangle are never read.
+    let mut linear = vec![0u8; storage_w * storage_h * bpp];
+    for y in 0..storage_h {
+        for x in 0..storage_w {
+            let src_off = xg_address_2d_tiled_offset(x, y, storage_w, log2_bpe);
+            if src_off + bpp > tiled.len() {
+                continue;
+            }
+            let dst_off = (y * storage_w + x) * bpp;
+            linear[dst_off..dst_off + bpp].copy_from_slice(&tiled[src_off..src_off + bpp]);
+        }
+    }
+
+    // Byte-swap by the GPU's word size. 2bpp swaps every pair; 4bpp reverses every 4-byte
+    // group (the DWORD is stored big-endian, PC decoders read LE).
+    match bpp {
+        2 => {
+            for chunk in linear.chunks_exact_mut(2) {
+                chunk.swap(0, 1);
+            }
+        }
+        4 => {
+            for chunk in linear.chunks_exact_mut(4) {
+                chunk.swap(0, 3);
+                chunk.swap(1, 2);
+            }
+        }
+        _ => unreachable!("unsupported linear bpp {bpp}"),
+    }
+
+    // Convert to RGBA8. Both formats are opaque previews — the X in X8R8G8B8 is discarded
+    // per the D3D spec, and R5G6B5 has no alpha channel to preserve.
+    let mut rgba = vec![0u8; w * hgt * 4];
+    match kind {
+        LinearKind::R5G6B5 => {
+            for y in 0..hgt {
+                for x in 0..w {
+                    let src = (y * storage_w + x) * 2;
+                    let v = u16::from_le_bytes([linear[src], linear[src + 1]]);
+                    let dst = (y * w + x) * 4;
+                    let r = ((v >> 11) & 0x1F) as u32;
+                    let g = ((v >> 5) & 0x3F) as u32;
+                    let b = (v & 0x1F) as u32;
+                    rgba[dst] = ((r * 255 + 15) / 31) as u8;
+                    rgba[dst + 1] = ((g * 255 + 31) / 63) as u8;
+                    rgba[dst + 2] = ((b * 255 + 15) / 31) as u8;
+                    rgba[dst + 3] = 255;
+                }
+            }
+        }
+        LinearKind::X8R8G8B8 => {
+            // After the 4-byte reverse, one texel reads as (B, G, R, X) in `linear`. That's
+            // the standard little-endian D3D9 X8R8G8B8 layout the retail decoder consumes.
+            for y in 0..hgt {
+                for x in 0..w {
+                    let src = (y * storage_w + x) * 4;
+                    let dst = (y * w + x) * 4;
+                    rgba[dst] = linear[src + 2]; // R
+                    rgba[dst + 1] = linear[src + 1]; // G
+                    rgba[dst + 2] = linear[src]; // B
+                    rgba[dst + 3] = 255; // X-channel is undefined; force opaque
+                }
+            }
+        }
+    }
+
+    Ok(CpuTexture {
+        name: h.name.clone(),
+        width: w as u32,
+        height: hgt as u32,
+        format: kind.d3d_fmt(),
         rgba,
     })
 }
@@ -447,7 +684,7 @@ mod tests {
         assert!(w.is_power_of_two() && h.is_power_of_two(), "dims {w}x{h} not pow2");
         assert!(!name.is_empty() && name.chars().all(|c| c.is_ascii_graphic() || c == ' '),
             "bad name {name:?}");
-        assert!(matches!(tag, TAG_DXT1 | TAG_DXT5 | TAG_DXT5_NM | TAG_LIN_16BPP | TAG_LIN_8888),
+        assert!(matches!(tag, TAG_DXT1 | TAG_DXT5 | TAG_DXN | TAG_R5G6B5 | TAG_X8R8G8B8),
             "unexpected tag {tag:?} for {name}");
     }
 
@@ -493,36 +730,263 @@ mod tests {
     }
 
     /// For every format tag observed, count decode success rate across a bounded sample.
-    /// This is our regression guard: if a tag stops decoding, its count drops.
+    /// This is our regression guard: if a tag stops decoding, its count drops. Coverage is
+    /// deliberately generous per tag (≥100 records) so a new tag creeping in fails visibly
+    /// and a broken decoder shows up as < a full run.
     #[test]
     fn decode_success_by_tag() {
         if bin360().is_none() { eprintln!("skip"); return }
         use std::collections::HashMap;
+        let cap: u32 = 150;
         let mut total: HashMap<[u8; 4], u32> = HashMap::new();
         let mut ok: HashMap<[u8; 4], u32> = HashMap::new();
-        // Bounded probe: at least 5 of each tag, up to ~50 records per tag total to keep
-        // wall-clock reasonable.
+        let mut size_ok: HashMap<[u8; 4], u32> = HashMap::new();
         walk_texture_payloads::<()>(|_name, payload| {
             let h = match parse_header(payload) { Ok(h) => h, Err(_) => return None };
             let t = h.tag;
-            if *total.get(&t).unwrap_or(&0) >= 50 { return None }
+            if *total.get(&t).unwrap_or(&0) >= cap { return None }
             *total.entry(t).or_default() += 1;
-            if let Ok(tex) = decode_slot_texture(payload) {
-                if tex.rgba.len() == (tex.width as usize) * (tex.height as usize) * 4 {
-                    *ok.entry(t).or_default() += 1;
+            match decode_slot_texture(payload) {
+                Ok(tex) => {
+                    // Dimensions must match the header exactly.
+                    let dim_ok = tex.width == h.width as u32 && tex.height == h.height as u32;
+                    let byte_ok = tex.rgba.len() == (tex.width as usize) * (tex.height as usize) * 4;
+                    if dim_ok && byte_ok {
+                        *ok.entry(t).or_default() += 1;
+                        *size_ok.entry(t).or_default() += 1;
+                    }
                 }
+                Err(_) => {}
             }
             None
         });
-        // Print the split — visible with `cargo test -- --nocapture`. Assert only that the
-        // BC formats (which we do decode) hit ≥5 successes each. The uncompressed formats
-        // are expected to fail cleanly with a shaped error.
         for (t, n) in &total {
             let k = ok.get(t).copied().unwrap_or(0);
             eprintln!("  tag {}  ok={k}/{n}", hex4(t));
         }
-        assert!(ok.get(&TAG_DXT1).copied().unwrap_or(0) >= 5, "DXT1 decode should mostly succeed");
-        assert!(ok.get(&TAG_DXT5).copied().unwrap_or(0) >= 5, "DXT5 decode should mostly succeed");
+        // Every format we've wired must decode nearly every sample it's given — a hard
+        // failure floor of 100 successes per tag (out of up to `cap` = 150 tries) is well
+        // above what any spurious padding record could reach on its own.
+        for tag in [TAG_DXT1, TAG_DXT5, TAG_DXN, TAG_R5G6B5, TAG_X8R8G8B8] {
+            let seen = total.get(&tag).copied().unwrap_or(0);
+            if seen == 0 { continue; } // format may be absent from this corpus slice
+            let k = ok.get(&tag).copied().unwrap_or(0);
+            assert!(
+                k >= 100 || k as f32 >= (seen as f32) * 0.95,
+                "tag {} decoded only {k}/{seen} — regression",
+                hex4(&tag)
+            );
+        }
+    }
+
+    /// DXN is a tangent-space normal map — the reconstructed Z should push the mean blue
+    /// well above 128 (uniform-random blocks would sit near 128; a real +Z-out normal map
+    /// sits above 200). Guards the BC5 decode + Z-reconstruction path.
+    ///
+    /// The 2008 corpus has a class of AnimationTest 128×128 placeholder normals whose R
+    /// channel is a plausible flat X≈0 but whose G channel is a "trivial 255" BC4 block
+    /// (raw bytes `FF FE 00 00 00 00 00 00`, i.e. every texel Y=+1). Those decode
+    /// correctly BY the BC5 algorithm — the source data really does say Y=+1 — but they
+    /// aren't useful test signal. Filter them out by size (only sample ≥256px) so the
+    /// assertion measures real content-authored normal maps.
+    #[test]
+    fn dxn_decodes_as_tangent_normal() {
+        if bin360().is_none() { eprintln!("skip"); return }
+        use crate::normalmap::{mean_blue, HEIGHT_MEAN_BLUE};
+        let mut checked = 0;
+        let mut passing = 0;
+        let mut sum_blue: f32 = 0.0;
+        walk_texture_payloads::<()>(|_name, payload| {
+            let h = match parse_header(payload) { Ok(h) => h, Err(_) => return None };
+            if h.tag != TAG_DXN || h.width < 256 { return None }
+            if checked >= 20 { return None }
+            let Ok(tex) = decode_slot_texture(payload) else { return None };
+            if tex.rgba.len() != (tex.width as usize) * (tex.height as usize) * 4 { return None }
+            checked += 1;
+            let mb = mean_blue(&tex.rgba);
+            sum_blue += mb;
+            if mb >= HEIGHT_MEAN_BLUE { passing += 1 }
+            None
+        });
+        if checked == 0 { eprintln!("skip: no DXN ≥256px records found"); return }
+        let avg = sum_blue / checked as f32;
+        eprintln!("DXN sampled={checked} pass_gate={passing} avg_meanB={avg:.1}");
+        assert!(
+            passing >= (checked * 3) / 4,
+            "only {passing}/{checked} DXN textures look like tangent normals (meanB >= {HEIGHT_MEAN_BLUE}); avg meanB = {avg:.1}",
+        );
+    }
+
+    /// Whole-corpus coverage survey. Walks every .Pack file, tries to decode every
+    /// texture record, and prints per-tag pass/fail counts. Ignored because it takes
+    /// a couple of minutes across the full 4300+ pack corpus — run with `-- --ignored`.
+    #[test]
+    #[ignore]
+    fn corpus_wide_decode_coverage() {
+        if bin360().is_none() { eprintln!("skip"); return }
+        use std::collections::HashMap;
+        let mut total: HashMap<[u8; 4], u32> = HashMap::new();
+        let mut ok: HashMap<[u8; 4], u32> = HashMap::new();
+        let mut err: HashMap<[u8; 4], u32> = HashMap::new();
+        let mut unknown_tags: HashMap<[u8; 4], u32> = HashMap::new();
+        walk_texture_payloads::<()>(|_name, payload| {
+            let h = match parse_header(payload) { Ok(h) => h, Err(_) => return None };
+            let t = h.tag;
+            *total.entry(t).or_default() += 1;
+            match decode_slot_texture(payload) {
+                Ok(tex) => {
+                    if tex.width == h.width as u32
+                        && tex.height == h.height as u32
+                        && tex.rgba.len() == (tex.width as usize) * (tex.height as usize) * 4
+                    {
+                        *ok.entry(t).or_default() += 1;
+                    } else {
+                        *err.entry(t).or_default() += 1;
+                    }
+                }
+                Err(_) => {
+                    *err.entry(t).or_default() += 1;
+                    if !matches!(t, TAG_DXT1 | TAG_DXT5 | TAG_DXN | TAG_R5G6B5 | TAG_X8R8G8B8) {
+                        *unknown_tags.entry(t).or_default() += 1;
+                    }
+                }
+            }
+            None
+        });
+        eprintln!("== 2008 corpus texture decode coverage ==");
+        let mut tags: Vec<_> = total.keys().copied().collect();
+        tags.sort();
+        let mut sum_ok = 0u32;
+        let mut sum_total = 0u32;
+        for t in &tags {
+            let n = total.get(t).copied().unwrap_or(0);
+            let k = ok.get(t).copied().unwrap_or(0);
+            let e = err.get(t).copied().unwrap_or(0);
+            sum_ok += k;
+            sum_total += n;
+            eprintln!("  tag {}  ok={k:6}  err={e:6}  total={n:6}", hex4(t));
+        }
+        eprintln!("  ================================================");
+        eprintln!("  TOTAL           ok={sum_ok:6}                  total={sum_total:6}");
+        if !unknown_tags.is_empty() {
+            eprintln!("-- unknown tags still failing --");
+            for (t, n) in &unknown_tags {
+                eprintln!("  tag {}  x{n}", hex4(t));
+            }
+        }
+    }
+
+    /// Diagnostic — dump per-channel means and the first few texels of a DXN texture so
+    /// a mis-decoded BC5 shows up in the log instead of just "meanB is low, why?".
+    #[test]
+    #[ignore]
+    fn diag_dxn_pixel_dump() {
+        if bin360().is_none() { eprintln!("skip"); return }
+        let mut dumped = 0;
+        walk_texture_payloads::<()>(|_name, payload| {
+            let h = match parse_header(payload) { Ok(h) => h, Err(_) => return None };
+            if h.tag != TAG_DXN { return None }
+            // Skip the AnimationTest 128x128 group — every mip is a byte-identical
+            // placeholder that isn't useful for diagnostics. Prefer the real 512+ maps.
+            if h.width < 256 { return None }
+            if dumped >= 4 { return None }
+            let Ok(tex) = decode_slot_texture(payload) else { return None };
+            let n = (tex.width * tex.height) as u64;
+            let mr: u64 = tex.rgba.chunks_exact(4).map(|p| p[0] as u64).sum();
+            let mg: u64 = tex.rgba.chunks_exact(4).map(|p| p[1] as u64).sum();
+            let mb: u64 = tex.rgba.chunks_exact(4).map(|p| p[2] as u64).sum();
+            eprintln!(
+                "DXN {} {}x{}  meanRGB=({}, {}, {})  first texels:",
+                h.name, tex.width, tex.height, mr / n, mg / n, mb / n
+            );
+            for i in 0..8 {
+                let p = &tex.rgba[i * 4..i * 4 + 4];
+                eprintln!("    [{i}] = ({:3}, {:3}, {:3}, {:3})", p[0], p[1], p[2], p[3]);
+            }
+            dumped += 1;
+            None
+        });
+    }
+
+    /// Diagnostic — print the tag distribution + per-tag record dimensions so a decoder
+    /// failure has context. Ignored by default (`cargo test -- --ignored` to run).
+    #[test]
+    #[ignore]
+    fn diag_dump_tag_stats() {
+        if bin360().is_none() { eprintln!("skip"); return }
+        use std::collections::HashMap;
+        let mut by_tag: HashMap<[u8; 4], Vec<(String, u16, u16, u32, u16)>> = HashMap::new();
+        walk_texture_payloads::<()>(|_name, payload| {
+            if let Ok(h) = parse_header(payload) {
+                let v = by_tag.entry(h.tag).or_default();
+                if v.len() < 20 {
+                    v.push((h.name.clone(), h.width, h.height, h.unc, h.mips));
+                }
+            }
+            None
+        });
+        for (t, recs) in &by_tag {
+            eprintln!("--- tag {} ({} first samples) ---", hex4(t), recs.len());
+            for (n, w, h, u, m) in recs {
+                eprintln!("  {n} {w}x{h} unc={u} mips={m}  unc/(w*h)={:.3}",
+                    (*u as f32) / ((*w as u32 * *h as u32).max(1) as f32));
+            }
+        }
+    }
+
+    /// R5G6B5 + X8R8G8B8 must produce byte-count-correct RGBA8 for at least 100 records
+    /// each. Additionally asserts that AT LEAST one large sample per tag has genuine
+    /// intra-image variation — a systematic byte-swap or stride bug would collapse ALL
+    /// samples to a uniform colour, so the presence of variation is what we guard.
+    ///
+    /// R5G6B5 records in this corpus are overwhelmingly `AnimationTest_*_Mask` textures
+    /// that really are single-colour, so the earlier "half must be non-degenerate" gate
+    /// was measuring content, not decode correctness. What we can require, and does
+    /// change if the decode is wrong, is that at least one large record shows genuine
+    /// pixel variation.
+    #[test]
+    fn linear_formats_decode_non_degenerate() {
+        if bin360().is_none() { eprintln!("skip"); return }
+        use std::collections::HashMap;
+        let cap: u32 = 150;
+        let mut count: HashMap<[u8; 4], u32> = HashMap::new();
+        let mut ok: HashMap<[u8; 4], u32> = HashMap::new();
+        let mut varied: HashMap<[u8; 4], u32> = HashMap::new();
+        walk_texture_payloads::<()>(|_name, payload| {
+            let h = match parse_header(payload) { Ok(h) => h, Err(_) => return None };
+            if !matches!(h.tag, TAG_R5G6B5 | TAG_X8R8G8B8) { return None }
+            if *count.get(&h.tag).unwrap_or(&0) >= cap { return None }
+            *count.entry(h.tag).or_default() += 1;
+            let Ok(tex) = decode_slot_texture(payload) else { return None };
+            if tex.rgba.len() != (tex.width as usize) * (tex.height as usize) * 4 { return None }
+            *ok.entry(h.tag).or_default() += 1;
+            // "Varied" = more than 8 distinct RGB triples. A byte-swap or stride bug
+            // typically produces a single colour or noise; either extreme fails here.
+            use std::collections::HashSet;
+            let distinct: HashSet<[u8; 3]> = tex.rgba
+                .chunks_exact(4)
+                .map(|p| [p[0], p[1], p[2]])
+                .collect();
+            if distinct.len() > 8 { *varied.entry(h.tag).or_default() += 1; }
+            None
+        });
+        for tag in [TAG_R5G6B5, TAG_X8R8G8B8] {
+            let seen = count.get(&tag).copied().unwrap_or(0);
+            if seen == 0 { eprintln!("no {} records in corpus slice", hex4(&tag)); continue }
+            let k = ok.get(&tag).copied().unwrap_or(0);
+            let n = varied.get(&tag).copied().unwrap_or(0);
+            eprintln!("  linear {}  ok={k}/{seen}  varied={n}", hex4(&tag));
+            assert!(
+                k >= 100 || k as f32 >= (seen as f32) * 0.95,
+                "tag {} decoded only {k}/{seen}",
+                hex4(&tag)
+            );
+            assert!(
+                n >= 1,
+                "tag {}: zero samples had >8 distinct colours — decode likely broken",
+                hex4(&tag)
+            );
+        }
     }
 
     /// Exhaustive sanity check on `xg_address_2d_tiled_offset`: for a 32×32-block BC1

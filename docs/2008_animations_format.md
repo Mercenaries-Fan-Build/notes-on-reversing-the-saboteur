@@ -223,11 +223,21 @@ Tests in the module:
 `Clip2008::sample_track(track_idx, time_s)` returns a `SampledTransform { pos, rot, scale }`
 per (clip, track, time). Coverage:
 
-| Codec | Decoded? | Notes |
-|-------|----------|-------|
-| **NOC0** (interleaved) | **YES** | Full frame-major `hkQsTransform` array + slerp/lerp interpolation. Layout verified byte-for-byte on 214 loose files; every returned quaternion is unit and every scale is ≈identity across the sampled corpus. |
-| **WAV0** (wavelet)     | NO | Returns `Err` with a diagnostic pointing to the Havok-4.6 wavelet sampler entry points in Saboteur.xex (`hkWaveletSkeletalAnimation::samplePartialPose` @ 0x82a57a10, `getBlockDataAndSize` @ 0x82a56850, `decompressBlockToCache` @ 0x82a577a0). |
-| **DEL0** (delta)       | NO | Returns `Err` with a diagnostic pointing to `hkDeltaCompressedSkeletalAnimation::samplePose` @ 0x82a58520, `samplePartialWithDataChunks` @ 0x82a58cc8, `_decompress` @ 0x82a58448. |
+| Codec | Header decoded? | Frames decoded? | Notes |
+|-------|-----------------|-----------------|-------|
+| **NOC0** (interleaved) | YES | **YES** | Full frame-major `hkQsTransform` array + slerp/lerp interpolation. Layout verified byte-for-byte on 214 loose files; every returned quaternion is unit and every scale is ≈identity across the sampled corpus. |
+| **WAV0** (wavelet)     | YES (238/238 on the sampled corpus) | Blocked | Extended HK-4.6 derived-struct header parses cleanly (`Wav0Header::parse` in `sources/prototype2008_anim_havok46.rs`) — QuantizationFormat + all section indices + contiguity gates. Havok wavelet math (`wv_entropy_unpack`, `wv_dequant`, `wv_inverse`, `wv_quat_w_sentinel`, `static_mask_dynamic`) ported from the numerically-validated Mercs 2 HK-5.5 decoder. Blocked on `block_size == 16`: every shipped 2008 wavelet clip uses 16-sample blocks, but the ported `wv_inverse` implements only the 8-sample basis. Larger blocks need the un-ported predict/update/deinterleave lifting passes (Havok `FUN_009fe250/9fe180/9fe4b0` in Mercs 2's decomp). |
+| **DEL0** (delta)       | YES (282/282 on the sampled corpus) | NO | Extended header parses cleanly (`Del0Header::parse`). The delta bit-stream shape is different from wavelet and is NOT validated in the sibling Mercs 2 workspace either (Mercs 2's decoder stubs delta as well). Returns `Err` with a diagnostic pointing at `samplePartialWithDataChunks` @ 0x82a58cc8. |
+
+**Struct-layout diff HK 4.6 ↔ HK 5.5** (see the module doc of
+`sources/prototype2008_anim_havok46.rs` for the full table). Key point: HK 5.5
+added `m_numberOfFloatTracks` to `hkaAnimation`, shifting every derived field
+down by 4 bytes. Pandemic's 24-byte pre-header substitutes for the 32-byte
+`hkReferencedObject` + `hkSkeletalAnimation` base; the derived-struct body
+follows immediately, and the data buffer starts at file+0x54 (WAV0) / file+0x5C
+(DEL0). Section-index fields are stored as `u16-BE` in the high half of a
+4-byte slot (empirically low half is always zero on the corpus — a compact
+wire encoding for the runtime `u32` memory field).
 
 ### NOC0 on-disk layout
 

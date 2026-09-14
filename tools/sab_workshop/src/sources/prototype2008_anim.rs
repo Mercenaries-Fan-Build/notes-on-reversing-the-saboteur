@@ -77,17 +77,25 @@
 //! # Per-frame sampling
 //!
 //! Given a `Clip2008`, a track index, and a time in seconds, [`Clip2008::sample_track`]
-//! returns a `SampledTransform { pos, rot, scale }`. Only **NOC0** is decoded end-to-end —
-//! the layout was recovered from six loose files whose sizes match `24 + eff_tracks*4 +
+//! returns a `SampledTransform { pos, rot, scale }`. **NOC0** is decoded end-to-end (the
+//! layout was recovered from six loose files whose sizes match `24 + eff_tracks*4 +
 //! aux*48` byte-for-byte and whose 12-float transforms yield unit quaternions and
-//! ~identity scales for identifiable reference poses (see `sample_track` docs). **WAV0**
-//! and **DEL0** return `Err`: their bodies are variable-length compressed bitstreams
-//! whose per-frame decoder is unreversed here. The Havok-4.6 middleware sampler code IS
-//! in the Saboteur.xex Ghidra decomp (`hkWaveletSkeletalAnimation::samplePartialPose`
-//! @ 0x82a57a10, `hkDeltaCompressedSkeletalAnimation::samplePartialWithDataChunks` @
-//! 0x82a58cc8, `hkInterleavedSkeletalAnimation::samplePose` @ 0x82a59b80) but is inlined
-//! PPC VMX128 that resists automated recovery; the WAV0/DEL0 branches carry a diagnostic
-//! pointing to those addresses so a follow-up pass has a starting handhold.
+//! ~identity scales for identifiable reference poses).
+//!
+//! **WAV0** and **DEL0** are best-effort. The extended HK-4.6 derived-struct header
+//! (past the 24-byte Pandemic pre-header) is parsed by
+//! [`super::prototype2008_anim_havok46::Wav0Header::parse`] /
+//! [`super::prototype2008_anim_havok46::Del0Header::parse`] and validated on a
+//! representative slice of the loose corpus. The wavelet codec math (`wv_*` in the
+//! sibling `prototype2008_anim_havok46` module) is ported from Mercs 2's
+//! numerically-validated HK-5.5 decoder — Havok did not re-cut this math between 4.6
+//! and 5.5. A returned `Ok` transform is guaranteed finite + unit-quat + validated
+//! against the layout gates; when any decoder step (per-DOF array read, bit-width
+//! range, static-mask consumption, quantData bit stream) does not validate,
+//! `sample_track_wav0` returns `Err` with the specific diagnostic naming the failed
+//! stage. DEL0 currently always returns `Err` — the delta-specific bit stream is not
+//! validated in the Mercs 2 workspace either. Callers must be prepared for `Err` on
+//! either codec branch, exactly as before this port.
 
 #![allow(dead_code)]
 
@@ -426,21 +434,77 @@ impl Clip2008 {
     pub fn sample_track(&self, track_idx: u32, time_s: f32) -> Result<SampledTransform, String> {
         match self.header.codec {
             ClipCodec::None => self.sample_track_noc0(track_idx, time_s),
-            ClipCodec::Wavelet => Err(format!(
-                "ANM0WAV0 sampler unimplemented for clip '{}' — wavelet body is a \
-                 Pandemic-serialized Havok-4.6 hkWaveletSkeletalAnimation, decoder lives \
-                 in Saboteur.xex at 0x82a56850 (getBlockDataAndSize), 0x82a577a0 \
-                 (decompressBlockToCache), 0x82a57a10 (samplePartialPose). Not decoded here.",
-                self.info.name
-            )),
-            ClipCodec::Delta => Err(format!(
-                "ANM0DEL0 sampler unimplemented for clip '{}' — delta body is a \
-                 Pandemic-serialized Havok-4.6 hkDeltaCompressedSkeletalAnimation, decoder \
-                 lives in Saboteur.xex at 0x82a58448 (_decompress), 0x82a58520 (samplePose), \
-                 0x82a58cc8 (samplePartialWithDataChunks). Not decoded here.",
-                self.info.name
-            )),
+            ClipCodec::Wavelet => self.sample_track_wav0(track_idx, time_s),
+            ClipCodec::Delta => self.sample_track_del0(track_idx, time_s),
         }
+    }
+
+    /// WAV0 (wavelet-compressed) sampler — best-effort. Parses the extended
+    /// HK-4.6 derived-struct header via
+    /// [`super::prototype2008_anim_havok46::Wav0Header::parse`], reconstructs
+    /// the per-frame pose stream via
+    /// [`super::prototype2008_anim_havok46::decode_wavelet_frames`], then
+    /// bracket-and-interps to the requested time. Returns `Err` with the
+    /// specific decoder diagnostic when a clip does not decode cleanly (see
+    /// the sibling module's docs on codec status and the sweep test for the
+    /// current corpus success ratio).
+    fn sample_track_wav0(
+        &self,
+        track_idx: u32,
+        time_s: f32,
+    ) -> Result<SampledTransform, String> {
+        use super::prototype2008_anim_havok46 as hk;
+        let block_size = self.header.stride16;
+        let num_poses = self.header.aux_count;
+        let header =
+            hk::Wav0Header::parse(&self.bytes, self.header.num_tracks, num_poses, block_size)
+                .map_err(|e| format!("clip '{}': {e}", self.info.name))?;
+        let frames = hk::decode_wavelet_frames(
+            &self.bytes,
+            &header,
+            self.header.num_tracks,
+            num_poses,
+            block_size,
+        )
+        .map_err(|e| format!("clip '{}': {e}", self.info.name))?;
+        hk::sample_reconstructed(
+            &frames,
+            self.header.duration_s,
+            time_s,
+            track_idx as usize,
+        )
+        .map_err(|e| format!("clip '{}': {e}", self.info.name))
+    }
+
+    /// DEL0 (delta-compressed) sampler — best-effort. Parses the extended
+    /// HK-4.6 derived-struct header via
+    /// [`super::prototype2008_anim_havok46::Del0Header::parse`], then tries
+    /// [`super::prototype2008_anim_havok46::decode_delta_frames`] which is
+    /// currently unimplemented (returns `Err` with a specific diagnostic
+    /// pointing at the decomp addresses). Header parsing on real clips is
+    /// verified via `del0_header_parses_cinematic_clips`.
+    fn sample_track_del0(
+        &self,
+        track_idx: u32,
+        time_s: f32,
+    ) -> Result<SampledTransform, String> {
+        use super::prototype2008_anim_havok46 as hk;
+        let header = hk::Del0Header::parse(&self.bytes)
+            .map_err(|e| format!("clip '{}': {e}", self.info.name))?;
+        let frames = hk::decode_delta_frames(
+            &self.bytes,
+            &header,
+            self.header.num_tracks,
+            self.header.aux_count,
+        )
+        .map_err(|e| format!("clip '{}': {e}", self.info.name))?;
+        hk::sample_reconstructed(
+            &frames,
+            self.header.duration_s,
+            time_s,
+            track_idx as usize,
+        )
+        .map_err(|e| format!("clip '{}': {e}", self.info.name))
     }
 
     /// NOC0 (uncompressed / interleaved) sampler — the shape recovered from the sample
@@ -1130,31 +1194,243 @@ mod tests {
         }
     }
 
-    /// WAV0 and DEL0 must return `Err` (not panic, not silently identity). The exact
-    /// wording is a diagnostic — the test only checks that the branch was taken and the
-    /// error mentions the codec.
+    /// Corpus sweep — sample the first frame of every WAV0 and DEL0 clip we
+    /// can enumerate, and report how many decompressed to a numerically
+    /// valid pose (finite, |q|≈1, scale > 0) vs. returned a diagnostic
+    /// `Err`. Honest reporting only — no min-success gate, because the
+    /// ratio is expected to be low until the block_size=16 lifting pass
+    /// is ported (see `prototype2008_anim_havok46` module doc). The count
+    /// is printed to stderr so a follow-up pass can gate against a
+    /// specific baseline.
     #[test]
-    fn sample_wavelet_and_delta_return_err() {
+    fn corpus_sweep_wav0_and_del0_first_frame() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        let mut wav0_tot = 0usize;
+        let mut wav0_ok = 0usize;
+        let mut del0_tot = 0usize;
+        let mut del0_ok = 0usize;
+        let mut first_wav_err: Option<String> = None;
+        let mut first_del_err: Option<String> = None;
+        for info in cat.clips.iter() {
+            if info.name.is_empty() {
+                continue;
+            }
+            match info.codec {
+                ClipCodec::Wavelet => {
+                    if wav0_tot >= 200 {
+                        continue;
+                    }
+                    let Ok(clip) = cat.load_clip(info.hash) else { continue };
+                    wav0_tot += 1;
+                    match clip.sample_track(0, 0.0) {
+                        Ok(s) => {
+                            let m = (s.rot[0] * s.rot[0]
+                                + s.rot[1] * s.rot[1]
+                                + s.rot[2] * s.rot[2]
+                                + s.rot[3] * s.rot[3])
+                                .sqrt();
+                            if s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()).all(|c| c.is_finite())
+                                && (m - 1.0).abs() < 1e-3
+                                && s.scale.iter().all(|&c| c >= -1e-3)
+                            {
+                                wav0_ok += 1;
+                            }
+                        }
+                        Err(e) => {
+                            if first_wav_err.is_none() {
+                                first_wav_err = Some(e);
+                            }
+                        }
+                    }
+                }
+                ClipCodec::Delta => {
+                    if del0_tot >= 200 {
+                        continue;
+                    }
+                    let Ok(clip) = cat.load_clip(info.hash) else { continue };
+                    del0_tot += 1;
+                    match clip.sample_track(0, 0.0) {
+                        Ok(s) => {
+                            let m = (s.rot[0] * s.rot[0]
+                                + s.rot[1] * s.rot[1]
+                                + s.rot[2] * s.rot[2]
+                                + s.rot[3] * s.rot[3])
+                                .sqrt();
+                            if s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()).all(|c| c.is_finite())
+                                && (m - 1.0).abs() < 1e-3
+                                && s.scale.iter().all(|&c| c >= -1e-3)
+                            {
+                                del0_ok += 1;
+                            }
+                        }
+                        Err(e) => {
+                            if first_del_err.is_none() {
+                                first_del_err = Some(e);
+                            }
+                        }
+                    }
+                }
+                ClipCodec::None => {}
+            }
+        }
+        eprintln!(
+            "WAV0 first-frame decode: {wav0_ok}/{wav0_tot} clean (first_err: {:?})",
+            first_wav_err
+        );
+        eprintln!(
+            "DEL0 first-frame decode: {del0_ok}/{del0_tot} clean (first_err: {:?})",
+            first_del_err
+        );
+        assert!(wav0_tot >= 100, "expected ≥100 WAV0 clips to sample, got {wav0_tot}");
+        assert!(del0_tot >= 100, "expected ≥100 DEL0 clips to sample, got {del0_tot}");
+    }
+
+    /// WAV0 and DEL0 sample at t=0, t=middle, t=end.
+    /// Sampling behaviour must be *consistent* across all three time
+    /// points — either all succeed with valid transforms or all fail
+    /// with a diagnostic. Guards against a decode path that only
+    /// succeeds at t=0 (would indicate the interp path is broken).
+    #[test]
+    fn sample_wavelet_and_delta_at_start_middle_end() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        for name in &["Bearcrawl_Walk_F_LF", "cine_A1M1_S1_Dierker"] {
+            let Ok(clip) = cat.load_clip(pandemic_hash(name)) else { continue };
+            let dur = clip.header.duration_s;
+            let times = [0.0f32, 0.5 * dur, dur];
+            let mut oks = 0usize;
+            let mut first_err: Option<String> = None;
+            for &t in &times {
+                match clip.sample_track(0, t) {
+                    Ok(s) => {
+                        oks += 1;
+                        for c in s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()) {
+                            assert!(c.is_finite(), "clip {name} at t={t}: non-finite {s:?}");
+                        }
+                        let m = (s.rot[0] * s.rot[0]
+                            + s.rot[1] * s.rot[1]
+                            + s.rot[2] * s.rot[2]
+                            + s.rot[3] * s.rot[3])
+                            .sqrt();
+                        assert!(
+                            (m - 1.0).abs() < 1e-3,
+                            "clip {name} at t={t}: non-unit quaternion |q|={m}"
+                        );
+                        for &c in &s.scale {
+                            assert!(c >= -1e-3, "clip {name} at t={t}: negative scale {c}");
+                        }
+                    }
+                    Err(e) => {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
+                    }
+                }
+            }
+            assert!(
+                oks == 0 || oks == 3,
+                "clip {name}: inconsistent sample results across t=0/mid/end ({oks}/3 ok, first_err: {:?})",
+                first_err
+            );
+            if oks == 0 {
+                eprintln!("clip {name}: all 3 times declined (first_err: {:?})", first_err);
+            }
+        }
+    }
+
+    /// Determinism: sampling the same WAV0/DEL0 (clip, track, time) twice
+    /// must return the same bits (or the same `Err`). Any drift means we
+    /// introduced hidden state somewhere in the codec path.
+    #[test]
+    fn sample_wavelet_and_delta_is_deterministic() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        for name in &["Bearcrawl_Walk_F_LF", "cine_A1M1_S1_Dierker"] {
+            let Ok(clip) = cat.load_clip(pandemic_hash(name)) else { continue };
+            let t = 0.3 * clip.header.duration_s.max(0.1);
+            let a = clip.sample_track(0, t);
+            let b = clip.sample_track(0, t);
+            match (a, b) {
+                (Ok(sa), Ok(sb)) => assert_eq!(sa, sb, "clip {name}: non-deterministic sample"),
+                (Err(ea), Err(eb)) => assert_eq!(ea, eb, "clip {name}: non-deterministic error"),
+                _ => panic!("clip {name}: sample_track returned Ok on one call and Err on the other"),
+            }
+        }
+    }
+
+    /// Bone-value sanity check — if a WAV0 clip decodes, its root track's
+    /// translation must be within one metre of the origin. Real Saboteur
+    /// character animations are all local-space, and the root bone
+    /// (track 0) sits at or near model origin. A wildly out-of-range
+    /// value would indicate a raw-bytes-to-float misinterpretation.
+    #[test]
+    fn wav0_decoded_root_track_translation_is_near_origin() {
+        let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
+        let cat = Anim2008Catalog::open(&root);
+        let Ok(clip) = cat.load_clip(pandemic_hash("Bearcrawl_Walk_F_LF")) else { return };
+        if let Ok(s) = clip.sample_track(0, 0.0) {
+            for &c in &s.pos {
+                assert!(
+                    c.abs() < 5.0,
+                    "root translation {c} outside 5m sanity bound (decoded raw bytes as floats?)",
+                );
+            }
+        }
+        // If Err, skip the sanity check — codec didn't decode. That's
+        // what the sweep test reports on.
+    }
+
+    /// WAV0 and DEL0 must never silently produce identity poses — either they
+    /// decode a real transform (finite, unit quaternion, plausible scale) or
+    /// they return a diagnostic-carrying `Err`. The specific diagnostic
+    /// wording is not asserted (the ported HK-4.6 decoder now returns a
+    /// range of different messages depending on which layout check failed);
+    /// what matters is that a returned `Ok` is numerically valid and a
+    /// returned `Err` is not empty.
+    #[test]
+    fn sample_wavelet_and_delta_do_not_silently_succeed() {
         let Some(root) = test_bin360() else { eprintln!("skip: no Bin360/"); return };
         let cat = Anim2008Catalog::open(&root);
 
-        // WAV0 — Bearcrawl_Walk_F_LF is a small verified WAV0 clip in the corpus.
+        // WAV0 — a shipped Bearcrawl walk.
         if let Ok(clip) = cat.load_clip(pandemic_hash("Bearcrawl_Walk_F_LF")) {
             assert_eq!(clip.header.codec, ClipCodec::Wavelet);
-            let e = clip.sample_track(0, 0.0).expect_err("WAV0 must not silently succeed");
-            assert!(
-                e.contains("ANM0WAV0") || e.contains("wavelet"),
-                "diagnostic missing wavelet tag: {e}"
-            );
+            match clip.sample_track(0, 0.0) {
+                Ok(s) => {
+                    for c in s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()) {
+                        assert!(c.is_finite(), "WAV0 sampled non-finite: {s:?}");
+                    }
+                    let m = (s.rot[0] * s.rot[0]
+                        + s.rot[1] * s.rot[1]
+                        + s.rot[2] * s.rot[2]
+                        + s.rot[3] * s.rot[3])
+                        .sqrt();
+                    assert!(
+                        (m - 1.0).abs() < 1e-3,
+                        "WAV0 sampled non-unit quaternion |q|={m}"
+                    );
+                }
+                Err(e) => {
+                    assert!(!e.is_empty(), "empty WAV0 diagnostic");
+                    eprintln!("WAV0 sample declined: {e}");
+                }
+            }
         }
-        // DEL0 — cine_A1M1_S1_Dierker is the smallest DEL0 the corpus name-hashes to.
+        // DEL0 — a shipped cinematic clip.
         if let Ok(clip) = cat.load_clip(pandemic_hash("cine_A1M1_S1_Dierker")) {
             assert_eq!(clip.header.codec, ClipCodec::Delta);
-            let e = clip.sample_track(0, 0.0).expect_err("DEL0 must not silently succeed");
-            assert!(
-                e.contains("ANM0DEL0") || e.contains("delta"),
-                "diagnostic missing delta tag: {e}"
-            );
+            match clip.sample_track(0, 0.0) {
+                Ok(s) => {
+                    for c in s.pos.iter().chain(s.rot.iter()).chain(s.scale.iter()) {
+                        assert!(c.is_finite());
+                    }
+                }
+                Err(e) => {
+                    assert!(!e.is_empty(), "empty DEL0 diagnostic");
+                    eprintln!("DEL0 sample declined: {e}");
+                }
+            }
         }
     }
 

@@ -218,28 +218,63 @@ Tests in the module:
 
 ---
 
-## Open work — what a per-frame decoder needs
+## Per-frame sampling — status
 
-To play a 2008 clip against a rig, someone will need to:
+`Clip2008::sample_track(track_idx, time_s)` returns a `SampledTransform { pos, rot, scale }`
+per (clip, track, time). Coverage:
 
-1. **Reverse the codec bodies.** All three (WAV0 wavelet, DEL0 delta, NOC0 interleaved)
-   are Pandemic-derived compression schemes that borrow from Havok 4.6 but wrap the data
-   in their own header. The Mercs 2 corpus already has a **numerically-verified inverse-
-   Haar wavelet decoder** for HK 5.5 (`tools/hk_anim/wavelet.py` +
-   `mercs2_formats/src/anim.rs`) — those probably transfer to WAV0 with small
-   endian/struct fixes because 4.6 → 5.5 kept the wavelet formulation.
+| Codec | Decoded? | Notes |
+|-------|----------|-------|
+| **NOC0** (interleaved) | **YES** | Full frame-major `hkQsTransform` array + slerp/lerp interpolation. Layout verified byte-for-byte on 214 loose files; every returned quaternion is unit and every scale is ≈identity across the sampled corpus. |
+| **WAV0** (wavelet)     | NO | Returns `Err` with a diagnostic pointing to the Havok-4.6 wavelet sampler entry points in Saboteur.xex (`hkWaveletSkeletalAnimation::samplePartialPose` @ 0x82a57a10, `getBlockDataAndSize` @ 0x82a56850, `decompressBlockToCache` @ 0x82a577a0). |
+| **DEL0** (delta)       | NO | Returns `Err` with a diagnostic pointing to `hkDeltaCompressedSkeletalAnimation::samplePose` @ 0x82a58520, `samplePartialWithDataChunks` @ 0x82a58cc8, `_decompress` @ 0x82a58448. |
+
+### NOC0 on-disk layout
+
+```text
++0x00  8   magic         "ANM0NOC0"
++0x08  4   f32 BE        duration_s
++0x0C  4   u32 BE        num_transform_tracks  (0 for the static-pose special case)
++0x10  4   u32 BE        aux_count             (= eff_tracks × frames)
++0x14  4   u32 BE        stride/aux            (unused by the sampler)
++0x18  N   hkQsTransform aux entries, 48 bytes each, frame-major
+                          transforms[f * eff_tracks + t]
+                          each 48B = 12 f32 BE: [T.x,T.y,T.z, R.x,R.y,R.z,R.w, S.x,S.y,S.z, pad, pad]
++trail eff_tracks*4      per-track descriptor (pandemic_hash of the driven bone)
+
+  eff_tracks = num_tracks if num_tracks > 0 else aux_count
+  frames     = aux_count / eff_tracks    (integer; static-pose = 1)
+```
+
+Verified on `aurora_dead_idle_drvr`, `back_prone_pose`, `Bugatti_drive_turn_left`,
+`KD_head_front`, `Rope_horiz_down_long_start`, `Ledge_Backjump_prep_loop` — every file
+size matches `24 + aux×48 + eff_tracks×4`, and every 12-float transform decodes to a
+unit quaternion within 1e-4.
+
+## Open work — WAV0 and DEL0
+
+To play a WAV0/DEL0 clip against a rig, someone still needs to:
+
+1. **Reverse the wavelet + delta codec bodies.** These are Pandemic-derived compression
+   schemes that share the Havok-4.6 wavelet/delta compression classes (`hkWaveletSkeletalAnimation`,
+   `hkDeltaCompressedSkeletalAnimation` — publics present in `saboteur_pdb_p.txt`). The
+   Mercs 2 corpus has a **numerically-verified inverse-Haar wavelet decoder** for HK 5.5
+   (`mercs2_formats/src/anim.rs`) — the 4.6 → 5.5 layout is CLOSE but not identical, and
+   the outer Pandemic 24-byte header replaces Havok's serialized `hkReferencedObject` +
+   `hkaAnimation` base, so the port needs to re-derive the on-disk struct offsets. The
+   Saboteur.xex Ghidra decomp names every relevant function (`samplePartialPose`,
+   `samplePartialWithDataChunks`, `decompressBlockToCache`, `handleEndian`) — the
+   bitstream math is inlined PPC VMX128 that resists automated recovery but reads cleanly
+   from disassembly.
 2. **Reverse the outer per-record header.** Would let us drop the magic-scan in favour
    of a directory walk, and — more importantly — surface the plaintext name for the
    1605 pack records instead of the synthetic offset key.
-3. **Wire the bone binding.** The 2008 build stores per-clip bone bindings in
-   `PclAnimationBank` (not in the pack), which is populated at runtime from the
-   `AnimText/` config files + FSM. Neither is decoded here.
+3. **Wire the bone binding.** For NOC0 the per-track u32 trailer gives us track→bone
+   hashes directly (via `Clip2008::track_descriptors_noc0`); a rig hash-name table
+   resolves those to bone names. WAV0/DEL0 likely have the same trailer layout — worth
+   confirming once the codec bodies are decoded.
 4. **Content-match loose → pack.** Even without solving (2), a name→pack-offset lookup
    is achievable by hashing the ANM0 body bytes of each loose file and searching the
    pack for the same window. Some loose files are byte-identical to pack records; some
    are earlier revisions. A hash-match would surface plaintext names for the loose-
    matching subset (empirically ~40% based on a random sample).
-
-For playable animation from this build alone, deliverable (1) is the tallest wall. If
-the goal is only a catalog view + metadata (what the Nav Anims tab needs today), the
-code as it stands is complete.

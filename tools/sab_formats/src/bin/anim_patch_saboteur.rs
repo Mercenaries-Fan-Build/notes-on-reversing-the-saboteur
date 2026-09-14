@@ -45,8 +45,10 @@
 //! `[[dlc-slot-mount-rules]]`.
 
 use sab_formats::ap0l::{
-    find_nth_object, hash_bytes as ap0l_hash_bytes, map_hk_to_xml_indices, set_hkparam_in_object,
-    xml_spline_fingerprint, Ap0lPack, HkPackfile,
+    find_nth_object, hash_bytes as ap0l_hash_bytes, map_hk_to_xml_indices,
+    offset_static_translation, set_hkparam_in_object, set_static_rotation, set_static_scale,
+    set_static_translation, walk_spline_track_layouts, xml_spline_fingerprint, Ap0lPack,
+    HkPackfile, StaticEditError, TrackLayout,
 };
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
@@ -74,10 +76,27 @@ anim_patch_saboteur — author modded Havok clips in a Saboteur Animations.pack.
   replace-hkx <pack> <in.hkx> <out.pack>
   roundtrip   <pack> --assetcc <AssetCc2.exe> --out <pack>
               [--keep-artifacts <dir>]
-  perturb-clip <pack> --assetcc <AssetCc2.exe> --out <pack> --clip <index>
-              --set-duration <seconds> [--keep-artifacts <dir>]
+  perturb-clip <pack> --out <pack> --clip <index> <edit-flag ...>
+              [--assetcc <AssetCc2.exe>] [--keep-artifacts <dir>]
+
+    Edit flags (any combination, at least one required):
+      --set-duration <seconds>                        (requires --assetcc)
+      --set-static-translation <track> <x> <y> <z>
+      --set-static-rotation    <track> <qx> <qy> <qz> <qw>
+      --set-static-scale       <track> <sx> <sy> <sz>
+      --offset-static-translation <track> <dx> <dy> <dz>
+
+    Static-value edits patch the raw compressed data stream directly and do
+    NOT need AssetCc2. --set-duration edits an XML hkparam, so it needs the
+    AssetCc2 round-trip. If both kinds are given, the AssetCc2 round-trip
+    runs first and static edits are applied to the round-tripped blob.
+
   verify-splice <baseline.pack> <modified.pack>
-  debug-map    <pack> <xml>                                # diagnostic");
+  debug-map    <pack> <xml>                                # diagnostic
+  probe-clip   <pack> --clip <index>                       # list per-track
+                                                             mask + which
+                                                             tracks accept
+                                                             a static edit");
     exit(2);
 }
 
@@ -247,16 +266,140 @@ fn cmd_roundtrip(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// One parsed static-value edit request. `track` is a fixup-order track index
+/// into the target clip's transform tracks. The value fields carry the new
+/// value (for `Set*` variants) or the delta (for `Offset*`).
+#[derive(Debug)]
+enum StaticEdit {
+    SetTranslation { track: usize, xyz: [f32; 3] },
+    SetRotation { track: usize, quat: [f32; 4] },
+    SetScale { track: usize, sxyz: [f32; 3] },
+    OffsetTranslation { track: usize, delta: [f32; 3] },
+}
+
+/// Pull every occurrence of `name` from `args` and, for each occurrence,
+/// consume the next `arity` positional arguments as the payload. Returns the
+/// payloads (each a `Vec<&str>` of length `arity`) or an error naming which
+/// occurrence was short.
+fn collect_multi<'a>(args: &'a [String], name: &str, arity: usize) -> Result<Vec<Vec<&'a str>>, String> {
+    let mut out = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if a == name {
+            let end = i + 1 + arity;
+            if end > args.len() {
+                return Err(format!("{name} expects {arity} args, only {} present", args.len() - i - 1));
+            }
+            out.push(args[i + 1..end].iter().map(|s| s.as_str()).collect());
+        }
+    }
+    Ok(out)
+}
+
+fn parse_f32s<const N: usize>(vals: &[&str]) -> Result<[f32; N], String> {
+    if vals.len() != N {
+        return Err(format!("expected {N} floats, got {}", vals.len()));
+    }
+    let mut out = [0f32; N];
+    for (i, v) in vals.iter().enumerate() {
+        out[i] = v.parse().map_err(|_| format!("bad float {v:?}"))?;
+    }
+    Ok(out)
+}
+
+fn collect_static_edits(args: &[String]) -> Result<Vec<StaticEdit>, String> {
+    let mut out = Vec::new();
+    for v in collect_multi(args, "--set-static-translation", 4)? {
+        let track = parse_usize(v[0])?;
+        let xyz = parse_f32s::<3>(&v[1..])?;
+        out.push(StaticEdit::SetTranslation { track, xyz });
+    }
+    for v in collect_multi(args, "--set-static-rotation", 5)? {
+        let track = parse_usize(v[0])?;
+        let quat = parse_f32s::<4>(&v[1..])?;
+        out.push(StaticEdit::SetRotation { track, quat });
+    }
+    for v in collect_multi(args, "--set-static-scale", 4)? {
+        let track = parse_usize(v[0])?;
+        let sxyz = parse_f32s::<3>(&v[1..])?;
+        out.push(StaticEdit::SetScale { track, sxyz });
+    }
+    for v in collect_multi(args, "--offset-static-translation", 4)? {
+        let track = parse_usize(v[0])?;
+        let delta = parse_f32s::<3>(&v[1..])?;
+        out.push(StaticEdit::OffsetTranslation { track, delta });
+    }
+    Ok(out)
+}
+
+/// Apply `edits` to the compressed `data` slice of a clip that lives at
+/// `[data_off .. data_off + data_len]` inside `blob`. Caller supplies the
+/// clip's `num_transform_tracks` and `mask_and_quantization_size`.
+fn apply_static_edits_at(
+    blob: &mut [u8],
+    data_off: usize,
+    data_len: usize,
+    ntt: usize,
+    mq: usize,
+    edits: &[StaticEdit],
+) -> Result<usize, String> {
+    let layouts: Vec<TrackLayout> = {
+        let slice = &blob[data_off..data_off + data_len];
+        walk_spline_track_layouts(slice, ntt, mq).map_err(|e| e.to_string())?
+    };
+    let data_mut = &mut blob[data_off..data_off + data_len];
+    for e in edits {
+        match *e {
+            StaticEdit::SetTranslation { track, xyz } => {
+                let old = set_static_translation(data_mut, &layouts, track, xyz)
+                    .map_err(|e| e.to_string())?;
+                println!(
+                    "  trk{track}: static translation ({:.4}, {:.4}, {:.4}) -> ({:.4}, {:.4}, {:.4})",
+                    old[0], old[1], old[2], xyz[0], xyz[1], xyz[2]
+                );
+            }
+            StaticEdit::SetRotation { track, quat } => {
+                let old = set_static_rotation(data_mut, &layouts, track, quat)
+                    .map_err(|e| e.to_string())?;
+                println!(
+                    "  trk{track}: static rotation ({:.4}, {:.4}, {:.4}, {:.4}) -> ({:.4}, {:.4}, {:.4}, {:.4})",
+                    old[0], old[1], old[2], old[3], quat[0], quat[1], quat[2], quat[3]
+                );
+            }
+            StaticEdit::SetScale { track, sxyz } => {
+                let old = set_static_scale(data_mut, &layouts, track, sxyz)
+                    .map_err(|e| e.to_string())?;
+                println!(
+                    "  trk{track}: static scale ({:.4}, {:.4}, {:.4}) -> ({:.4}, {:.4}, {:.4})",
+                    old[0], old[1], old[2], sxyz[0], sxyz[1], sxyz[2]
+                );
+            }
+            StaticEdit::OffsetTranslation { track, delta } => {
+                let (old, new) = offset_static_translation(data_mut, &layouts, track, delta)
+                    .map_err(|e| e.to_string())?;
+                println!(
+                    "  trk{track}: static translation ({:.4}, {:.4}, {:.4}) + ({:+.4}, {:+.4}, {:+.4}) = ({:.4}, {:.4}, {:.4})",
+                    old[0], old[1], old[2], delta[0], delta[1], delta[2], new[0], new[1], new[2]
+                );
+            }
+        }
+    }
+    Ok(edits.len())
+}
+
 fn cmd_perturb_clip(args: &[String]) -> Result<(), String> {
     let pack = args.get(1).ok_or("need <pack>")?;
     let out = arg(args, "--out").ok_or("need --out <pack>")?;
     let clip: usize = parse_usize(&arg(args, "--clip").ok_or("need --clip <index>")?)?;
-    let exe = find_assetcc(arg(args, "--assetcc"))?;
     let keep = arg(args, "--keep-artifacts").map(PathBuf::from);
 
     let set_duration = arg(args, "--set-duration").map(|s| parse_f32(&s)).transpose()?;
-    if set_duration.is_none() {
-        return Err("need at least one edit flag (e.g. --set-duration <seconds>)".into());
+    let static_edits = collect_static_edits(args)?;
+    let need_assetcc = set_duration.is_some();
+    if !need_assetcc && static_edits.is_empty() {
+        return Err(
+            "need at least one edit flag (e.g. --set-duration <seconds> or \
+             --set-static-translation <track> <x> <y> <z>)".into()
+        );
     }
 
     let bytes = fs::read(pack).map_err(|e| format!("read pack: {e}"))?;
@@ -276,58 +419,102 @@ fn cmd_perturb_clip(args: &[String]) -> Result<(), String> {
         hk.version()
     );
 
-    // Round-trip with XML editing:
-    let dir = scratch_dir("anim_perturb").map_err(|e| e.to_string())?;
-    let hkx = dir.join("input.hkx");
-    let xml = dir.join("input.xml");
-    let xml_mod = dir.join("perturbed.xml");
-    let rt = dir.join("perturbed.hkx");
-    fs::write(&hkx, ap.hk_blob()).map_err(|e| format!("write scratch hkx: {e}"))?;
-    assetcc_decompile(&exe, &hkx, &xml)?;
-    let xml_text = fs::read_to_string(&xml).map_err(|e| format!("read xml: {e}"))?;
-    // AssetCc2 emits objects in a different order than the Havok packfile's
-    // virtual-fixup table. sab_havok65 / sab_animmeta both index clips by
-    // fixup order, so we translate --clip N (fixup order) into the matching
-    // XML declaration index by structural fingerprint.
-    let hk_fps: Vec<_> = scas.iter().map(|&s| hk.spline_fingerprint(s)).collect();
-    let hk_hashes: Vec<_> = scas.iter().map(|&s| ap0l_hash_bytes(hk.spline_data(s))).collect();
-    let hk_to_xml =
-        map_hk_to_xml_indices(&xml_text, &hk_fps, &hk_hashes).map_err(|e| e.to_string())?;
-    let xml_idx = hk_to_xml[clip];
-    if xml_idx != clip {
+    // -------- Phase 1: AssetCc2 round-trip (if any XML-level edit is needed) --------
+    let blob_after_xml_edits: Vec<u8> = if need_assetcc {
+        let exe = find_assetcc(arg(args, "--assetcc"))?;
+        let dir = scratch_dir("anim_perturb").map_err(|e| e.to_string())?;
+        let hkx = dir.join("input.hkx");
+        let xml = dir.join("input.xml");
+        let xml_mod = dir.join("perturbed.xml");
+        let rt = dir.join("perturbed.hkx");
+        fs::write(&hkx, ap.hk_blob()).map_err(|e| format!("write scratch hkx: {e}"))?;
+        assetcc_decompile(&exe, &hkx, &xml)?;
+        let xml_text = fs::read_to_string(&xml).map_err(|e| format!("read xml: {e}"))?;
+        // AssetCc2 emits objects in a different order than the Havok packfile's
+        // virtual-fixup table. sab_havok65 / sab_animmeta both index clips by
+        // fixup order, so we translate --clip N (fixup order) into the matching
+        // XML declaration index by structural fingerprint.
+        let hk_fps: Vec<_> = scas.iter().map(|&s| hk.spline_fingerprint(s)).collect();
+        let hk_hashes: Vec<_> = scas.iter().map(|&s| ap0l_hash_bytes(hk.spline_data(s))).collect();
+        let hk_to_xml =
+            map_hk_to_xml_indices(&xml_text, &hk_fps, &hk_hashes).map_err(|e| e.to_string())?;
+        let xml_idx = hk_to_xml[clip];
+        if xml_idx != clip {
+            println!(
+                "note: fixup clip #{clip} = XML object #{xml_idx} (AssetCc2 reordered on decompile)",
+            );
+        }
+        let (obj_start, obj_end) = find_nth_object(&xml_text, CLASS_SPLINE, xml_idx)
+            .ok_or_else(|| format!("clip #{clip} (XML idx {xml_idx}) not found in XML"))?;
+        let mut mutated = xml_text.clone();
+        if let Some(seconds) = set_duration {
+            let repl = format!("{seconds:.6}");
+            mutated = set_hkparam_in_object(&mutated, obj_start, obj_end, "duration", &repl)?;
+            println!("set clip #{clip}.duration -> {repl}");
+        }
+        fs::write(&xml_mod, &mutated).map_err(|e| format!("write perturbed xml: {e}"))?;
+        assetcc_compile(&exe, &xml_mod, &rt)?;
+        let blob_out = fs::read(&rt).map_err(|e| format!("read perturbed hkx: {e}"))?;
+        copy_artifacts(&[&hkx, &xml, &xml_mod, &rt], &keep)?;
+        if keep.is_none() {
+            let _ = fs::remove_dir_all(&dir);
+        }
         println!(
-            "note: fixup clip #{clip} = XML object #{xml_idx} (AssetCc2 reordered on decompile)",
+            "AssetCc2 recompile: {} bytes (input was {}, Δ={:+})",
+            blob_out.len(),
+            ap.hk_blob().len(),
+            blob_out.len() as i64 - ap.hk_blob().len() as i64
         );
-    }
-    let (obj_start, obj_end) = find_nth_object(&xml_text, CLASS_SPLINE, xml_idx)
-        .ok_or_else(|| format!("clip #{clip} (XML idx {xml_idx}) not found in XML"))?;
-    let mut mutated = xml_text.clone();
-    if let Some(seconds) = set_duration {
-        // Match AssetCc2's own %f style (six decimal places) to stay diff-friendly.
-        let repl = format!("{seconds:.6}");
-        // The `duration` param appears once in each hkaSplineCompressedAnimation object.
-        // `set_hkparam_in_object` guards against ambiguity for us.
-        mutated = set_hkparam_in_object(&mutated, obj_start, obj_end, "duration", &repl)?;
-        println!("set clip #{clip}.duration -> {repl}");
-    }
-    fs::write(&xml_mod, &mutated).map_err(|e| format!("write perturbed xml: {e}"))?;
-    assetcc_compile(&exe, &xml_mod, &rt)?;
-    let blob_out = fs::read(&rt).map_err(|e| format!("read perturbed hkx: {e}"))?;
+        blob_out
+    } else {
+        ap.hk_blob().to_vec()
+    };
 
-    let spliced = ap.splice_hk_blob(&blob_out);
+    // -------- Phase 2: static-value edits (if any) directly in the blob --------
+    let mut final_blob = blob_after_xml_edits;
+    if !static_edits.is_empty() {
+        // The blob after AssetCc2 round-trip may have shifted object offsets, so
+        // re-parse the packfile to locate clip N and extract just the offsets we
+        // need — then drop the HkPackfile borrow before mutating the blob.
+        let target = {
+            let hk2 = HkPackfile::parse(&final_blob).map_err(|e| e.to_string())?;
+            let scas2 = hk2.objects_of_class(CLASS_SPLINE);
+            let obj2 = *scas2.get(clip).ok_or_else(|| {
+                format!("clip index {clip} vanished after AssetCc2 round-trip (post-rt count = {})", scas2.len())
+            })?;
+            let ntt2 = hk2.num_transform_tracks(obj2) as usize;
+            let mq2 = hk2.mask_and_quantization_size(obj2) as usize;
+            let nb2 = hk2.num_blocks(obj2);
+            let (data_off, data_len) = hk2
+                .spline_data_span(obj2)
+                .ok_or("clip has no `data` hkArray local-fixup — malformed packfile")?;
+            println!(
+                "  static-edit target: {} track(s), maskAndQuantizationSize={}, numBlocks={}",
+                ntt2, mq2, nb2
+            );
+            if nb2 != 1 {
+                return Err(format!(
+                    "clip has numBlocks={nb2}; static-value editing only supports single-block clips \
+                     (entire retail corpus is single-block)"
+                ));
+            }
+            (data_off, data_len, ntt2, mq2)
+        };
+        apply_static_edits_at(&mut final_blob, target.0, target.1, target.2, target.3, &static_edits)?;
+    }
+
+    // -------- Splice back into AP0L and write out --------
+    let spliced = ap.splice_hk_blob(&final_blob);
     fs::write(&out, &spliced).map_err(|e| format!("write out: {e}"))?;
     println!(
-        "AssetCc2 recompile: {} bytes (input was {}, Δ={:+}); wrote {} ({} bytes)",
-        blob_out.len(),
+        "final blob {} bytes (baseline {}, Δ={:+}); wrote {} ({} bytes)",
+        final_blob.len(),
         ap.hk_blob().len(),
-        blob_out.len() as i64 - ap.hk_blob().len() as i64,
+        final_blob.len() as i64 - ap.hk_blob().len() as i64,
         out,
         spliced.len(),
     );
-    copy_artifacts(&[&hkx, &xml, &xml_mod, &rt], &keep)?;
-    if keep.is_none() {
-        let _ = fs::remove_dir_all(&dir);
-    }
+    let _ = StaticEditError::ZeroQuaternion; // keep the type re-exported for downstream tools
     Ok(())
 }
 
@@ -361,6 +548,61 @@ fn cmd_debug_map(args: &[String]) -> Result<(), String> {
     // Sanity: how many identity vs shuffled?
     let identity = map.iter().enumerate().filter(|(i, x)| *i == **x).count();
     println!("clips with identity mapping: {}/{}", identity, map.len());
+    Ok(())
+}
+
+fn cmd_probe_clip(args: &[String]) -> Result<(), String> {
+    let pack = args.get(1).ok_or("need <pack>")?;
+    let clip: usize = parse_usize(&arg(args, "--clip").ok_or("need --clip <index>")?)?;
+    let bytes = fs::read(pack).map_err(|e| format!("read pack: {e}"))?;
+    let ap = Ap0lPack::parse(bytes).map_err(|e| e.to_string())?;
+    let hk = HkPackfile::parse(ap.hk_blob()).map_err(|e| e.to_string())?;
+    let scas = hk.objects_of_class(CLASS_SPLINE);
+    let obj = *scas.get(clip).ok_or_else(|| {
+        format!("clip index {clip} out of range (pack has {} spline anims)", scas.len())
+    })?;
+    let ntt = hk.num_transform_tracks(obj) as usize;
+    let mq = hk.mask_and_quantization_size(obj) as usize;
+    let nb = hk.num_blocks(obj);
+    println!(
+        "clip #{clip} @ data+0x{:x}: {} transform tracks, mask_and_quant_size={}, numBlocks={}",
+        obj, ntt, mq, nb
+    );
+    if nb != 1 {
+        return Err(format!("multi-block clip (numBlocks={nb}); walker requires 1"));
+    }
+    let (data_off, data_len) = hk
+        .spline_data_span(obj)
+        .ok_or("clip has no `data` hkArray")?;
+    let data = &ap.hk_blob()[data_off..data_off + data_len];
+    let layouts = walk_spline_track_layouts(data, ntt, mq).map_err(|e| e.to_string())?;
+    let mut n_full_trn = 0;
+    let mut n_static_rot = 0;
+    let mut n_full_scl = 0;
+    println!(
+        "  {:>4}  ctrl trn_m rot_m scl_m  {:>10} {:>10} {:>10}   T-static  R-static  S-static",
+        "trk", "trn_off", "rot_off", "scl_off"
+    );
+    for (i, l) in layouts.iter().enumerate() {
+        let t_full = l.is_fully_static_vec3_trn();
+        let r_stat = l.is_static_quat();
+        let s_full = l.is_fully_static_vec3_scl();
+        if t_full { n_full_trn += 1; }
+        if r_stat { n_static_rot += 1; }
+        if s_full { n_full_scl += 1; }
+        println!(
+            "  {:>4}  0x{:02x} 0x{:02x} 0x{:02x} 0x{:02x}  {:>10} {:>10} {:>10}   {}         {}         {}",
+            i, l.ctrl, l.trn_mask, l.rot_mask, l.scl_mask,
+            l.trn_static_off, l.rot_payload_off, l.scl_static_off,
+            if t_full { "yes" } else { " no" },
+            if r_stat { "yes" } else { " no" },
+            if s_full { "yes" } else { " no" },
+        );
+    }
+    println!(
+        "\nsummary: {}/{} tracks fully-static translation, {}/{} static rotation, {}/{} fully-static scale",
+        n_full_trn, ntt, n_static_rot, ntt, n_full_scl, ntt
+    );
     Ok(())
 }
 
@@ -446,6 +688,7 @@ fn main() {
         "perturb-clip" => cmd_perturb_clip(rest),
         "verify-splice" => cmd_verify_splice(rest),
         "debug-map" => cmd_debug_map(rest),
+        "probe-clip" => cmd_probe_clip(rest),
         _ => usage(),
     };
     if let Err(e) = r {

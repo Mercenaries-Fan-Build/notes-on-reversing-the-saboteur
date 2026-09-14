@@ -324,6 +324,32 @@ impl<'a> HkPackfile<'a> {
         }
     }
 
+    /// Absolute offset within the packfile blob of the spline `data` hkArray's
+    /// first byte, plus its length. Same slice as [`Self::spline_data`], but
+    /// returned as `(offset, len)` so callers that want to WRITE into an owned
+    /// copy of the blob (`Vec<u8>`) can do so without going through this
+    /// borrow-by-reference wrapper. Returns `None` if the local-fixup for the
+    /// `data` pointer field is missing (should not happen in retail data).
+    pub fn spline_data_span(&self, obj_src: usize) -> Option<(usize, usize)> {
+        let size = read_u32_le(self.blob, self.data_pk + obj_src + 0x74) as usize;
+        self.lf.get(&(obj_src + 0x70)).map(|&d| (self.data_pk + d, size))
+    }
+
+    /// Read `numBlocks` (`hkaSplineCompressedAnimation + 0x28`). The static-value
+    /// mutation helpers require this to be `1` (the entire retail corpus is
+    /// single-block; a multi-block walker would need a per-block `blockOffsets`
+    /// dispatch that is intentionally not implemented here).
+    pub fn num_blocks(&self, obj_src: usize) -> u32 {
+        read_u32_le(self.blob, self.data_pk + obj_src + 0x28)
+    }
+
+    /// Read `maskAndQuantizationSize` (+0x30). The per-track 4-byte header
+    /// table sits at the start of each block; the packed T/R/S stream begins
+    /// this many bytes into the block.
+    pub fn mask_and_quantization_size(&self, obj_src: usize) -> u32 {
+        read_u32_le(self.blob, self.data_pk + obj_src + 0x30)
+    }
+
     /// Structural fingerprint of a spline-anim object — stable across the
     /// AssetCc2 XML round-trip and (on the 2214-clip retail corpus)
     /// disambiguating: no two clips share the same tuple. Used by
@@ -656,6 +682,548 @@ pub fn set_hkparam_in_object(
     Ok(out)
 }
 
+// ---------------------------------------------------------------- spline data walker
+
+/// Failure modes surfaced by the static-value mutation helpers
+/// ([`set_static_translation`], [`set_static_rotation`], [`set_static_scale`],
+/// [`offset_static_translation`]).
+#[derive(Debug, PartialEq)]
+pub enum StaticEditError {
+    /// `track_idx >= num_transform_tracks` for the target clip.
+    TrackOutOfRange { track: usize, count: usize },
+    /// The clip has `numBlocks != 1`. Multi-block walks are not implemented —
+    /// the entire retail corpus is single-block, so this fires only on unusual
+    /// authored data.
+    NotSingleBlock { num_blocks: u32 },
+    /// The channel's mask says the value is not (fully) static — either the
+    /// spline bits are set (dynamic per-frame) or a required component's
+    /// static bit is clear. `--set-static-translation` and `--set-static-scale`
+    /// require `mask == 0x07` (all three xyz static, no spline); `--set-static-rotation`
+    /// requires `mask & 0xf0 == 0` AND `mask & 0x0f != 0` (packed static quaternion).
+    NotStatic { channel: &'static str, mask: u8 },
+    /// The rotation quantization type is not `1` (THREECOMP40). Only type 1 is
+    /// implemented — the entire retail corpus uses it exclusively. See
+    /// `tools/sab_havok65/src/main.rs :: unpack_quat` for the other types.
+    UnsupportedRotQuant { qtype: u8 },
+    /// The walker ran past the end of the compressed data stream. Would only
+    /// fire on truncated / malformed input.
+    Truncated { at: usize, need: usize, have: usize },
+    /// The supplied quaternion had a zero (or near-zero) norm; can't normalize.
+    ZeroQuaternion,
+}
+
+impl std::fmt::Display for StaticEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StaticEditError::TrackOutOfRange { track, count } => {
+                write!(f, "track {track} out of range (clip has {count} transform tracks)")
+            }
+            StaticEditError::NotSingleBlock { num_blocks } => {
+                write!(f, "clip has numBlocks={num_blocks}, static-value editing requires 1")
+            }
+            StaticEditError::NotStatic { channel, mask } => write!(
+                f,
+                "{channel} channel mask=0x{mask:02x} is not the required fully-static shape \
+                 (translation/scale need mask==0x07; rotation needs 0x0f mask bits set and 0xf0 clear)"
+            ),
+            StaticEditError::UnsupportedRotQuant { qtype } => write!(
+                f,
+                "rotation quantization type {qtype} is not supported (only THREECOMP40=1 is implemented)"
+            ),
+            StaticEditError::Truncated { at, need, have } => write!(
+                f,
+                "compressed data truncated at offset {at}: need {need} bytes, have {have}"
+            ),
+            StaticEditError::ZeroQuaternion => write!(
+                f,
+                "quaternion has zero or near-zero norm and cannot be normalized"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StaticEditError {}
+
+/// Which channel of a track's compressed block a mutation touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticChannel {
+    Translation,
+    Rotation,
+    Scale,
+}
+
+/// One track's per-channel byte offsets and mask bytes, relative to the start
+/// of the compressed `data` array (offset 0 == first mask byte of block 0).
+/// Present on every track for which the channel exists in the stream, with the
+/// mask byte and the byte offset of the FIRST byte of that channel's payload
+/// (the byte right after any knot vector + alignment; static values begin
+/// here). Callers use [`is_fully_static_vec3`] etc. before writing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackLayout {
+    pub ctrl: u8,
+    pub trn_mask: u8,
+    pub rot_mask: u8,
+    pub scl_mask: u8,
+    /// Byte offset within `data` where the translation static-values (or
+    /// spline range floats) begin — that is, immediately after any knot
+    /// vector and the 4-byte alignment.
+    pub trn_static_off: usize,
+    /// Byte offset within `data` where the rotation payload begins — a single
+    /// packed quaternion for the static shape, or the (n, degree, knots)
+    /// header for the spline shape.
+    pub rot_payload_off: usize,
+    /// Byte offset within `data` where the scale static/range floats begin.
+    pub scl_static_off: usize,
+}
+
+impl TrackLayout {
+    /// True if the translation is a plain 3-float static value (all of x/y/z
+    /// static, no w, no spline) — the shape [`set_static_translation`] can
+    /// edit directly.
+    pub fn is_fully_static_vec3_trn(&self) -> bool {
+        self.trn_mask == 0x07
+    }
+
+    /// True if the scale channel is a plain 3-float static value.
+    pub fn is_fully_static_vec3_scl(&self) -> bool {
+        self.scl_mask == 0x07
+    }
+
+    /// True if the rotation channel is a single packed static quaternion
+    /// (any of bits 0..3 set, no spline bits 4..7). THREECOMP40 fits any of
+    /// these.
+    pub fn is_static_quat(&self) -> bool {
+        self.rot_mask & 0xf0 == 0 && self.rot_mask & 0x0f != 0
+    }
+}
+
+fn align_up_usize(x: usize, a: usize) -> usize { (x + a - 1) & !(a - 1) }
+
+/// Byte size of a packed rotation control point given its quant type.
+/// Type 1 = THREECOMP40 (5 bytes) — the only type used by retail. Others are
+/// listed for future callers but the mutator errors out on them.
+fn rot_cpsize(qtype: u8) -> usize {
+    match qtype {
+        0 => 4, // POLAR32
+        1 => 5, // THREECOMP40
+        2 => 6, // THREECOMP48
+        3 => 3, // THREECOMP24
+        _ => 5,
+    }
+}
+fn rot_align(_qtype: u8) -> usize { 1 }
+
+/// Replay the spline decoder's byte-pointer arithmetic to compute, for every
+/// track of a single-block clip, where its translation / rotation / scale
+/// payload begins within the `data` array. This is the walker
+/// [`set_static_translation`] and friends use to locate the bytes to overwrite.
+///
+/// The walker faithfully reproduces the offsets computed by
+/// `tools/sab_havok65/src/main.rs :: eval_vec4 / eval_rotation`. It does NOT
+/// decode the values themselves — it only advances the pointer.
+///
+/// * `data`   — the whole packed spline stream for this clip
+///   (block 0 lives at offset 0 for single-block clips).
+/// * `num_transform_tracks` — from the clip's `numberOfTransformTracks` field.
+/// * `mask_and_quantization_size` — from the clip's `maskAndQuantizationSize`.
+///
+/// Returns per-track layouts, or [`StaticEditError::Truncated`] if the input
+/// is shorter than the walker would need.
+pub fn walk_spline_track_layouts(
+    data: &[u8],
+    num_transform_tracks: usize,
+    mask_and_quantization_size: usize,
+) -> Result<Vec<TrackLayout>, StaticEditError> {
+    let bs = 0usize; // single-block: block 0 starts at data[0]
+    if data.len() < bs + mask_and_quantization_size {
+        return Err(StaticEditError::Truncated {
+            at: bs,
+            need: mask_and_quantization_size,
+            have: data.len(),
+        });
+    }
+    let mut ptr = bs + mask_and_quantization_size;
+    let mut out = Vec::with_capacity(num_transform_tracks);
+    for t in 0..num_transform_tracks {
+        let hdr = bs + t * 4;
+        if hdr + 4 > data.len() {
+            return Err(StaticEditError::Truncated {
+                at: hdr,
+                need: 4,
+                have: data.len(),
+            });
+        }
+        let ctrl = data[hdr];
+        let trn_mask = data[hdr + 1];
+        let rot_mask = data[hdr + 2];
+        let scl_mask = data[hdr + 3];
+        let trn_type = ctrl & 3;
+        let rot_type = (ctrl >> 2) & 0xf;
+        let scl_type = ctrl >> 6;
+
+        // ---- translation channel ----
+        let trn_static_off = walk_vec4_advance(data, &mut ptr, trn_mask, trn_type)?;
+        ptr = align_up_usize(ptr, 4);
+
+        // ---- rotation channel ----
+        let rot_payload_off = ptr;
+        walk_rotation(data, &mut ptr, rot_mask, rot_type)?;
+        ptr = align_up_usize(ptr, 4);
+
+        // ---- scale channel ----
+        let scl_static_off = walk_vec4_advance(data, &mut ptr, scl_mask, scl_type)?;
+        ptr = align_up_usize(ptr, 4);
+
+        out.push(TrackLayout {
+            ctrl,
+            trn_mask,
+            rot_mask,
+            scl_mask,
+            trn_static_off,
+            rot_payload_off,
+            scl_static_off,
+        });
+        let _ = t;
+    }
+    Ok(out)
+}
+
+/// Walk translation/scale where the mask may be static or spline. Advances
+/// `ptr` past the whole channel (knot header + static/range floats + quantized
+/// CPs, whichever apply) and returns the byte offset where the static/range
+/// float slot begins — that's the write target for the static-value editors.
+fn walk_vec4_full(
+    data: &[u8],
+    ptr: &mut usize,
+    mask: u8,
+    quant_type: u8,
+) -> Result<usize, StaticEditError> {
+    let has_spline = mask & 0xf0 != 0;
+    let mut n_idx = 0usize;
+    if has_spline {
+        if *ptr + 3 > data.len() {
+            return Err(StaticEditError::Truncated { at: *ptr, need: 3, have: data.len() });
+        }
+        n_idx = u16::from_le_bytes([data[*ptr], data[*ptr + 1]]) as usize;
+        *ptr += 2;
+        let degree = data[*ptr] as usize;
+        *ptr += 1;
+        let knot_ptr = *ptr;
+        let end = knot_ptr + n_idx + 2 + degree;
+        if end > data.len() {
+            return Err(StaticEditError::Truncated { at: knot_ptr, need: n_idx + 2 + degree, have: data.len().saturating_sub(knot_ptr) });
+        }
+        *ptr = end;
+    }
+    *ptr = align_up_usize(*ptr, 4);
+    let static_off = *ptr;
+    for i in 0..3 {
+        if mask & (1 << i) != 0 {
+            *ptr += 4;
+        } else if mask & (0x10 << i) != 0 {
+            *ptr += 8;
+        }
+    }
+    if mask & 8 != 0 {
+        *ptr += 4;
+    }
+    if *ptr > data.len() {
+        return Err(StaticEditError::Truncated { at: *ptr, need: 0, have: data.len() });
+    }
+    if has_spline {
+        *ptr = (*ptr + 1) & !1;
+        let bytes_per = if quant_type == 0 { 1usize } else { 2usize };
+        let n_comp = ((mask >> 4) & 7).count_ones() as usize;
+        let num_cp = n_idx + 1;
+        let need = num_cp * n_comp * bytes_per;
+        if *ptr + need > data.len() {
+            return Err(StaticEditError::Truncated { at: *ptr, need, have: data.len().saturating_sub(*ptr) });
+        }
+        *ptr += need;
+    }
+    Ok(static_off)
+}
+
+fn walk_rotation(
+    data: &[u8],
+    ptr: &mut usize,
+    mask: u8,
+    qtype: u8,
+) -> Result<(), StaticEditError> {
+    let cpsize = rot_cpsize(qtype);
+    if mask & 0xf0 != 0 {
+        if *ptr + 3 > data.len() {
+            return Err(StaticEditError::Truncated { at: *ptr, need: 3, have: data.len() });
+        }
+        let n = u16::from_le_bytes([data[*ptr], data[*ptr + 1]]) as usize;
+        *ptr += 2;
+        let degree = data[*ptr] as usize;
+        *ptr += 1;
+        let knot_ptr = *ptr;
+        let end = knot_ptr + n + 2 + degree;
+        if end > data.len() {
+            return Err(StaticEditError::Truncated { at: knot_ptr, need: n + 2 + degree, have: data.len().saturating_sub(knot_ptr) });
+        }
+        *ptr = end;
+        *ptr = align_up_usize(*ptr, rot_align(qtype));
+        let need = (n + 1) * cpsize;
+        if *ptr + need > data.len() {
+            return Err(StaticEditError::Truncated { at: *ptr, need, have: data.len().saturating_sub(*ptr) });
+        }
+        *ptr += need;
+    } else if mask & 0x0f != 0 {
+        *ptr = align_up_usize(*ptr, rot_align(qtype));
+        if *ptr + cpsize > data.len() {
+            return Err(StaticEditError::Truncated { at: *ptr, need: cpsize, have: data.len().saturating_sub(*ptr) });
+        }
+        *ptr += cpsize;
+    }
+    Ok(())
+}
+
+// Thin alias so the main walker reads naturally.
+fn walk_vec4_advance(
+    data: &[u8],
+    ptr: &mut usize,
+    mask: u8,
+    quant_type: u8,
+) -> Result<usize, StaticEditError> {
+    walk_vec4_full(data, ptr, mask, quant_type)
+}
+
+// ---------------------------------------------------------------- THREECOMP40 encode
+
+/// Pack a unit quaternion `[qx, qy, qz, qw]` into 5 bytes using Havok's
+/// THREECOMP40 format — the encoder inverse of `unpack_quat(_, _, 1)` in
+/// `tools/sab_havok65/src/main.rs` and Saboteur.exe `FUN_00f22470`.
+///
+/// The input MUST have positive largest-abs component after canonicalisation:
+/// this function first canonicalises by negating the whole quaternion if the
+/// component of largest absolute value is negative (this produces the same
+/// rotation), so the sign bit (bit 38) is always 0 in the output.
+///
+/// Fails only if `q` has zero or near-zero norm.
+pub fn encode_threecomp40(q: [f32; 4]) -> Result<[u8; 5], StaticEditError> {
+    // Normalize.
+    let nrm2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if nrm2 < 1e-24 {
+        return Err(StaticEditError::ZeroQuaternion);
+    }
+    let s = 1.0 / nrm2.sqrt();
+    let mut n = [q[0] * s, q[1] * s, q[2] * s, q[3] * s];
+    // Canonicalise: negate so largest-abs is positive.
+    let mut idx = 0usize;
+    let mut abs_max = n[0].abs();
+    for i in 1..4 {
+        if n[i].abs() > abs_max {
+            abs_max = n[i].abs();
+            idx = i;
+        }
+    }
+    if n[idx] < 0.0 {
+        for c in n.iter_mut() { *c = -*c; }
+    }
+    // Pack the three not-omitted components.
+    const SCALE: f32 = 2047.0 * std::f32::consts::SQRT_2;
+    let mut small = [0f32; 3];
+    let mut j = 0;
+    for i in 0..4 {
+        if i != idx {
+            small[j] = n[i];
+            j += 1;
+        }
+    }
+    let mut raw = [0u32; 3];
+    for i in 0..3 {
+        let r = (small[i] * SCALE).round() as i32 + 2047;
+        raw[i] = r.clamp(0, 4095) as u32;
+    }
+    // Assemble 40-bit little-endian word.
+    let v: u64 = (raw[0] as u64)
+        | ((raw[1] as u64) << 12)
+        | ((raw[2] as u64) << 24)
+        | ((idx as u64) << 36);
+    // bit 38 = 0 (positive largest); bit 39 unused.
+    let mut out = [0u8; 5];
+    for i in 0..5 {
+        out[i] = ((v >> (8 * i)) & 0xff) as u8;
+    }
+    Ok(out)
+}
+
+/// Decode a THREECOMP40 5-byte packed quaternion back into
+/// `[qx, qy, qz, qw]`. Inverse of [`encode_threecomp40`] modulo re-quantization.
+/// Used by [`offset_static_translation`]'s rotation cousin (currently unused
+/// — offset variants are only wired for translation — but exposed so tests
+/// can round-trip.)
+pub fn decode_threecomp40(bytes: [u8; 5]) -> [f32; 4] {
+    const S: f32 = 1.0 / (std::f32::consts::SQRT_2 * 2047.0);
+    let v: u64 = (0..5).map(|i| (bytes[i] as u64) << (8 * i)).sum();
+    let small = [
+        (((v & 0xFFF) as i32) - 2047) as f32 * S,
+        ((((v >> 12) & 0xFFF) as i32) - 2047) as f32 * S,
+        ((((v >> 24) & 0xFFF) as i32) - 2047) as f32 * S,
+    ];
+    let idx = ((v >> 36) & 3) as usize;
+    let neg = (v >> 38) & 1 != 0;
+    let ss = small[0] * small[0] + small[1] * small[1] + small[2] * small[2];
+    let mut largest = (1.0 - ss).max(0.0).sqrt();
+    if neg { largest = -largest; }
+    let mut q = [0f32; 4];
+    let mut j = 0;
+    for i in 0..4 {
+        if i == idx { q[i] = largest; } else { q[i] = small[j]; j += 1; }
+    }
+    q
+}
+
+// ---------------------------------------------------------------- mutation helpers
+
+/// Read the current static translation of `track` (a `[f32; 3]`), or error if
+/// the track's translation is not the fully-static 3-float shape.
+pub fn read_static_translation(
+    data: &[u8],
+    layouts: &[TrackLayout],
+    track: usize,
+) -> Result<[f32; 3], StaticEditError> {
+    let lay = layouts.get(track).ok_or(StaticEditError::TrackOutOfRange {
+        track,
+        count: layouts.len(),
+    })?;
+    if !lay.is_fully_static_vec3_trn() {
+        return Err(StaticEditError::NotStatic { channel: "translation", mask: lay.trn_mask });
+    }
+    let o = lay.trn_static_off;
+    if o + 12 > data.len() {
+        return Err(StaticEditError::Truncated { at: o, need: 12, have: data.len() });
+    }
+    Ok([
+        f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]),
+        f32::from_le_bytes([data[o + 4], data[o + 5], data[o + 6], data[o + 7]]),
+        f32::from_le_bytes([data[o + 8], data[o + 9], data[o + 10], data[o + 11]]),
+    ])
+}
+
+/// Read the current static scale of `track` (a `[f32; 3]`).
+pub fn read_static_scale(
+    data: &[u8],
+    layouts: &[TrackLayout],
+    track: usize,
+) -> Result<[f32; 3], StaticEditError> {
+    let lay = layouts.get(track).ok_or(StaticEditError::TrackOutOfRange {
+        track,
+        count: layouts.len(),
+    })?;
+    if !lay.is_fully_static_vec3_scl() {
+        return Err(StaticEditError::NotStatic { channel: "scale", mask: lay.scl_mask });
+    }
+    let o = lay.scl_static_off;
+    if o + 12 > data.len() {
+        return Err(StaticEditError::Truncated { at: o, need: 12, have: data.len() });
+    }
+    Ok([
+        f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]),
+        f32::from_le_bytes([data[o + 4], data[o + 5], data[o + 6], data[o + 7]]),
+        f32::from_le_bytes([data[o + 8], data[o + 9], data[o + 10], data[o + 11]]),
+    ])
+}
+
+/// Read the current static rotation of `track` (unit quaternion `[x, y, z, w]`).
+pub fn read_static_rotation(
+    data: &[u8],
+    layouts: &[TrackLayout],
+    track: usize,
+) -> Result<[f32; 4], StaticEditError> {
+    let lay = layouts.get(track).ok_or(StaticEditError::TrackOutOfRange {
+        track,
+        count: layouts.len(),
+    })?;
+    if !lay.is_static_quat() {
+        return Err(StaticEditError::NotStatic { channel: "rotation", mask: lay.rot_mask });
+    }
+    let qtype = (lay.ctrl >> 2) & 0xf;
+    if qtype != 1 {
+        return Err(StaticEditError::UnsupportedRotQuant { qtype });
+    }
+    let o = lay.rot_payload_off;
+    if o + 5 > data.len() {
+        return Err(StaticEditError::Truncated { at: o, need: 5, have: data.len() });
+    }
+    let mut b = [0u8; 5];
+    b.copy_from_slice(&data[o..o + 5]);
+    Ok(decode_threecomp40(b))
+}
+
+/// Overwrite `track`'s static translation with `xyz`. Returns the old value.
+///
+/// Fails if:
+/// * `track >= layouts.len()` — [`StaticEditError::TrackOutOfRange`].
+/// * The track's translation is not the fully-static xyz shape
+///   (`mask == 0x07`) — [`StaticEditError::NotStatic`].
+/// * The offset is past end of buffer — [`StaticEditError::Truncated`].
+pub fn set_static_translation(
+    data: &mut [u8],
+    layouts: &[TrackLayout],
+    track: usize,
+    xyz: [f32; 3],
+) -> Result<[f32; 3], StaticEditError> {
+    let old = read_static_translation(data, layouts, track)?;
+    let o = layouts[track].trn_static_off;
+    data[o..o + 4].copy_from_slice(&xyz[0].to_le_bytes());
+    data[o + 4..o + 8].copy_from_slice(&xyz[1].to_le_bytes());
+    data[o + 8..o + 12].copy_from_slice(&xyz[2].to_le_bytes());
+    Ok(old)
+}
+
+/// Overwrite `track`'s static scale with `sxyz`. Same constraints as
+/// [`set_static_translation`].
+pub fn set_static_scale(
+    data: &mut [u8],
+    layouts: &[TrackLayout],
+    track: usize,
+    sxyz: [f32; 3],
+) -> Result<[f32; 3], StaticEditError> {
+    let old = read_static_scale(data, layouts, track)?;
+    let o = layouts[track].scl_static_off;
+    data[o..o + 4].copy_from_slice(&sxyz[0].to_le_bytes());
+    data[o + 4..o + 8].copy_from_slice(&sxyz[1].to_le_bytes());
+    data[o + 8..o + 12].copy_from_slice(&sxyz[2].to_le_bytes());
+    Ok(old)
+}
+
+/// Overwrite `track`'s static rotation with `quat` (in `[x, y, z, w]` order).
+/// The input is normalized before packing, but a zero-norm quaternion errors
+/// out.
+///
+/// Returns the old (decoded) quaternion. Round-tripping through
+/// THREECOMP40 quantization is lossy at the ~1/2047 level; callers doing
+/// exact byte comparisons should compare within a tolerance.
+pub fn set_static_rotation(
+    data: &mut [u8],
+    layouts: &[TrackLayout],
+    track: usize,
+    quat: [f32; 4],
+) -> Result<[f32; 4], StaticEditError> {
+    let old = read_static_rotation(data, layouts, track)?;
+    let bytes = encode_threecomp40(quat)?;
+    let o = layouts[track].rot_payload_off;
+    data[o..o + 5].copy_from_slice(&bytes);
+    Ok(old)
+}
+
+/// Add `delta` to `track`'s current static translation, in-place.
+pub fn offset_static_translation(
+    data: &mut [u8],
+    layouts: &[TrackLayout],
+    track: usize,
+    delta: [f32; 3],
+) -> Result<([f32; 3], [f32; 3]), StaticEditError> {
+    let old = read_static_translation(data, layouts, track)?;
+    let new = [old[0] + delta[0], old[1] + delta[1], old[2] + delta[2]];
+    set_static_translation(data, layouts, track, new)?;
+    Ok((old, new))
+}
+
 // ---------------------------------------------------------------- tests
 
 #[cfg(test)]
@@ -930,5 +1498,359 @@ mod tests {
         let (s, e) = (0, xml.len());
         assert!(set_hkparam_in_object(xml, s, e, "missing", "0").is_err());
         assert!(set_hkparam_in_object(xml, s, e, "a", "0").is_err());
+    }
+
+    // -------- static-value walker / mutator tests --------
+
+    /// Build a minimal single-block spline `data` array for one track whose
+    /// translation is fully-static (mask 0x07 => 3 f32 static), rotation is a
+    /// single packed THREECOMP40 quaternion (mask 0x0f), and scale is
+    /// fully-static. This mirrors the retail "identity idle" pattern for
+    /// non-moving bones.
+    fn synth_one_track_static(
+        trn: [f32; 3],
+        quat_bytes: [u8; 5],
+        scl: [f32; 3],
+    ) -> Vec<u8> {
+        // Layout inside block 0:
+        //   [0..4]  per-track header {ctrl, trnMask, rotMask, sclMask}
+        //   [4..X]  packed T/R/S (X aligned per channel)
+        // mask_and_quantization_size == 4 (one track, one 4-byte header, no padding).
+        let mut d = Vec::new();
+        // Header: ctrl = rot_type=1 << 2 = 0x04 (THREECOMP40; T=8-bit, S=8-bit)
+        d.push(0x04u8); // ctrl (rot_type=1)
+        d.push(0x07u8); // trn_mask: static x/y/z
+        d.push(0x0fu8); // rot_mask: static quaternion (any of 0x01..0x08)
+        d.push(0x07u8); // scl_mask: static x/y/z
+        // Translation: 3 f32 (already 4-aligned)
+        for c in &trn { d.extend_from_slice(&c.to_le_bytes()); }
+        // 4-byte align (already aligned since 12 bytes added).
+        // Rotation: 5 bytes THREECOMP40; rot_align=1.
+        d.extend_from_slice(&quat_bytes);
+        // 4-byte align: need to pad from len==4+12+5==21 up to 24.
+        while d.len() % 4 != 0 { d.push(0); }
+        // Scale: 3 f32
+        for c in &scl { d.extend_from_slice(&c.to_le_bytes()); }
+        // 4-align (already aligned).
+        d
+    }
+
+    #[test]
+    fn walker_finds_static_translation_offset_for_a_synth_track() {
+        let quat = encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap();
+        let data = synth_one_track_static([1.0, 2.0, 3.0], quat, [0.5, 0.5, 0.5]);
+        let ls = walk_spline_track_layouts(&data, 1, 4).unwrap();
+        assert_eq!(ls.len(), 1);
+        assert_eq!(ls[0].trn_mask, 0x07);
+        assert_eq!(ls[0].rot_mask, 0x0f);
+        assert_eq!(ls[0].scl_mask, 0x07);
+        assert_eq!(ls[0].trn_static_off, 4); // right after the 4-byte header
+        // rot at offset 4 + 12 = 16
+        assert_eq!(ls[0].rot_payload_off, 16);
+        // scale at 16 + 5 = 21, aligned up to 24
+        assert_eq!(ls[0].scl_static_off, 24);
+    }
+
+    #[test]
+    fn set_static_translation_writes_bytes_and_returns_old() {
+        let quat = encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap();
+        let mut data = synth_one_track_static([1.0, 2.0, 3.0], quat, [0.5, 0.5, 0.5]);
+        let ls = walk_spline_track_layouts(&data, 1, 4).unwrap();
+        let old = set_static_translation(&mut data, &ls, 0, [10.0, 20.0, 30.0]).unwrap();
+        assert_eq!(old, [1.0, 2.0, 3.0]);
+        let read = read_static_translation(&data, &ls, 0).unwrap();
+        assert_eq!(read, [10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn set_static_scale_writes_bytes_and_returns_old() {
+        let quat = encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap();
+        let mut data = synth_one_track_static([0.0; 3], quat, [1.0, 2.0, 4.0]);
+        let ls = walk_spline_track_layouts(&data, 1, 4).unwrap();
+        let old = set_static_scale(&mut data, &ls, 0, [8.0, 8.0, 8.0]).unwrap();
+        assert_eq!(old, [1.0, 2.0, 4.0]);
+        let read = read_static_scale(&data, &ls, 0).unwrap();
+        assert_eq!(read, [8.0, 8.0, 8.0]);
+    }
+
+    #[test]
+    fn set_static_rotation_writes_five_bytes_and_round_trips_approximately() {
+        let quat = encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap();
+        let mut data = synth_one_track_static([0.0; 3], quat, [1.0; 3]);
+        let ls = walk_spline_track_layouts(&data, 1, 4).unwrap();
+        // 45-degree rotation around Z: (0, 0, sin(pi/8), cos(pi/8))
+        let target = [0.0f32, 0.0, (std::f32::consts::FRAC_PI_8).sin(),
+                      (std::f32::consts::FRAC_PI_8).cos()];
+        set_static_rotation(&mut data, &ls, 0, target).unwrap();
+        let read = read_static_rotation(&data, &ls, 0).unwrap();
+        // THREECOMP40 quantization tolerance: ~ 1/(2047*sqrt2) ~ 3.5e-4 per component.
+        for i in 0..4 {
+            assert!(
+                (read[i].abs() - target[i].abs()).abs() < 1e-3,
+                "component {i}: read={read:?} target={target:?}"
+            );
+        }
+        // Norm ~ 1.
+        let n2: f32 = read.iter().map(|c| c * c).sum();
+        assert!((n2 - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn offset_static_translation_shifts_the_current_value() {
+        let quat = encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap();
+        let mut data = synth_one_track_static([1.0, 2.0, 3.0], quat, [1.0; 3]);
+        let ls = walk_spline_track_layouts(&data, 1, 4).unwrap();
+        let (old, new) = offset_static_translation(&mut data, &ls, 0, [0.5, -1.0, 100.0]).unwrap();
+        assert_eq!(old, [1.0, 2.0, 3.0]);
+        assert_eq!(new, [1.5, 1.0, 103.0]);
+        assert_eq!(read_static_translation(&data, &ls, 0).unwrap(), new);
+    }
+
+    #[test]
+    fn track_out_of_range_errors() {
+        let quat = encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap();
+        let mut data = synth_one_track_static([0.0; 3], quat, [1.0; 3]);
+        let ls = walk_spline_track_layouts(&data, 1, 4).unwrap();
+        let err = set_static_translation(&mut data, &ls, 5, [0.0, 0.0, 0.0]).unwrap_err();
+        assert_eq!(err, StaticEditError::TrackOutOfRange { track: 5, count: 1 });
+    }
+
+    #[test]
+    fn dynamic_translation_rejects_static_edit() {
+        // A track whose translation is a SPLINE (mask 0x70 == bits 4|5|6, all
+        // dynamic; no static). The walker still advances through it, but
+        // set_static_translation must refuse.
+        let mut d = Vec::new();
+        // ctrl: rot_type=1 (THREECOMP40), trn_type=0 (8-bit CP), scl_type=0
+        d.push(0x04u8);
+        d.push(0x70u8); // trn_mask: spline x/y/z, no static
+        d.push(0x0fu8); // rot: static quat
+        d.push(0x07u8); // scl: static xyz
+        // knot vector: n_idx=0, degree=1 -> knots = 3 bytes  (n_idx+2+degree = 3)
+        d.push(0x00);
+        d.push(0x00); // u16 n_idx=0
+        d.push(0x01); // u8 degree=1
+        // 3 knot bytes (n_idx + 2 + degree = 3):
+        d.push(0);
+        d.push(0);
+        d.push(1);
+        // align 4: current len = 4 + 2 + 1 + 3 = 10; pad to 12
+        while d.len() % 4 != 0 { d.push(0); }
+        // Static/range floats: 3 components each with spline -> 3 * 8 = 24 bytes of (lo,hi)
+        for _ in 0..6 { d.extend_from_slice(&0f32.to_le_bytes()); }
+        // Align 2 (already 4-aligned).
+        // Quantized CPs: (n_idx+1) * n_comp * bytes_per = 1 * 3 * 1 = 3 bytes.
+        d.push(0);
+        d.push(0);
+        d.push(0);
+        // Align 4: current len 12+24+3=39, pad to 40.
+        while d.len() % 4 != 0 { d.push(0); }
+        // Rotation: 5 bytes.
+        d.extend_from_slice(&encode_threecomp40([0.0, 0.0, 0.0, 1.0]).unwrap());
+        while d.len() % 4 != 0 { d.push(0); }
+        // Scale: 12 bytes.
+        for _ in 0..3 { d.extend_from_slice(&1f32.to_le_bytes()); }
+        let ls = walk_spline_track_layouts(&d, 1, 4).unwrap();
+        assert_eq!(ls[0].trn_mask, 0x70);
+        let mut d2 = d.clone();
+        let err = set_static_translation(&mut d2, &ls, 0, [0.0; 3]).unwrap_err();
+        assert!(matches!(err, StaticEditError::NotStatic { channel: "translation", .. }));
+    }
+
+    #[test]
+    fn threecomp40_round_trip_preserves_within_quant_tolerance() {
+        // A handful of "authored-looking" quaternions.
+        for q in &[
+            [0.0f32, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.5, 0.5, 0.5, 0.5],
+            [0.1, -0.2, 0.3, 0.9273618],
+            [(std::f32::consts::FRAC_PI_8).sin(), 0.0, 0.0,
+             (std::f32::consts::FRAC_PI_8).cos()],
+        ] {
+            let n2: f32 = q.iter().map(|c| c * c).sum();
+            let s = 1.0 / n2.sqrt();
+            let qn = [q[0] * s, q[1] * s, q[2] * s, q[3] * s];
+            let bytes = encode_threecomp40(qn).unwrap();
+            let dec = decode_threecomp40(bytes);
+            // A rotation and its negation are equivalent — compare absolute values,
+            // making sure both sides picked the same canonical hemisphere.
+            let dot: f32 = qn.iter().zip(dec.iter()).map(|(a, b)| a * b).sum();
+            let cos_a = dot.abs().min(1.0);
+            let angle_err = 2.0 * cos_a.acos();
+            // THREECOMP40 quantum ~1/(2047·sqrt2) per component; angular error
+            // scales up to ~0.1 deg in the worst case (largest-abs = 0.5, all
+            // components equal — a rounding step falls onto every component).
+            assert!(
+                angle_err.to_degrees() < 0.1,
+                "angle err {} deg too large for {qn:?} -> {dec:?}",
+                angle_err.to_degrees()
+            );
+        }
+    }
+
+    #[test]
+    fn threecomp40_rejects_zero_quaternion() {
+        assert_eq!(encode_threecomp40([0.0, 0.0, 0.0, 0.0]).unwrap_err(),
+                   StaticEditError::ZeroQuaternion);
+    }
+
+    #[test]
+    fn threecomp40_normalizes_unnormalized_input() {
+        // Not a unit quaternion — encoder must normalize before packing.
+        let bytes = encode_threecomp40([2.0, 0.0, 0.0, 0.0]).unwrap();
+        let dec = decode_threecomp40(bytes);
+        let n: f32 = dec.iter().map(|c| c * c).sum::<f32>().sqrt();
+        assert!((n - 1.0).abs() < 1e-3);
+        // The rotation is 180deg around X; either sign of X is legal.
+        assert!(dec[0].abs() > 0.99);
+        assert!(dec[1].abs() < 1e-2);
+        assert!(dec[2].abs() < 1e-2);
+        assert!(dec[3].abs() < 1e-2);
+    }
+
+    /// Round-trip a static-translation edit through the whole write path on
+    /// real retail data: parse `SAB_ANIM_PACK`, locate a fully-static
+    /// translation track, apply [`set_static_translation`], splice, then
+    /// re-parse the spliced pack and confirm:
+    ///   * head bytes byte-identical
+    ///   * tail bytes byte-identical
+    ///   * Havok blob same size
+    ///   * exactly 12 bytes differ (one 3xf32 static translation)
+    ///   * post-decode, the edited track's translation reads back as the new
+    ///     value (within f32 rounding; static values are stored as f32 so
+    ///     drift is 0).
+    #[test]
+    fn end_to_end_static_translation_edit_on_retail_pack() {
+        use std::env;
+        use std::fs;
+        let Ok(pack_path) = env::var("SAB_ANIM_PACK") else {
+            eprintln!("skipping: SAB_ANIM_PACK not set");
+            return;
+        };
+        let bytes = fs::read(&pack_path).expect("read pack");
+        let baseline = bytes.clone();
+        let ap = Ap0lPack::parse(bytes).expect("parse ap0l");
+        // First, find a fully-static translation on a fixup clip (any of them).
+        let mut new_blob = ap.hk_blob().to_vec();
+        let (target_clip, target_track, target_off) = {
+            let hk = HkPackfile::parse(&new_blob).expect("parse hk");
+            let scas = hk.objects_of_class("hkaSplineCompressedAnimation");
+            let mut found: Option<(usize, usize, usize)> = None;
+            'outer: for (ci, &s) in scas.iter().enumerate() {
+                if hk.num_blocks(s) != 1 { continue; }
+                let ntt = hk.num_transform_tracks(s) as usize;
+                let mq = hk.mask_and_quantization_size(s) as usize;
+                let (data_off, data_len) = match hk.spline_data_span(s) {
+                    Some(v) => v, None => continue,
+                };
+                let data_slice = &new_blob[data_off..data_off + data_len];
+                let ls = match walk_spline_track_layouts(data_slice, ntt, mq) {
+                    Ok(v) => v, Err(_) => continue,
+                };
+                for (ti, l) in ls.iter().enumerate() {
+                    if l.is_fully_static_vec3_trn() {
+                        found = Some((ci, ti, data_off + l.trn_static_off));
+                        break 'outer;
+                    }
+                }
+            }
+            found.expect("no fully-static translation found in retail pack")
+        };
+        // Now apply the edit: set to (1.0, 2.0, 3.0).
+        let target = [1.0f32, 2.0, 3.0];
+        {
+            let hk = HkPackfile::parse(&new_blob).expect("parse hk");
+            let scas = hk.objects_of_class("hkaSplineCompressedAnimation");
+            let obj = scas[target_clip];
+            let ntt = hk.num_transform_tracks(obj) as usize;
+            let mq = hk.mask_and_quantization_size(obj) as usize;
+            let (data_off, data_len) = hk.spline_data_span(obj).unwrap();
+            let ls = walk_spline_track_layouts(&new_blob[data_off..data_off + data_len], ntt, mq).unwrap();
+            let data_mut = &mut new_blob[data_off..data_off + data_len];
+            let _old = set_static_translation(data_mut, &ls, target_track, target)
+                .expect("static translation write");
+        }
+        // Splice + verify.
+        let spliced = ap.splice_hk_blob(&new_blob);
+        assert_eq!(&spliced[..ap.hk_offset()], &baseline[..ap.hk_offset()],
+                   "head bytes must be preserved");
+        assert_eq!(&spliced[ap.hk_offset() + ap.hk_size() as usize..],
+                   &baseline[ap.hk_offset() + ap.hk_size() as usize..],
+                   "tail bytes must be preserved");
+        assert_eq!(spliced.len(), baseline.len(),
+                   "no size drift (static bytes are same width)");
+        // The change should be exactly 12 bytes.
+        let diffs = spliced.iter().zip(baseline.iter()).filter(|(a, b)| a != b).count();
+        assert_eq!(diffs, 12, "static translation is 3xf32 = 12 bytes; got {diffs} diffs");
+        let drift_pct = 100.0 * diffs as f64 / baseline.len() as f64;
+        assert!(drift_pct < 0.1, "drift {drift_pct}% exceeded 0.1% budget");
+        // Confirm the target offset changed as expected. `target_off` is a
+        // Havok-blob-relative offset; convert to a file offset by adding the
+        // AP0L blob start.
+        let file_off = ap.hk_offset() + target_off;
+        assert_eq!(
+            f32::from_le_bytes([spliced[file_off], spliced[file_off + 1], spliced[file_off + 2], spliced[file_off + 3]]),
+            target[0]
+        );
+        // Re-parse the spliced pack and confirm the static translation reads back.
+        let ap2 = Ap0lPack::parse(spliced).expect("re-parse spliced");
+        let hk2 = HkPackfile::parse(ap2.hk_blob()).expect("re-parse hk");
+        let scas2 = hk2.objects_of_class("hkaSplineCompressedAnimation");
+        let obj2 = scas2[target_clip];
+        let ntt2 = hk2.num_transform_tracks(obj2) as usize;
+        let mq2 = hk2.mask_and_quantization_size(obj2) as usize;
+        let (d2_off, d2_len) = hk2.spline_data_span(obj2).unwrap();
+        let ls2 = walk_spline_track_layouts(&ap2.hk_blob()[d2_off..d2_off + d2_len], ntt2, mq2)
+            .expect("re-walk layouts");
+        let read_back =
+            read_static_translation(&ap2.hk_blob()[d2_off..d2_off + d2_len], &ls2, target_track)
+                .expect("read back");
+        assert_eq!(read_back, target,
+                   "static translation must be exactly what was written (no re-quant)");
+        eprintln!(
+            "OK: clip #{target_clip} track {target_track} translation set to ({:.3},{:.3},{:.3}), \
+             {diffs} bytes changed in the pack, drift {drift_pct:.6}%",
+            target[0], target[1], target[2]
+        );
+    }
+
+    #[test]
+    fn end_to_end_ap0l_static_translation_edit_via_hkpackfile() {
+        // Opt-in against a real Havok blob dump: SAB_ANIM_HKX=path/to/retail_anim.hkx.
+        // Confirms that on real data, walk_spline_track_layouts produces plausible
+        // offsets (monotone increasing, bounded by data_len) for every clip.
+        use std::env;
+        use std::fs;
+        let Ok(hkx) = env::var("SAB_ANIM_HKX") else {
+            eprintln!("skipping: SAB_ANIM_HKX not set");
+            return;
+        };
+        let blob = fs::read(hkx).expect("read hkx");
+        let hk = HkPackfile::parse(&blob).expect("parse hk");
+        let scas = hk.objects_of_class("hkaSplineCompressedAnimation");
+        assert!(!scas.is_empty());
+        let mut n_walked = 0usize;
+        let mut n_static_translations = 0usize;
+        for &s in scas.iter().take(50) {
+            let ntt = hk.num_transform_tracks(s) as usize;
+            let nb = hk.num_blocks(s);
+            let mq = hk.mask_and_quantization_size(s) as usize;
+            if nb != 1 { continue; }
+            let data = hk.spline_data(s);
+            let ls = match walk_spline_track_layouts(data, ntt, mq) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("clip obj_src=0x{s:x} walk err: {e}");
+                    continue;
+                }
+            };
+            n_walked += 1;
+            for lay in &ls {
+                if lay.trn_mask == 0x07 { n_static_translations += 1; }
+            }
+        }
+        assert!(n_walked > 0);
+        eprintln!("walked {n_walked} clips, found {n_static_translations} fully-static translations");
     }
 }

@@ -35,6 +35,7 @@ use std::env;
 use std::fs;
 
 mod gltf;
+mod hct_validate;
 
 // ---------- little-endian helpers ----------
 fn u16le(b: &[u8], o: usize) -> u16 { u16::from_le_bytes([b[o], b[o + 1]]) }
@@ -559,6 +560,18 @@ fn main() {
         let glb = gltf::export_mesh_only(&mesh);
         fs::write(out, &glb).expect("write glb");
         println!("wrote {out}: plain mesh, {} verts, {} tris", mesh.positions.len(), mesh.indices.len() / 3);
+        return;
+    }
+
+    // Cross-validate our decode against HCT 6.5's AssetCc2 XML emit:
+    //   `sab_havok65 validate-hct <pack> <retail_anim.xml>`
+    // See hct_validate.rs for the field-by-field diff.
+    if args.get(1).map(|s| s == "validate-hct").unwrap_or(false) {
+        let pack = args.get(2).map(|s| s.as_str())
+            .unwrap_or("C:/GOG Games/The Saboteur/Animations.pack");
+        let xml = args.get(3).map(|s| s.as_str())
+            .expect("usage: sab_havok65 validate-hct <pack> <retail_anim.xml>");
+        hct_validate::run(pack, xml);
         return;
     }
 

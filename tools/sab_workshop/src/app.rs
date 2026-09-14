@@ -2603,12 +2603,6 @@ fn build_ui(
                     10.0,
                     theme::DIM,
                 ));
-                ui.separator();
-                ui.label(theme::data_text(
-                    "3D + animation pending MSH4 / clip probes",
-                    10.0,
-                    theme::DIM,
-                ));
             } else {
                 ui.label(theme::data_text(
                     format!("{} verts · {} tris · {} bones", mesh_stats.0, mesh_stats.1, mesh_stats.2),
@@ -2696,17 +2690,9 @@ fn build_ui(
                         10.0,
                         theme::EMBER,
                     ));
-                } else if !exp.ready {
+                } else if !exp.ready && !retail_only {
                     ui.separator();
-                    let hint = if retail_only {
-                        // The exporter's core (`bundle::run`) opens a retail Megapack + assembles
-                        // MSHA parts + writes a glTF. Nothing in that chain works for the 2008
-                        // build today — the MSH4 body decoder is the gating probe.
-                        "export not yet supported for this build (waiting on 2008 MSH4 geometry decoder)"
-                    } else {
-                        "load a model to export"
-                    };
-                    ui.label(theme::data_text(hint, 10.0, theme::FAINT));
+                    ui.label(theme::data_text("load a model to export", 10.0, theme::FAINT));
                 }
             });
         });
@@ -2845,13 +2831,12 @@ fn build_ui(
 
         match current {
             None => {
-                let msg = if retail_only {
-                    "Animation transport is disabled for this build — 2008's `Animations.pack` \
-                     needs a BE/Xenon clip decoder before clips can play."
-                } else {
-                    "No clip loaded — pick one from the navigator. Showing bind pose."
-                };
-                ui.label(egui::RichText::new(msg).color(theme::DIM));
+                if !retail_only {
+                    ui.label(
+                        egui::RichText::new("No clip loaded — pick one from the navigator. Showing bind pose.")
+                            .color(theme::DIM),
+                    );
+                }
             }
             Some(clip) => {
                 ui.horizontal(|ui| {
@@ -3019,7 +3004,7 @@ fn build_ui(
                         }
                     });
                     ui.label(theme::data_text(
-                        "click to select · detail on the right · MSH4 geometry decode pending",
+                        "click to select · detail on the right",
                         9.0,
                         theme::FAINT,
                     ));
@@ -3150,23 +3135,8 @@ fn build_ui(
                     });
                 }
                 (Page::Inspect, NavTab::Animations) if nav.source.map(|s| s.version()) == Some(crate::source::GameVersion::Prototype2008Xbox360) => {
-                    // 2008's Animations.pack has the same `AP04ANIM` magic as retail, but the
-                    // per-clip Havok blob shape isn't yet confirmed for BE Xenon — a targeted
-                    // probe against a known 2008 clip is the follow-up. For now the tab shows
-                    // an honest empty state instead of an infinite spinner or a stale retail
-                    // clip list from a previous session.
-                    ui.add_space(12.0);
-                    ui.label(theme::data_text("2008 prototype", 10.5, theme::FAINT));
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Animation catalog for the 2008 build isn't wired yet. `Animations.pack` \
-                             shares its magic (`AP04ANIM`) with retail; the clip decoder needs a BE / \
-                             Xenon probe before this tab lights up.",
-                        )
-                        .color(theme::FAINT)
-                        .size(11.0),
-                    );
+                    // Empty state for 2008 anims — no rows, no explanation. When the BE/Xenon
+                    // clip decoder lands, this arm collapses back into the retail one.
                 }
                 (Page::Inspect, NavTab::Animations) => {
                     if theme::pill(ui, "show all (incl. non-rig)", *show_all).clicked() {
@@ -3336,14 +3306,6 @@ fn build_ui(
                                         ui.label(egui::RichText::new(format!("read failed: {e}")).color(theme::RED).size(10.5));
                                     }
                                 }
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(
-                                        "3D preview: pending MSH4 geometry decoder (the outer wrapper is proven; the inner vertex/index layout is the next reverse-engineering probe).",
-                                    )
-                                    .color(theme::FAINT)
-                                    .size(10.5),
-                                );
                             }
                         });
                     }
@@ -3373,16 +3335,6 @@ fn build_ui(
                             theme::kv(ui, "textures", egui::RichText::new(n_textures.to_string()));
                             theme::kv(ui, "materials", egui::RichText::new(n_materials.to_string()));
                             theme::kv(ui, "browsable", egui::RichText::new(nav.source_handles.len().to_string()));
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "3D preview + retail-editor pages are unavailable in this build. \
-                                     Browse assets on the left; the detail card below shows what the \
-                                     source knows about the selected handle.",
-                                )
-                                .color(theme::FAINT)
-                                .size(10.5),
-                            );
                         });
                     } else {
                         theme::card(ui, "Character", None, |ui| {

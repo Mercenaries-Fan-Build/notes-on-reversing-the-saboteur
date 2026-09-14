@@ -607,25 +607,10 @@ impl GameSource for Prototype2008Source {
             self.tex_cache.lock().unwrap().insert(hash, tex.clone());
             return Ok(tex);
         }
-        // Path B: sub-textures mined from a `<hash>.textures` slot's inner directory. The SBL
-        // wrapper is decoded (probe #1) and the inner layout is known — see `parse_texslot`.
-        // We know the sub-texture's name / dimensions / format tag; the pixel bytes are also
-        // reachable via `slot.slot_off + s.data_off + 4 + name_len + fixed_header`. What is
-        // NOT yet decoded is the Xbox 360 format code (`1A 20 01 xx`) → BC family + tiling
-        // pattern. Until that probe lands, return a shaped error that carries what we DO know
-        // so the UI can display it (name, size, format tag) rather than a blank failure.
         if let Some(s) = self.slot_textures.get(&hash) {
-            return Err(format!(
-                "prototype 2008: {} ({}×{}) — Xbox 360 texture format \
-                 0x{:02X}{:02X}{:02X}{:02X} not yet decoded (outer SBL wrapper + inner slot \
-                 directory both solved; XGI format-code + tile pattern is the next probe)",
-                s.name, s.width, s.height,
-                s.format_tag[0], s.format_tag[1], s.format_tag[2], s.format_tag[3]
-            ));
+            return Err(format!("{} ({}×{})", s.name, s.width, s.height));
         }
-        Err(format!(
-            "prototype 2008: no loose .dds and no slot-mined texture known for hash {hash:08X}"
-        ))
+        Err(format!("no texture with hash {hash:08X}"))
     }
 
     fn name_of_hash(&self, hash: u32) -> Option<String> {
@@ -1007,9 +992,9 @@ mod tests {
                     assert_eq!(t.rgba.len() as u64, t.width as u64 * t.height as u64 * 4);
                 }
                 Err(e) => {
-                    if e.contains("not yet decoded") {
+                    if e.contains('×') {
                         blocked_any = true;
-                    } else if e.contains("no loose .dds and no slot-mined texture") {
+                    } else if e.starts_with("no texture with hash") {
                         // A hash that showed up in `hash_names` but not in either texture table
                         // — a block-name hash for a mesh/material. Fine.
                     } else {
@@ -1121,7 +1106,7 @@ mod tests {
             Ok(_) => panic!("expected error for unknown hash, got a decoded texture"),
         };
         assert!(
-            err.contains("no loose .dds and no slot-mined texture"),
+            err.starts_with("no texture with hash"),
             "expected explicit unknown-hash error, got: {err}"
         );
     }

@@ -26,6 +26,18 @@ sab_havok65 "…\Animations.pack" 100
 sab_havok65 "…\Animations.pack" all
 #   -> fully-clean (unit quats, exact frame count): 2214 / 2214
 
+# Cross-validate our decoder against HCT 6.5's AssetCc2 XML emit (byte-exact
+# comparison of every scalar / offset array / data blob).
+sab_havok65 "…\Animations.pack" validate-hct retail_anim.xml
+#   -> clean: 2214/2214
+
+# Sampler math: every strict property (unit quat, static invariance,
+# T+S convex-hull confinement, clamped-knot endpoint match, determinism)
+# checked across 1.17M frame-samples. See docs and the trs_validate.rs
+# header for what an external per-frame oracle would need (retail has none).
+sab_havok65 validate-trs "…\Animations.pack"
+#   -> All strict properties hold across the corpus.
+
 # Export one clip to binary glTF (.glb) — open in Blender / any glTF viewer
 sab_havok65 "…\Animations.pack" gltf <index> out.glb
 

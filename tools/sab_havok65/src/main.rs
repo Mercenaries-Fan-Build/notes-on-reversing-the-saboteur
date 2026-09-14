@@ -36,6 +36,14 @@ use std::fs;
 
 mod gltf;
 mod hct_validate;
+mod trs_validate;
+
+// Expose primary THREECOMP40 unpacker so `trs_validate` can cross-check
+// its independent reference implementation against it (see the
+// `threecomp40_ref_vs_primary_random_sample` unit test).
+pub fn unpack_quat_pub(data: &[u8], off: usize, qtype: u8) -> [f32; 4] {
+    unpack_quat(data, off, qtype)
+}
 
 // ---------- little-endian helpers ----------
 fn u16le(b: &[u8], o: usize) -> u16 { u16::from_le_bytes([b[o], b[o + 1]]) }
@@ -572,6 +580,19 @@ fn main() {
         let xml = args.get(3).map(|s| s.as_str())
             .expect("usage: sab_havok65 validate-hct <pack> <retail_anim.xml>");
         hct_validate::run(pack, xml);
+        return;
+    }
+
+    // Per-frame TRS property harness: `sab_havok65 validate-trs <pack>`
+    // Exercises the sampler math (Cox-de Boor, THREECOMP40, block-time
+    // truncation) via mathematical property tests (convex-hull
+    // confinement of de Boor, clamped-knot endpoint match, unit-quat,
+    // static-track invariance, determinism). See trs_validate.rs for
+    // why an external per-frame oracle was not achievable.
+    if args.get(1).map(|s| s == "validate-trs").unwrap_or(false) {
+        let pack = args.get(2).map(|s| s.as_str())
+            .unwrap_or("C:/GOG Games/The Saboteur/Animations.pack");
+        trs_validate::run(pack);
         return;
     }
 

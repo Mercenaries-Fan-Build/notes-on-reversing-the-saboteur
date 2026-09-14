@@ -312,6 +312,96 @@ value      = deBoor(u = blockTime, degree, knots, controlPoints)  # CONTINUOUS s
   path — structurally present, decoders identified by table+size, but not exercised by this pack. Close via
   out-of-corpus assets or a live x32dbg capture of `FUN_00eb7e00`. See memory `havok65-spline-decode`.
 
+### Layered validation — bytes vs sampler
+
+There are two validation layers around the decoder, and it's worth being
+explicit about what each proves and what neither does:
+
+1. **Packfile bytes** — `sab_havok65 validate-hct <pack> <retail_anim.xml>`
+   (`src/hct_validate.rs`). AssetCc2 6.5 emits an XML view of every
+   `hkaSplineCompressedAnimation`; the harness pairs each XML clip to its
+   packfile counterpart by fingerprint and diffs every scalar (int-exact),
+   every offset array (int-exact), and the whole `data` blob (byte-exact).
+   **All 2214 clips clean.** This proves our packfile reader and the block
+   layout offsets are exactly what HCT sees.
+
+2. **Sampler math** — `sab_havok65 validate-trs <pack>`
+   (`src/trs_validate.rs`). Exercises the per-frame path (block indexing,
+   `findSpan`, THREECOMP40 unpack, Cox-de Boor blend, hemisphere flip,
+   post-blend unit-norm) via **four mathematical/spec properties** that
+   must hold on any correct implementation:
+   - Unit quaternion + finite over every sampled frame.
+   - Static-track invariance: a track with no spline bits returns the
+     same T/R/S at every t.
+   - **Convex-hull confinement for T + S:** for every t, each sampled
+     component lies inside `[min, max]` over the (p+1) local control
+     points at the corresponding knot span — a hard property of Cox-de
+     Boor. Rotation has the same test but with a 5 % widen to absorb the
+     post-blend renormalization.
+   - **Clamped-knot endpoint match:** where the knot vector is clamped
+     (the HCT-emitted pattern), Cox-de Boor at u=U[p] equals cps[0] and
+     at u=U[n+1] equals cps[n]. The sampler must reproduce that
+     endpoint at t=0 and at the last within-block frame; the reference
+     side unpacks the endpoint CP through an independent THREECOMP40
+     implementation (`unpack_quat_ref` in `trs_validate.rs`).
+
+   Corpus results (1,172,891 frame-samples across 2,214 clips):
+
+   | property                                            | max deviation | violations                |
+   |-----------------------------------------------------|---------------|---------------------------|
+   | unit quaternion (`‖q‖ − 1`)                         | 1.19e-7       | 0 / 1,172,891             |
+   | non-finite T/R/S components                         | —             | 0                         |
+   | static-track invariance                             | 1.79e-7       | 0                         |
+   | convex-hull confinement, **T + S (strict)**         | 0             | 0 / 137,868               |
+   | convex-hull confinement, all channels (rot widened) | 1.75e-3       | 129 / 2,302,400 (soft)    |
+   | clamped-knot endpoint match                         | 2.38e-7       | 0 / 130,724               |
+   | `sample_at` determinism (2×)                        | 0             | 0                         |
+
+   The 129 soft rotation-hull overshoots are all from the sampler's
+   post-blend renormalization scaling a component slightly outside its
+   raw hull (a mathematical consequence of dividing by `‖q‖` when `‖q‖ <
+   1`), never above 1.75e-3 — well below HCT's own rotation
+   re-quantization budget of `0.001` for encoding (memory
+   `[[havok-anim-toolchain-roundtrip-proven]]`; the encode step is the
+   tighter bound). The 129 checks are counted separately from the
+   strict T+S check, which stays at zero.
+
+   The endpoint match is the strongest single test in the file: 130,724
+   independent point-checks against an alternate-code-path THREECOMP40
+   implementation, all inside 2.4e-7. It exercises the block index, the
+   knot-span search, the CP indexing, the quaternion unpacker, the
+   hemisphere flip, and the boundary behaviour of Cox-de Boor in one
+   check per clamped spline track per endpoint.
+
+### Not covered by either layer
+
+An **external per-frame TRS oracle** was investigated for retail clips
+and neither route yielded one:
+
+- `hkxcmd` (community sampler) is not on disk in
+  `C:/Program Files (x86)/Havok/`, `C:/Users/Shadow/Downloads/`, or the
+  sibling `notes-on-the-released-game/tools/`. The Mercs 2 Havok work
+  is 5.5 collision (no anim sampler).
+- HCT 6.5's authoring pipeline in `hctFilterAnimation.dll` is one-way.
+  Every shipped filter (`CreateAnimations`, `SplineCompressionFilter`,
+  `WaveletCompressionFilter`, `DeltaCompressionFilter`,
+  `ExtractMotionFilter`, `LoopAnimationFilter`,
+  `RotateAnimationFilter`, `FootstepAnalysisFilter`,
+  `CreateAdditiveAnimationFilter`) operates from interleaved *toward*
+  compressed; none of them decompresses. `AssetCc2 --rulesRULES`
+  handles cross-version packfile compat only.
+- Havok SDK PC 6.5.0-r1 archive at
+  `C:/Users/Shadow/Downloads/havok-sdk-pc-6.5.0-r1.7z` ships headers
+  and .inl only (0 .lib files), so a custom filter DLL or a
+  standalone caller of `hkaSplineCompressedAnimation::sampleTracks()`
+  cannot be built.
+
+So absolute correctness of a **mid-span** sample against an external
+authority is unproven. The property tests bracket the answer (convex
+hull, endpoint identity, unit norm) and the retail runtime has been
+its own oracle at build/preview time on every rig it plays back with
+`sab_workshop`. See memory `[[havok65-trs-oracle-gap]]`.
+
 ## Previewing — glTF export + the live workshop (skeleton gap CLOSED)
 
 `sab_havok65` exports any clip to a self-contained binary **glTF** (`.glb`):

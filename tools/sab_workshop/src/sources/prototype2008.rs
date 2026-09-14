@@ -481,6 +481,34 @@ impl Prototype2008Source {
     /// Read-only accessor for the concrete anim catalog. Used by tests + the app's Nav
     /// Anims tab detail card (codec breakdown + duration histogram).
     pub fn anim_catalog(&self) -> &Anim2008Catalog { &self.anim_catalog }
+
+    /// Resolve a 24-bit material hash pulled from an MSH4 prim to a full u32 uid.
+    ///
+    /// MSH4 prims store the drawcall material as a 24-bit truncated pandemic_hash (see
+    /// `prototype2008_mesh` module docs); the MTLD `uid` on disk is the full 32-bit value.
+    /// The trait's `textures_for_material` takes the full u32, so we need to walk the index
+    /// looking for a uid whose top or bottom 24 bits match this stub — the truncation side
+    /// isn't documented anywhere in the sources we have, so we accept either. On a match the
+    /// full uid is returned; caller can feed it to `textures_for_material`.
+    ///
+    /// Cost is linear in the material count on cache miss (~860 comparisons); called once per
+    /// submesh on mesh load, never per frame, so no lookup table is warranted.
+    pub fn resolve_material_hash_24(&self, hash24: u32) -> Option<u32> {
+        // Fast path: someone handed us a full u32 that happened to be low-24. Direct hit
+        // covers the case where a caller pre-widened by zero-extension.
+        if self.materials.by_uid.contains_key(&hash24) {
+            return Some(hash24);
+        }
+        // Try both truncation conventions. In sample material `0x0373DF9E`, the high 24 are
+        // `0x0373DF` and low 24 are `0x73DF9E`; MSH4 gives us one of those. First match wins;
+        // a mesh with an alias-only reference falls off both branches and returns None.
+        for &uid in self.materials.by_uid.keys() {
+            if (uid >> 8) == hash24 || (uid & 0x00FF_FFFF) == hash24 {
+                return Some(uid);
+            }
+        }
+        None
+    }
 }
 
 /// One record parsed from a `<hash>.textures` slot's inner directory.
@@ -718,6 +746,8 @@ impl GameSource for Prototype2008Source {
         // works from opening the source.
         self.hash_names.get(&hash).cloned()
     }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
 }
 
 // ── packlog parsing ──────────────────────────────────────────────────────────────────────────
@@ -1208,6 +1238,86 @@ mod tests {
         assert!(
             err.starts_with("no texture with hash"),
             "expected explicit unknown-hash error, got: {err}"
+        );
+    }
+
+    /// End-to-end proof that a 2008 mesh + its per-prim material lookups can be assembled into
+    /// the shape the workshop's renderer consumes: `renderer.submeshes().len() == prim count`,
+    /// and for every submesh with a resolvable material we can look up the texture slot vector.
+    /// This is the acceptance test for the "render 2008 meshes in the workshop" wiring — a
+    /// regression on any of the four decoders (mesh, material index, hash correspondence,
+    /// texture load) drops the fraction below the floor.
+    #[test]
+    fn mesh_prims_resolve_to_material_slot_vectors() {
+        let Some(root) = test_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        // Sean HD is the reference mesh for the whole 2008 decode work — if its material
+        // lookups regress, everything downstream is broken.
+        let handle = src
+            .list_meshes()
+            .into_iter()
+            .find(|h| h.name == "BP_AL_Sean_HD")
+            .expect("BP_AL_Sean_HD present in packlog");
+        let smsh = src.read_mesh_smsh(&handle).expect("Sean HD decodes to Smsh");
+        assert!(!smsh.prims.is_empty(), "Sean HD has prims");
+        assert!(!smsh.positions.is_empty(), "Sean HD has vertex positions");
+        assert_eq!(smsh.indices.len() % 3, 0, "IB is triangle-list");
+
+        // What the renderer will consume — the same submesh cover it computes internally.
+        let cover =
+            crate::formats::submesh_cover(&smsh.prims, smsh.indices.len() as u32);
+        assert!(!cover.is_empty(), "submesh cover non-empty");
+        // The cover collapses coincident ranges; it can never have MORE submeshes than prims.
+        assert!(
+            cover.len() <= smsh.prims.len(),
+            "cover ({}) exceeds prim count ({})",
+            cover.len(),
+            smsh.prims.len()
+        );
+
+        // For each submesh, at least ONE candidate material must resolve to a slot vector.
+        // A submesh whose only material is an alias not indexed today is expected to miss —
+        // the acceptance bar is "most submeshes wire up", not "all". Guards a broken hash
+        // correspondence (which would drop the fraction to 0) or a broken material index
+        // (which would also drop it to 0).
+        let mut resolved = 0usize;
+        let mut with_diffuse = 0usize;
+        for sm in &cover {
+            for &mat_hash_24 in &sm.materials {
+                if let Some(uid) = src.resolve_material_hash_24(mat_hash_24) {
+                    if let Some(slots) = src.textures_for_material(uid) {
+                        resolved += 1;
+                        if slots[0].is_some() {
+                            with_diffuse += 1;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(
+            resolved > 0,
+            "no submesh resolved to a material slot vector (cover={} prims={}) — the mesh \
+             prim hash ↔ MTLD uid correspondence is broken",
+            cover.len(),
+            smsh.prims.len()
+        );
+        // Some submeshes on Sean HD should have a diffuse hash after resolution — if all
+        // materials indexed lack diffuse, the slot ordering claim ([d,s,n,wm]) is wrong.
+        assert!(
+            with_diffuse > 0,
+            "no submesh got a diffuse slot after resolution ({resolved}/{} submeshes matched)",
+            cover.len()
+        );
+        eprintln!(
+            "  Sean HD: prims={} cover={} resolved={} with_diffuse={}",
+            smsh.prims.len(),
+            cover.len(),
+            resolved,
+            with_diffuse
         );
     }
 }

@@ -150,6 +150,16 @@ pub trait GameSource: Send + Sync {
             self.label()
         ))
     }
+
+    /// Escape hatch for version-specific state a consumer needs on top of the trait's shared
+    /// vocabulary — e.g. the 2008 mesh loader downcasts through here to reach
+    /// `Prototype2008Source::read_mesh_smsh`, which returns retail's `Smsh` shape and belongs
+    /// on the concrete type rather than the trait (retail's mesh path is assembled from many
+    /// pack parts through a skeleton, so its return shape differs).
+    ///
+    /// Default returns `None` so no impl is forced to opt in; sources that want to be
+    /// downcast-friendly override with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> { None }
 }
 
 // ── version detection ────────────────────────────────────────────────────────────────────────

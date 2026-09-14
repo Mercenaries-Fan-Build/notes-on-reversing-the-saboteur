@@ -325,6 +325,16 @@ pub fn run(mut cfg: Config) {
     // the event loop below (both are Option<index>, both get drained on the frame after
     // they're set).
     let mut pending_2008_clip: Option<usize> = None;
+    // 2008-side mesh click. Same shape as `pending_2008_clip` — the Nav Models tab writes
+    // an index into `source_handles`, the event loop drains it, decodes the MSH4, binds
+    // materials/textures, and flips `has_2008_mesh` on so `draw_scene` can be enabled.
+    let mut pending_2008_mesh: Option<usize> = None;
+    // True once a 2008 mesh has been successfully uploaded to the renderer at least once.
+    // Gates `renderer.draw_scene` on 2008 — before this, the placeholder triangle stub
+    // would draw an "app is broken" one-poly cube; after this, the actual character mesh
+    // sits in the viewport. Persists across nav clicks (a later mesh swap replaces the
+    // geometry but the flag stays set).
+    let mut has_2008_mesh: bool = false;
     // Materials picker request: (submesh, Some(asset) | None to unassign), applied after the UI runs.
     // Materials-panel picker signals a per-slot rebind: (submesh index, slot 0..=3, asset index).
     let mut pending_tex: Option<(usize, u8, Option<usize>)> = None;
@@ -852,6 +862,7 @@ pub fn run(mut cfg: Config) {
                                 sel_source_handle: &mut sel_source_handle,
                                 source: source.as_ref(),
                                 pending_2008_clip: &mut pending_2008_clip,
+                                pending_2008_mesh: &mut pending_2008_mesh,
                             },
                             &mut editor_state,
                             &mut settings_ctx,
@@ -1123,17 +1134,62 @@ pub fn run(mut cfg: Config) {
                             }
                         }
                     }
+                    // --- act on a 2008 mesh request (Nav Models click through the trait) ---
+                    // Decode MSH4 → Smsh → renderer.set_mesh + identity skeleton + per-submesh
+                    // material→texture resolve. All wgpu work happens on the main thread; the
+                    // decode is fast enough (~a few MB inflate + parse) that a worker isn't
+                    // warranted yet. Set draw_scene ON once the upload succeeds.
+                    if let Some(hi) = pending_2008_mesh.take() {
+                        if let (Some(src), Some(handle)) =
+                            (source.as_ref(), source_handles.get(hi))
+                        {
+                            match load_2008_mesh_into_renderer(
+                                src.as_ref(),
+                                handle,
+                                &mut renderer,
+                                &mut skel,
+                                &mut submeshes,
+                                &mut mesh_stats,
+                                &mut model_name,
+                                &mut bone_depth,
+                                &mut camera,
+                            ) {
+                                Ok(msg) => {
+                                    has_2008_mesh = true;
+                                    // Clear the previous model's per-submesh state so stale
+                                    // sidecar bindings / assets don't survive across a click.
+                                    current_parts.clear();
+                                    assets = Vec::new();
+                                    submesh_tex =
+                                        vec![resolve::SubmeshBinding::default(); submeshes.len()];
+                                    submesh_prov =
+                                        vec![resolve::Prov::Unresolved; submeshes.len()];
+                                    sel_submesh = None;
+                                    sel_bone = None;
+                                    sel_tex = None;
+                                    thumbs.clear();
+                                    current = None;
+                                    playback.time = 0.0;
+                                    load_status = Some((msg, false));
+                                }
+                                Err(e) => {
+                                    eprintln!("[sab_workshop] load 2008 mesh failed: {e}");
+                                    load_status = Some((format!("load: {e}"), true));
+                                }
+                            }
+                        }
+                    }
 
                     // The editor pages own the whole window with opaque panels; skip the scene pass.
                     // Scene draws only when there's something meaningful to render. Editor pages
-                    // own their space (retail Strings/Objects/Icons). 2008 mode currently has no
-                    // geometry to preview — the placeholder is a 3-vert triangle stub, and drawing
-                    // just the grid over it reads as "app is broken" more than "no model yet".
-                    // Suppress the whole scene pass for 2008 so the centre pane clears to the
-                    // theme background and cedes visual weight to the browser + inspector.
+                    // own their space (retail Strings/Objects/Icons). For 2008: keep the pane
+                    // empty until the user picks a mesh (the placeholder is a 3-vert triangle
+                    // stub — drawing that reads as "app is broken"), then flip the scene on and
+                    // show the real MSH4 body in bind pose.
                     let is_2008 = source.as_ref().map(|s| s.version())
                         == Some(crate::source::GameVersion::Prototype2008Xbox360);
-                    renderer.draw_scene = page.editor().is_none() && !is_2008;
+                    let scene_has_geometry = !is_2008 || has_2008_mesh;
+                    renderer.draw_scene = page.editor().is_none() && scene_has_geometry;
                     match renderer.render(&mut gui) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
@@ -2096,6 +2152,178 @@ fn load_source_clip(
     })
 }
 
+/// Load a 2008-prototype mesh + its materials + textures into the renderer.
+///
+/// Chain: mesh handle → `Prototype2008Source::read_mesh_smsh` (MSH4 → Smsh) → `renderer.set_mesh`
+/// → for each submesh, look up `materials[0]` (or subsequent candidates) in the source's
+/// material index, decode each slot's texture via `GameSource::load_texture`, and bind to the
+/// renderer. The skeleton is an identity stub sized to cover every joint index the mesh
+/// references — the shader still runs its skinning path, but every `jointMatrix[i] * pos`
+/// resolves to `identity * pos`, i.e. bind-pose vertices unchanged.
+///
+/// Returns a human-readable status message on success (verts/tris/textures counts) and an
+/// error string on any failure that keeps the scene in its previous state.
+fn load_2008_mesh_into_renderer(
+    src: &dyn crate::source::GameSource,
+    handle: &crate::source::AssetHandle,
+    renderer: &mut Renderer,
+    skel: &mut Vec<Bone>,
+    submeshes: &mut Vec<SubMesh>,
+    mesh_stats: &mut (usize, usize, usize),
+    model_name: &mut String,
+    bone_depth: &mut Vec<usize>,
+    camera: &mut OrbitCamera,
+) -> Result<String, String> {
+    // The trait doesn't expose `read_mesh_smsh` because retail returns a different shape
+    // (assembled from many parts through a skeleton). Downcast to the concrete 2008 source.
+    // This is the ONE place we peek through the trait, and it lives next to the drain that
+    // already gated on `GameVersion::Prototype2008Xbox360` — no per-version branch anywhere
+    // else in the render path.
+    let src2008 = src
+        .as_any()
+        .and_then(|a| a.downcast_ref::<crate::sources::prototype2008::Prototype2008Source>())
+        .ok_or("source is not the 2008 prototype")?;
+    let smsh = src2008.read_mesh_smsh(handle)?;
+    let name = if handle.name.is_empty() {
+        format!("{:08X}", handle.key as u32)
+    } else {
+        handle.name.clone()
+    };
+
+    // Identity skeleton: one bone per palette-local index the vertex data references,
+    // capped at 256 (MSH4 stores u8 bone indices, so 0..=255 is the whole range). Every
+    // bone is a root with identity TRS + identity inv_bind, so `skinning::bind_pose` hands
+    // the shader identity `jointMatrix` for every joint — vertices pass through unposed.
+    let max_joint = smsh
+        .joints
+        .iter()
+        .flatten()
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let bone_count = (max_joint as usize + 1).max(1).min(256);
+    let mut identity_skel: Vec<Bone> = Vec::with_capacity(bone_count);
+    let identity_inv_bind = {
+        let mut m = [0f32; 16];
+        m[0] = 1.0;
+        m[5] = 1.0;
+        m[10] = 1.0;
+        m[15] = 1.0;
+        Some(m)
+    };
+    for i in 0..bone_count {
+        identity_skel.push(Bone {
+            parent: -1,
+            name: format!("bone_{i}"),
+            t: [0.0, 0.0, 0.0],
+            r: [0.0, 0.0, 0.0, 1.0],
+            s: [1.0, 1.0, 1.0],
+            inv_bind: identity_inv_bind,
+            local_m: None,
+        });
+    }
+
+    // Upload geometry + rig, then let the renderer recompute its submesh cover.
+    renderer.set_mesh(&smsh, identity_skel.len());
+    renderer.update_joints(&skinning::bind_pose(&identity_skel));
+    *submeshes = renderer.submeshes().to_vec();
+    *mesh_stats = (
+        smsh.positions.len(),
+        smsh.indices.len() / 3,
+        identity_skel.len(),
+    );
+    *model_name = name;
+    *skel = identity_skel;
+    *bone_depth = bone_depths(skel);
+
+    // Frame the camera on the fresh geometry — the retail path does the same after every
+    // click-swap, so 2008 mode's newly-loaded mesh shows up centred rather than at whatever
+    // orbit the previous model's bounds put us in.
+    let (c, r) = bounds(&smsh);
+    *camera = OrbitCamera::framing(c, r);
+
+    // ── Materials + textures per submesh ─────────────────────────────────────────────────
+    // For each submesh's candidate material hashes (24-bit, from MSH4 prims), resolve to a
+    // full MTLD uid, look up its [d,s,n,wm] slot vector, decode each populated slot's
+    // texture via the trait's `load_texture` and bind. Missing slots fall back to the
+    // renderer's shared defaults (1×1 white / flat normal / black) exactly like retail.
+    let mut n_diffuse = 0usize;
+    let mut n_spec = 0usize;
+    let mut n_normal = 0usize;
+    let mut n_no_material = 0usize;
+    for (i, sm) in submeshes.iter().enumerate() {
+        let mut resolved_slots: Option<[Option<u32>; 4]> = None;
+        for &mat_hash_24 in &sm.materials {
+            if let Some(uid) = src2008.resolve_material_hash_24(mat_hash_24) {
+                if let Some(slots) = src.textures_for_material(uid) {
+                    resolved_slots = Some(slots);
+                    break;
+                }
+            }
+        }
+        let Some(slots) = resolved_slots else {
+            n_no_material += 1;
+            continue;
+        };
+        // Slot order per docs/2008_materials_format.md: [diffuse, spec, normal, wm].
+        // The renderer samples the first three; wm is carried in bundle export only.
+        if let Some(h) = slots[0] {
+            match src.load_texture(h) {
+                Ok(t) => {
+                    renderer.set_submesh_texture(i, &t);
+                    n_diffuse += 1;
+                }
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sab_workshop] 2008 submesh {i} diffuse {h:08X}: {e}");
+                    let _ = e;
+                }
+            }
+        }
+        if let Some(h) = slots[1] {
+            match src.load_texture(h) {
+                Ok(t) => {
+                    renderer.set_submesh_spec(i, &t);
+                    n_spec += 1;
+                }
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sab_workshop] 2008 submesh {i} spec {h:08X}: {e}");
+                    let _ = e;
+                }
+            }
+        }
+        if let Some(h) = slots[2] {
+            match src.load_texture(h) {
+                Ok(t) => {
+                    renderer.set_submesh_normal(i, &t);
+                    n_normal += 1;
+                }
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("[sab_workshop] 2008 submesh {i} normal {h:08X}: {e}");
+                    let _ = e;
+                }
+            }
+        }
+    }
+
+    println!(
+        "[sab_workshop] 2008 mesh loaded: {} — {} verts, {} tris, {} submeshes, \
+         {n_diffuse}/{n_spec}/{n_normal} d/s/n textures, {n_no_material} submeshes without a \
+         resolvable material",
+        model_name,
+        mesh_stats.0,
+        mesh_stats.1,
+        submeshes.len(),
+    );
+
+    Ok(format!(
+        "{}: {} tris, {} submeshes, {} diffuse textures",
+        model_name, mesh_stats.1, submeshes.len(), n_diffuse
+    ))
+}
+
 /// Axis-aligned bounding sphere (center of bbox + half-diagonal) of the mesh.
 fn bounds(mesh: &Smsh) -> (Vec3, f32) {
     if mesh.positions.is_empty() {
@@ -2337,6 +2565,13 @@ struct NavCtx<'a> {
     /// `GameSource::load_animation_clip`, wiring it to `current: LoadedClip` — the same
     /// slot retail's `pending_load` feeds — so the transport just works.
     pending_2008_clip: &'a mut Option<usize>,
+    /// Click-to-load out-param for the 2008 Nav Models tab: an index into `source_handles`
+    /// pointing at an `AssetKind::Mesh` row. The event loop drains it, calls
+    /// `Prototype2008Source::read_mesh_smsh`, uploads the mesh + resolved textures to the
+    /// renderer, and flips `has_2008_mesh` so `draw_scene` can be enabled. Same shape as
+    /// `pending_2008_clip` — one indirection through the source, no per-version logic in
+    /// the renderer.
+    pending_2008_mesh: &'a mut Option<usize>,
 }
 
 /// Live state for the Settings page: the values being edited, plus what changing them implies.
@@ -3201,6 +3436,13 @@ fn build_ui(
                             let label = format!("[{}] {}", kind_prefix(h.kind), name);
                             if ui.selectable_label(sel, label).clicked() {
                                 *nav.sel_source_handle = Some(i);
+                                // Meshes go through the same event-loop drain path retail's
+                                // model click uses — the drain calls `read_mesh_smsh` and
+                                // uploads to the renderer. Textures + materials remain
+                                // "select for detail" ops; nothing further to do here.
+                                if h.kind == AssetKind::Mesh {
+                                    *nav.pending_2008_mesh = Some(i);
+                                }
                             }
                         }
                     });

@@ -772,6 +772,7 @@ pub fn run(mut cfg: Config) {
                             },
                             &mut editor_state,
                             &mut settings_ctx,
+                            source.as_ref().map(|s| s.version()),
                         );
                     });
 
@@ -1021,7 +1022,15 @@ pub fn run(mut cfg: Config) {
                     }
 
                     // The editor pages own the whole window with opaque panels; skip the scene pass.
-                    renderer.draw_scene = page.editor().is_none();
+                    // Scene draws only when there's something meaningful to render. Editor pages
+                    // own their space (retail Strings/Objects/Icons). 2008 mode currently has no
+                    // geometry to preview — the placeholder is a 3-vert triangle stub, and drawing
+                    // just the grid over it reads as "app is broken" more than "no model yet".
+                    // Suppress the whole scene pass for 2008 so the centre pane clears to the
+                    // theme background and cedes visual weight to the browser + inspector.
+                    let is_2008 = source.as_ref().map(|s| s.version())
+                        == Some(crate::source::GameVersion::Prototype2008Xbox360);
+                    renderer.draw_scene = page.editor().is_none() && !is_2008;
                     match renderer.render(&mut gui) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
@@ -2440,7 +2449,16 @@ fn build_ui(
     nav: &mut NavCtx,
     ed: &mut crate::editor::Editor,
     settings: &mut SettingsCtx,
+    source_version: Option<crate::source::GameVersion>,
 ) {
+    // Retail-only pages (STRINGS/OBJECTS/ICONS) read `Cinematics/Dialog/*/GameText.dlg` and
+    // `DLC/01/GameTemplates.wsd` — files that don't exist in the 2008 prototype. When the loaded
+    // source isn't retail, treat those pages as inaccessible: force-select Inspect if the user
+    // was on one, and the rail render below will draw them dimmed with a "retail only" cue.
+    let retail_only = matches!(source_version, Some(crate::source::GameVersion::Prototype2008Xbox360));
+    if retail_only && matches!(*page, Page::Strings | Page::Objects | Page::Icons) {
+        *page = Page::Inspect;
+    }
     // How much of each page's subject is accounted for. Only Materials is strictly work-remaining
     // (a binding is a decision you make); the rest are coverage. Both answer the same question —
     // how much of this is resolved — which is what the rail meter reports.
@@ -2488,12 +2506,34 @@ fn build_ui(
             ui.add_space(2.0);
             ui.label(theme::poster_text("SAB WORKSHOP", 18.0, theme::TX));
             ui.label(theme::data_text("ASSET WORKBENCH", 9.0, theme::FAINT));
+            // Which build we're pointed at. The picker's the only way this changes, so the
+            // chip is a passive readout — no menu, no click behaviour. RETAIL is the default
+            // and stays visually calm; 2008 gets the highlighted variant because the whole
+            // rest of the app behaves differently in that mode and users deserve a big cue.
+            if let Some(v) = source_version {
+                let (label, lit) = match v {
+                    crate::source::GameVersion::RetailPc => ("Retail PC", false),
+                    crate::source::GameVersion::Prototype2008Xbox360 => ("2008 Xbox 360 prototype", true),
+                };
+                theme::chip(ui, label, lit, None);
+            }
             ui.separator();
             // On Inspect the subject is the model; on an editor page the subject is the MOD — it is
             // the document those pages are all editing, so it belongs where a filename would be.
+            // For 2008 the "model" concept is empty (no assembled character), so surface what the
+            // browser IS showing instead — the block count. Same shape as the retail line so the
+            // top bar reads consistently.
             match page.editor() {
                 None => {
-                    ui.label(theme::data_text(model_name, 11.5, theme::RED));
+                    if retail_only {
+                        ui.label(theme::data_text(
+                            format!("{} source handles browsable", nav.source_handles.len()),
+                            11.5,
+                            theme::RED,
+                        ));
+                    } else {
+                        ui.label(theme::data_text(model_name, 11.5, theme::RED));
+                    }
                 }
                 Some(_) => {
                     let (name, out) = ed.mod_chip();
@@ -2545,24 +2585,47 @@ fn build_ui(
         // child — including the right-aligned group that nests its own layout — centres against the
         // whole band instead of against whatever row height earlier items happened to set.
         ui.horizontal_centered(|ui| {
-            let (ok, msg) = if have_pack { (theme::EMBER, "ready") } else { (theme::RED, "no pack") };
+            // For 2008 the "ready / no pack" light is meaningless (there IS no retail Animations
+            // pack), so report source-open state instead. Retail path renders unchanged.
+            let (ok, msg) = if retail_only {
+                (theme::EMBER, "source loaded")
+            } else if have_pack {
+                (theme::EMBER, "ready")
+            } else {
+                (theme::RED, "no pack")
+            };
             theme::status_dot(ui, msg, ok);
             ui.separator();
-            ui.label(theme::data_text(
-                format!("{} verts · {} tris · {} bones", mesh_stats.0, mesh_stats.1, mesh_stats.2),
-                10.0,
-                theme::DIM,
-            ));
-            ui.separator();
-            // Each page reports the fact IT is about; the status bar is not a fixed readout.
-            ui.label(theme::data_text(
-                match page.editor() {
-                    None => format!("{textured}/{} submeshes textured", mats.submeshes.len()),
-                    Some(ep) => ed.status(ep),
-                },
-                10.0,
-                theme::DIM,
-            ));
+            if retail_only {
+                // Placeholder mesh stats (3v/1t/0b) aren't useful — show what IS meaningful.
+                ui.label(theme::data_text(
+                    format!("{} source handles", nav.source_handles.len()),
+                    10.0,
+                    theme::DIM,
+                ));
+                ui.separator();
+                ui.label(theme::data_text(
+                    "3D + animation pending MSH4 / clip probes",
+                    10.0,
+                    theme::DIM,
+                ));
+            } else {
+                ui.label(theme::data_text(
+                    format!("{} verts · {} tris · {} bones", mesh_stats.0, mesh_stats.1, mesh_stats.2),
+                    10.0,
+                    theme::DIM,
+                ));
+                ui.separator();
+                // Each page reports the fact IT is about; the status bar is not a fixed readout.
+                ui.label(theme::data_text(
+                    match page.editor() {
+                        None => format!("{textured}/{} submeshes textured", mats.submeshes.len()),
+                        Some(ep) => ed.status(ep),
+                    },
+                    10.0,
+                    theme::DIM,
+                ));
+            }
             if let Some((msg, is_err)) = load_status {
                 ui.separator();
                 ui.label(
@@ -2635,7 +2698,15 @@ fn build_ui(
                     ));
                 } else if !exp.ready {
                     ui.separator();
-                    ui.label(theme::data_text("load a model to export", 10.0, theme::FAINT));
+                    let hint = if retail_only {
+                        // The exporter's core (`bundle::run`) opens a retail Megapack + assembles
+                        // MSHA parts + writes a glTF. Nothing in that chain works for the 2008
+                        // build today — the MSH4 body decoder is the gating probe.
+                        "export not yet supported for this build (waiting on 2008 MSH4 geometry decoder)"
+                    } else {
+                        "load a model to export"
+                    };
+                    ui.label(theme::data_text(hint, 10.0, theme::FAINT));
                 }
             });
         });
@@ -2720,12 +2791,21 @@ fn build_ui(
                         );
                     }
                 }
-                if r.clicked() {
+                // Editor pages (STRINGS/OBJECTS/ICONS) read retail-only files. Ignore the click
+                // when the loaded source can't feed them; the button STILL responds visually
+                // (dimming is done via the meter zeroing above), but the click routes to
+                // Inspect via the `retail_only` gate at the top of build_ui.
+                let ed_disabled = retail_only && p.editor().is_some();
+                if r.clicked() && !ed_disabled {
                     *page = *p;
                 }
-                let note = match p.editor() {
-                    None => format!("{textured}/{} submeshes textured", mats.submeshes.len()),
-                    Some(ep) => ed.status(ep),
+                let note = if ed_disabled {
+                    "retail only (loaded source is 2008)".to_string()
+                } else {
+                    match p.editor() {
+                        None => format!("{textured}/{} submeshes textured", mats.submeshes.len()),
+                        Some(ep) => ed.status(ep),
+                    }
                 };
                 r.on_hover_text(format!("{}  ({})", p.label(), note));
             }
@@ -2765,10 +2845,13 @@ fn build_ui(
 
         match current {
             None => {
-                ui.label(
-                    egui::RichText::new("No clip loaded — pick one from the navigator. Showing bind pose.")
-                        .color(theme::DIM),
-                );
+                let msg = if retail_only {
+                    "Animation transport is disabled for this build — 2008's `Animations.pack` \
+                     needs a BE/Xenon clip decoder before clips can play."
+                } else {
+                    "No clip loaded — pick one from the navigator. Showing bind pose."
+                };
+                ui.label(egui::RichText::new(msg).color(theme::DIM));
             }
             Some(clip) => {
                 ui.horizontal(|ui| {
@@ -3066,6 +3149,25 @@ fn build_ui(
                         }
                     });
                 }
+                (Page::Inspect, NavTab::Animations) if nav.source.map(|s| s.version()) == Some(crate::source::GameVersion::Prototype2008Xbox360) => {
+                    // 2008's Animations.pack has the same `AP04ANIM` magic as retail, but the
+                    // per-clip Havok blob shape isn't yet confirmed for BE Xenon — a targeted
+                    // probe against a known 2008 clip is the follow-up. For now the tab shows
+                    // an honest empty state instead of an infinite spinner or a stale retail
+                    // clip list from a previous session.
+                    ui.add_space(12.0);
+                    ui.label(theme::data_text("2008 prototype", 10.5, theme::FAINT));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Animation catalog for the 2008 build isn't wired yet. `Animations.pack` \
+                             shares its magic (`AP04ANIM`) with retail; the clip decoder needs a BE / \
+                             Xenon probe before this tab lights up.",
+                        )
+                        .color(theme::FAINT)
+                        .size(11.0),
+                    );
+                }
                 (Page::Inspect, NavTab::Animations) => {
                     if theme::pill(ui, "show all (incl. non-rig)", *show_all).clicked() {
                         *show_all = !*show_all;
@@ -3246,12 +3348,50 @@ fn build_ui(
                         });
                     }
 
-                    theme::card(ui, "Character", None, |ui| {
-                        theme::kv(ui, "vertices", egui::RichText::new(mesh_stats.0.to_string()));
-                        theme::kv(ui, "triangles", egui::RichText::new(mesh_stats.1.to_string()));
-                        theme::kv(ui, "bones", egui::RichText::new(mesh_stats.2.to_string()));
-                        theme::kv(ui, "clips", egui::RichText::new(catalog.clips.len().to_string()));
-                    });
+                    // Session card: what's loaded. For retail this is the assembled character +
+                    // its clip catalog (the original meaning of the card). For 2008 there is no
+                    // assembled character today — the placeholder-mesh's 3v/1t/0b stats are
+                    // noise, so show the actual useful thing: the source label and per-kind
+                    // handle counts. When a MSH4 decoder lands, retail-shape geometry stats
+                    // start being real for 2008 too and this branch collapses back to one shape.
+                    if let Some(src) = nav.source.filter(|s| {
+                        s.version() == crate::source::GameVersion::Prototype2008Xbox360
+                    }) {
+                        theme::card(ui, "Source", Some(src.version().label()), |ui| {
+                            let mut n_meshes = 0usize;
+                            let mut n_textures = 0usize;
+                            let mut n_materials = 0usize;
+                            for h in nav.source_handles.iter() {
+                                match h.kind {
+                                    crate::source::AssetKind::Mesh => n_meshes += 1,
+                                    crate::source::AssetKind::Texture => n_textures += 1,
+                                    crate::source::AssetKind::Material => n_materials += 1,
+                                    _ => {}
+                                }
+                            }
+                            theme::kv(ui, "meshes", egui::RichText::new(n_meshes.to_string()));
+                            theme::kv(ui, "textures", egui::RichText::new(n_textures.to_string()));
+                            theme::kv(ui, "materials", egui::RichText::new(n_materials.to_string()));
+                            theme::kv(ui, "browsable", egui::RichText::new(nav.source_handles.len().to_string()));
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "3D preview + retail-editor pages are unavailable in this build. \
+                                     Browse assets on the left; the detail card below shows what the \
+                                     source knows about the selected handle.",
+                                )
+                                .color(theme::FAINT)
+                                .size(10.5),
+                            );
+                        });
+                    } else {
+                        theme::card(ui, "Character", None, |ui| {
+                            theme::kv(ui, "vertices", egui::RichText::new(mesh_stats.0.to_string()));
+                            theme::kv(ui, "triangles", egui::RichText::new(mesh_stats.1.to_string()));
+                            theme::kv(ui, "bones", egui::RichText::new(mesh_stats.2.to_string()));
+                            theme::kv(ui, "clips", egui::RichText::new(catalog.clips.len().to_string()));
+                        });
+                    }
                     // Parts of the selected asset — each is loadable (inspectable) individually.
                     if let Some(a) = nav.sel_asset.and_then(|ai| nav.browse_assets.get(ai)) {
                         let badge = format!("{}", a.parts.len());

@@ -100,8 +100,13 @@
 //! aligned offset landed the reader on the wrong byte and produced the well-known
 //! `implausible num_streams 0 / 256 / 65536 / …` errors. Byte-fingerprinted `NZ`, `Grenade`,
 //! `Trap01_ORD` (name lengths 22 / 16 / 16) all decode cleanly under the fixed-1-byte rule.
-//! `FBP_Debug_UB` remains the only known outlier — a truly different sub-format we don't
-//! decode yet.
+//!
+//! The pad-rule fix closes out every previously-known "outlier" too. `FBP_Debug_UB` — a
+//! `CH_Debug_UB` dev-prop mesh (name_len 12, one stream, fmt 0x1106, 232 verts / 243 tris /
+//! 1 prim, plus 8 kB of trailing skeleton) — was called out by an earlier probe as
+//! "genuinely distinct". It is not: it is a small hand-authored debug body that decodes
+//! byte-for-byte under the same rules as the shipping meshes. The pinning test is
+//! `tests::fbp_debug_ub_decodes_under_the_fixed_pad_rule_no_sub_format`.
 //!
 //! ## References
 //!
@@ -1127,6 +1132,74 @@ mod tests {
         // input; capture the ex-failure mode so a regression to the align-to-4 rule stops
         // the build here.
         assert!(!body.diagnostics.streams.is_empty(), "expected non-empty stream table");
+    }
+
+    /// `FBP_Debug_UB` — the "last known outlier" per an earlier probe. Byte-fingerprint from
+    /// this test resolves it: it is a small (232-vert / 243-tri) authored debug mesh that
+    /// decodes byte-for-byte under the same fixed-1-byte-pad + rd24 rules every other named
+    /// mesh uses. `name_len == 12` places its num_streams slot at `payload+0` with the value
+    /// `01` in bytes[3] discarded as pad — identical shape to Sean's num_streams=1 slot.
+    /// Version, stream header (`fmt=0x1106, nidx=729, nverts=232, ext=0, stride=24, nprims=1`),
+    /// VB/IB/prims extents, and the trailing skeleton bytes all lay out cleanly. There is
+    /// no "second sub-format"; the earlier claim was a stale artifact of the pre-pad-fix
+    /// probe misreading the same slot. Pin the successful decode here so the next reader
+    /// doesn't burn another day chasing a ghost.
+    #[test]
+    fn fbp_debug_ub_decodes_under_the_fixed_pad_rule_no_sub_format() {
+        let Some(root) = bin360_root() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let src = Prototype2008Source::open(&root).expect("open prototype");
+        let Some(handle) = src.list_meshes().into_iter().find(|h| h.name == "FBP_Debug_UB") else {
+            eprintln!("skip: FBP_Debug_UB not in packlog");
+            return;
+        };
+        let slot = src.read_mesh_bytes(&handle).expect("read FBP_Debug_UB slot");
+        let raw = inflate_first_msh4_stream(&slot).expect("inflate FBP_Debug_UB MSH4");
+        let body = parse_msh4(&raw).expect("parse FBP_Debug_UB");
+
+        // Framing matches the same rules as every other named mesh.
+        assert_eq!(body.name, "CH_Debug_UB", "mesh name preserved");
+        assert_eq!(body.diagnostics.streams.len(), 1, "one authored stream");
+        let s = body.diagnostics.streams[0];
+        assert_eq!(s.format_tag, 0x1106, "format_tag matches the retail bitfield");
+        assert_eq!(s.stride, 24, "stride matches format 0x1106 (pos+skin+1UV+normal)");
+        assert_eq!(s.num_vertices, 232, "expected 232 verts");
+        assert_eq!(s.num_indices, 729, "expected 729 indices (243 triangles)");
+        assert_eq!(s.num_prims, 1, "one drawcall");
+
+        // Geometry decoded: index/vertex sanity + prim range covers the IB.
+        assert_eq!(body.positions.len(), 232);
+        assert_eq!(body.indices.len(), 729);
+        assert_eq!(body.indices.len() % 3, 0);
+        let max_idx = body.indices.iter().copied().max().unwrap_or(0);
+        assert!((max_idx as usize) < body.positions.len(), "max index in range");
+        assert_eq!(body.prims.len(), 1);
+        let (start, count, mat) = body.prims[0];
+        assert_eq!(start, 0, "prim starts at IB offset 0");
+        assert_eq!(count as usize, body.indices.len(), "prim covers the whole IB");
+        assert!(mat != 0, "prim has a non-null material hash");
+
+        // The bounds tell us what this mesh actually is — a small dev prop, well within
+        // model space, not a garbled decode.
+        let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in &body.positions {
+            for k in 0..3 {
+                mn[k] = mn[k].min(p[k]);
+                mx[k] = mx[k].max(p[k]);
+            }
+        }
+        for k in 0..3 {
+            assert!(
+                mn[k] >= -5.0 && mx[k] <= 5.0,
+                "axis {k} bounds out of model space: [{}, {}]",
+                mn[k],
+                mx[k]
+            );
+        }
     }
 
     /// The pad-rule fingerprint. For every name-length residue we care about, verify that

@@ -20,9 +20,10 @@ use winit::window::WindowBuilder;
 use crate::anim_index::{self, AnimCatalog};
 use crate::bundle;
 use crate::camera::OrbitCamera;
+use crate::clip::AnimClip;
 use crate::formats::{self, Bone, Smsh, SubMesh};
 use crate::gui::theme;
-use crate::havok::{self, Packfile, SplineAnim};
+use crate::havok::{self, Packfile, QsTransform, SplineAnim};
 use crate::meshload;
 use crate::pack;
 use crate::render::Renderer;
@@ -31,8 +32,13 @@ use crate::skinning;
 use crate::Config;
 
 /// The animation pack, parsed once: raw bytes + the ordered spline-anim object offsets.
+///
+/// The raw bytes are held in an `Arc<Vec<u8>>` because retail `LoadedClip`s carry a shared
+/// handle to the same file — the trait method `AnimClip::sample_all(time)` takes no blob
+/// argument, so the clip itself has to own or share the bytes its `SplineAnim` slices into.
+/// Cheap: Arc clone at clip load time, no data copy.
 struct PackData {
-    file: Vec<u8>,
+    file: Arc<Vec<u8>>,
     blob_off: usize,
     hk_size: usize,
     scas: Vec<usize>, // data-relative offset of the N-th hkaSplineCompressedAnimation
@@ -50,21 +56,90 @@ impl PackData {
             .filter(|(_, c)| c == "hkaSplineCompressedAnimation")
             .map(|(s, _)| *s)
             .collect();
-        Ok(PackData { file, blob_off: ap.blob_off, hk_size: ap.hk_size, scas })
+        Ok(PackData { file: Arc::new(file), blob_off: ap.blob_off, hk_size: ap.hk_size, scas })
     }
     fn blob(&self) -> &[u8] {
         &self.file[self.blob_off..self.blob_off + self.hk_size]
     }
 }
 
-/// A clip decoded and ready to sample.
+/// The version-specific backend for a `LoadedClip`.
+///
+/// Retail carries the packfile blob (shared with `PackData` via an `Arc`) so `sample_all(time)`
+/// can call into the spline decoder without re-reading Animations.pack, AND so diagnostic
+/// harnesses (`anim_sweep`) can still peel back to `SplineAnim::num_blocks` and
+/// `SplineAnim::track_masks` — trait-object erasure would hide them.
+///
+/// Anything else the app loads (2008 today; a hypothetical future source tomorrow) flows
+/// through the `GameSource::load_animation_clip` trait method and lands here as a
+/// `Box<dyn AnimClip>`. That path never needs backend-specific downcasts — the trait
+/// methods are all the transport, skinning, and inspector cards touch.
+enum ClipBackend {
+    /// Retail PC — `hkaSplineCompressedAnimation` decoded on demand by `havok::SplineAnim`.
+    /// `blob` is the packfile bytes (`&PackData::blob()` at load time), sliced to
+    /// `[blob_off .. blob_off + hk_size]`.
+    Retail { anim: SplineAnim, blob: Arc<Vec<u8>>, blob_off: usize, hk_size: usize },
+    /// Any source that returns a `Box<dyn AnimClip>` from `GameSource::load_animation_clip`.
+    /// 2008's `Prototype2008Source` wraps its `Clip2008` this way.
+    Boxed(Box<dyn AnimClip>),
+}
+
+/// A clip decoded and ready to sample. Version-agnostic at the trait level; the concrete
+/// backend is only reached when a caller wants a retail-specific diagnostic (e.g.
+/// `SplineAnim::num_blocks`, `track_masks`).
 struct LoadedClip {
-    anim: SplineAnim,
+    backend: ClipBackend,
     track_to_bone: Vec<i32>,
     name: String,
     duration: f32,
     frame_duration: f32,
     frame_count: usize,
+}
+
+impl LoadedClip {
+    /// Peel back to the retail spline decoder when a caller needs its retail-specific state
+    /// (block count, mask bytes). `None` for a 2008 clip.
+    fn retail_anim(&self) -> Option<(&SplineAnim, &[u8])> {
+        match &self.backend {
+            ClipBackend::Retail { anim, blob, blob_off, hk_size } => {
+                Some((anim, &blob[*blob_off..*blob_off + *hk_size]))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl AnimClip for LoadedClip {
+    fn duration(&self) -> f32 { self.duration }
+    fn num_transform_tracks(&self) -> usize {
+        match &self.backend {
+            ClipBackend::Retail { anim, .. } => anim.num_transform_tracks,
+            ClipBackend::Boxed(b) => b.num_transform_tracks(),
+        }
+    }
+    fn num_frames(&self) -> usize { self.frame_count }
+    fn track_to_bone(&self) -> &[i32] {
+        // Retail carries its per-clip mapping in `LoadedClip.track_to_bone` (authored by the
+        // `ANIM` block); a boxed source can also carry one, but 2008 today returns empty
+        // (see `Clip2008::track_to_bone`). Prefer LoadedClip's own field when populated so
+        // the retail path keeps working; fall back to the boxed impl when it isn't.
+        if !self.track_to_bone.is_empty() {
+            &self.track_to_bone
+        } else {
+            match &self.backend {
+                ClipBackend::Boxed(b) => b.track_to_bone(),
+                ClipBackend::Retail { .. } => &self.track_to_bone,
+            }
+        }
+    }
+    fn sample_all(&self, time: f32) -> Vec<QsTransform> {
+        match &self.backend {
+            ClipBackend::Retail { anim, blob, blob_off, hk_size } => {
+                anim.sample_at(&blob[*blob_off..*blob_off + *hk_size], time)
+            }
+            ClipBackend::Boxed(b) => b.sample_all(time),
+        }
+    }
 }
 
 /// Playback state.
@@ -245,6 +320,11 @@ pub fn run(mut cfg: Config) {
     let mut current: Option<LoadedClip> = None;
     let mut playback = Playback { time: 0.0, playing: true, looping: true, speed: 1.0 };
     let mut pending_load: Option<usize> = None; // catalog.clips index requested this frame
+    // 2008-side click-to-load: an index into `source_handles` that the Nav Anims tab set on
+    // the last frame. Kept next to `pending_load` so the two version paths look the same in
+    // the event loop below (both are Option<index>, both get drained on the frame after
+    // they're set).
+    let mut pending_2008_clip: Option<usize> = None;
     // Materials picker request: (submesh, Some(asset) | None to unassign), applied after the UI runs.
     // Materials-panel picker signals a per-slot rebind: (submesh index, slot 0..=3, asset index).
     let mut pending_tex: Option<(usize, u8, Option<usize>)> = None;
@@ -709,9 +789,9 @@ pub fn run(mut cfg: Config) {
                     }
 
                     // --- pose -> joint matrices ---
-                    if let (Some(clip), Some(pk)) = (&current, &pack) {
-                        let pose = clip.anim.sample_at(pk.blob(), playback.time);
-                        let mats = skinning::posed(&skel, &pose, &clip.track_to_bone, lock_root);
+                    if let Some(clip) = &current {
+                        let pose = clip.sample_all(playback.time);
+                        let mats = skinning::posed(&skel, &pose, clip.track_to_bone(), lock_root);
                         renderer.update_joints(&mats);
                     }
 
@@ -771,6 +851,7 @@ pub fn run(mut cfg: Config) {
                                 source_handles: &source_handles,
                                 sel_source_handle: &mut sel_source_handle,
                                 source: source.as_ref(),
+                                pending_2008_clip: &mut pending_2008_clip,
                             },
                             &mut editor_state,
                             &mut settings_ctx,
@@ -1011,7 +1092,7 @@ pub fn run(mut cfg: Config) {
                             Ok(c) => {
                                 println!(
                                     "[sab_workshop] loaded clip '{}' ({} tracks, {} frames, {:.3}s)",
-                                    c.name, c.anim.num_transform_tracks, c.frame_count, c.duration
+                                    c.name, c.num_transform_tracks(), c.frame_count, c.duration
                                 );
                                 current = Some(c);
                                 playback.time = 0.0;
@@ -1019,6 +1100,26 @@ pub fn run(mut cfg: Config) {
                             }
                             Err(e) => {
                                 eprintln!("[sab_workshop] load clip failed: {e}");
+                            }
+                        }
+                    }
+                    // --- act on a 2008 clip request (Nav Anims click through the trait) ---
+                    if let Some(hi) = pending_2008_clip.take() {
+                        if let (Some(src), Some(handle)) = (source.as_ref(), source_handles.get(hi))
+                        {
+                            match load_source_clip(src.as_ref(), handle) {
+                                Ok(c) => {
+                                    println!(
+                                        "[sab_workshop] loaded 2008 clip '{}' ({} tracks, {} frames, {:.3}s)",
+                                        c.name, c.num_transform_tracks(), c.frame_count, c.duration
+                                    );
+                                    current = Some(c);
+                                    playback.time = 0.0;
+                                    playback.playing = true;
+                                }
+                                Err(e) => {
+                                    eprintln!("[sab_workshop] load 2008 clip failed: {e}");
+                                }
                             }
                         }
                     }
@@ -1578,16 +1679,16 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
     };
     println!(
         "selftest: clip '{}' — {} tracks, {} frames, {:.3}s, frameDur {:.5}",
-        clip.name, clip.anim.num_transform_tracks, clip.frame_count, clip.duration, clip.frame_duration
+        clip.name, clip.num_transform_tracks(), clip.frame_count, clip.duration, clip.frame_duration
     );
-    let pk = pack.as_ref().unwrap();
+    let _pk = pack.as_ref().unwrap();
     let mut max_disp = 0f32;
     let steps = clip.frame_count.min(8).max(1);
     for f in 0..steps {
         let t = f as f32 * clip.duration / steps as f32;
-        let pose = clip.anim.sample_at(pk.blob(), t);
+        let pose = clip.sample_all(t);
         // Root locked: otherwise this measures root TRAVEL (metres), not pose error.
-        let mats = skinning::posed(&skel, &pose, &clip.track_to_bone, true);
+        let mats = skinning::posed(&skel, &pose, clip.track_to_bone(), true);
         // How far a unit vertex at each bone origin moves vs bind — a coarse "is it animating" probe.
         for (m, b) in mats.iter().zip(&bind) {
             let d = m.w_axis - b.w_axis;
@@ -1601,7 +1702,7 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
     // bones by ROTATION only, leaving translation absent = "keep the reference pose". If the decoder
     // hands back (0,0,0) for those, every such bone collapses onto its parent's origin.
     {
-        let pose0 = clip.anim.sample_at(pk.blob(), 0.0);
+        let pose0 = clip.sample_all(0.0);
         let zero_t = pose0.iter().filter(|q| q.t[0] == 0.0 && q.t[1] == 0.0 && q.t[2] == 0.0).count();
         let ident_r = pose0
             .iter()
@@ -1616,7 +1717,7 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
         // What SHOULD those bones' translations be? Compare against the rig's bind locals.
         let mut nonzero_bind = 0;
         for (k, q) in pose0.iter().enumerate() {
-            let bone = clip.track_to_bone.get(k).copied().unwrap_or(-1);
+            let bone = clip.track_to_bone().get(k).copied().unwrap_or(-1);
             if bone < 0 || bone as usize >= skel.len() {
                 continue;
             }
@@ -1646,8 +1747,8 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
         // inv_bind = bind_world⁻¹), `jointMatrix · bind_world` recovers the posed world matrix.
         {
             let mid = clip.duration * 0.5;
-            let pose_m = clip.anim.sample_at(pk.blob(), mid);
-            let posed_m = skinning::posed(&skel, &pose_m, &clip.track_to_bone, true);
+            let pose_m = clip.sample_all(mid);
+            let posed_m = skinning::posed(&skel, &pose_m, clip.track_to_bone(), true);
             let bind_w = skinning::bind_world(&skel);
             let mut worst: Vec<(f32, usize)> = posed_m
                 .iter()
@@ -1685,7 +1786,7 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
             println!("selftest: worst BONE-ORIGIN travel vs bind at t={mid:.2}s (root locked):");
             for (d, i) in worst.iter().take(10) {
                 let _ = vert_count[*i];
-                let tracked = clip.track_to_bone.iter().position(|b| *b == *i as i32);
+                let tracked = clip.track_to_bone().iter().position(|b| *b == *i as i32);
                 println!(
                     "selftest:   {d:7.3} m  bone {i:3} '{}' parent={} verts={} {}",
                     skel[*i].name,
@@ -1702,7 +1803,7 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
         // the bind pose in scale/order-of-magnitude, and quats must be unit.
         println!("selftest: track -> bone | decoded t | bind t | decoded q (xyzw) | euler° | decoded s");
         for (k, q) in pose0.iter().enumerate().take(8) {
-            let bone = clip.track_to_bone.get(k).copied().unwrap_or(-1);
+            let bone = clip.track_to_bone().get(k).copied().unwrap_or(-1);
             let (bt, nm) = if bone >= 0 && (bone as usize) < skel.len() {
                 (skel[bone as usize].t, skel[bone as usize].name.clone())
             } else {
@@ -1724,7 +1825,7 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
         // Magnitude sweep: how far do decoded translations stray from bind across all tracks?
         let mut worst = (0usize, 0f32);
         for (k, q) in pose0.iter().enumerate() {
-            let bone = clip.track_to_bone.get(k).copied().unwrap_or(-1);
+            let bone = clip.track_to_bone().get(k).copied().unwrap_or(-1);
             if bone < 0 || bone as usize >= skel.len() {
                 continue;
             }
@@ -1739,8 +1840,8 @@ pub fn selftest(cfg: Config, n: usize) -> i32 {
             worst.1, worst.0
         );
         // track -> bone mapping sanity: in range? duplicated? how much of the rig is driven?
-        let n_tracks = clip.anim.num_transform_tracks;
-        let map = &clip.track_to_bone;
+        let n_tracks = clip.num_transform_tracks();
+        let map = clip.track_to_bone();
         let unbound = map.iter().take(n_tracks).filter(|&&b| b < 0).count();
         let oob = map.iter().take(n_tracks).filter(|&&b| b >= skel.len() as i32).count();
         let mut seen = std::collections::HashSet::new();
@@ -1824,7 +1925,9 @@ pub fn anim_sweep(cfg: Config, limit: usize) -> i32 {
         Ok(p) => Some(p),
         Err(e) => { eprintln!("sweep: pack: {e}"); return 1; }
     };
-    let pk = pack.as_ref().unwrap();
+    // `pk` was used to hand `sample_at` its blob; now `LoadedClip::sample_all` carries the
+    // shared `Arc<Vec<u8>>` from `PackData` for us, so the raw reference is only kept for
+    // its existence check (already handled by the match above).
     let playable: Vec<usize> =
         catalog.clips.iter().enumerate().filter(|(_, c)| c.playable).map(|(i, _)| i).collect();
     let n = limit.min(playable.len());
@@ -1836,7 +1939,10 @@ pub fn anim_sweep(cfg: Config, limit: usize) -> i32 {
     let (mut tot_nonfinite, mut tot_nonunit) = (0usize, 0usize);
     for &ci in playable.iter().take(n) {
         let clip = match load_clip(&pack, &catalog, ci) { Ok(c) => c, Err(_) => continue };
-        let nb = clip.anim.num_blocks;
+        // `num_blocks` is retail-specific (spline block count, not on the trait). This whole
+        // sweep is a retail diagnostic (WSAO / spline codec bring-up), so falling back to 1
+        // when the trait doesn't expose it keeps the tally sensible without special-casing.
+        let nb = clip.retail_anim().map(|(a, _)| a.num_blocks).unwrap_or(1);
         let mut worst = 0f32;
         let mut worst_bone = (-1i32, String::new(), 0f32);
         let mut worst_scale = 0f32;
@@ -1844,9 +1950,9 @@ pub fn anim_sweep(cfg: Config, limit: usize) -> i32 {
         let mut nonunit = 0usize;
         for f in 0..4 {
             let t = f as f32 * clip.duration / 4.0;
-            let pose = clip.anim.sample_at(pk.blob(), t);
+            let pose = clip.sample_all(t);
             for (k, q) in pose.iter().enumerate() {
-                let bone = clip.track_to_bone.get(k).copied().unwrap_or(-1);
+                let bone = clip.track_to_bone().get(k).copied().unwrap_or(-1);
                 if bone < 0 || bone as usize >= skel.len() {
                     continue;
                 }
@@ -1877,7 +1983,12 @@ pub fn anim_sweep(cfg: Config, limit: usize) -> i32 {
         let e = by_blocks.entry(nb).or_insert((0, 0));
         e.0 += 1;
         // Which quantization paths does this clip use? Corpus was reported uniformly ctrl=0x45.
-        let masks = clip.anim.track_masks(pk.blob(), 0);
+        // Retail-only diagnostic — `track_masks` is a `SplineAnim` API, not on the trait.
+        let masks = if let Some((anim, blob)) = clip.retail_anim() {
+            anim.track_masks(blob, 0)
+        } else {
+            Vec::new()
+        };
         let mut ctrls: Vec<u8> = masks.iter().map(|m| m[0]).collect();
         ctrls.sort_unstable();
         ctrls.dedup();
@@ -1934,9 +2045,51 @@ fn load_clip(pack: &Option<PackData>, catalog: &AnimCatalog, ci: usize) -> Resul
     };
     let duration = if clip.duration > 0.0 { clip.duration } else { anim.duration };
     Ok(LoadedClip {
-        anim,
+        backend: ClipBackend::Retail {
+            anim,
+            blob: pk.file.clone(),
+            blob_off: pk.blob_off,
+            hk_size: pk.hk_size,
+        },
         track_to_bone: clip.track_to_bone.clone(),
         name: clip.name.clone(),
+        duration,
+        frame_duration,
+        frame_count,
+    })
+}
+
+/// Load one clip through the `GameSource::load_animation_clip` trait method and wrap it as a
+/// `LoadedClip` the transport can drive. Version-agnostic: any source that returns
+/// `Box<dyn AnimClip>` flows through here.
+///
+/// `track_to_bone` starts empty when the source's `AnimClip` impl doesn't ship one (the 2008
+/// case today — see `Clip2008::track_to_bone`). `skinning::posed` treats an empty mapping as
+/// "every track unbound", so the rig stays at bind pose while the transport still scrubs
+/// real transforms. A resolver that consults the character's skeleton (or the FSM, once
+/// reversed) can fill this in later without touching the trait shape.
+fn load_source_clip(
+    src: &dyn crate::source::GameSource,
+    handle: &crate::source::AssetHandle,
+) -> Result<LoadedClip, String> {
+    let boxed = src.load_animation_clip(handle)?;
+    let duration = boxed.duration();
+    let frame_count = boxed.num_frames().max(1);
+    let frame_duration = if duration > 0.0 && frame_count > 1 {
+        duration / (frame_count - 1).max(1) as f32
+    } else {
+        1.0 / 30.0
+    };
+    let name = if handle.name.is_empty() {
+        format!("{:08X}", handle.key as u32)
+    } else {
+        handle.name.clone()
+    };
+    let track_to_bone = boxed.track_to_bone().to_vec();
+    Ok(LoadedClip {
+        backend: ClipBackend::Boxed(boxed),
+        track_to_bone,
+        name,
         duration,
         frame_duration,
         frame_count,
@@ -2179,6 +2332,11 @@ struct NavCtx<'a> {
     /// The active source, when open. The detail panel reads through it to show byte counts,
     /// MSH4 magic, and (later) related textures/materials for a selected 2008 handle.
     source: Option<&'a std::sync::Arc<dyn crate::source::GameSource>>,
+    /// Click-to-load out-param for the 2008 Nav Anims tab: an index into `source_handles`.
+    /// The event loop drains it every frame and hands the handle to
+    /// `GameSource::load_animation_clip`, wiring it to `current: LoadedClip` — the same
+    /// slot retail's `pending_load` feeds — so the transport just works.
+    pending_2008_clip: &'a mut Option<usize>,
 }
 
 /// Live state for the Settings page: the values being edited, plus what changing them implies.
@@ -3176,6 +3334,11 @@ fn build_ui(
                                 };
                                 if ui.selectable_label(sel, label).clicked() {
                                     *nav.sel_source_handle = Some(i);
+                                    // Drive the transport: same shape as retail's
+                                    // `pending_load` — the event loop drains this next
+                                    // frame and hands the handle to
+                                    // `GameSource::load_animation_clip`.
+                                    *nav.pending_2008_clip = Some(i);
                                 }
                             }
                         },
@@ -3413,7 +3576,7 @@ fn build_ui(
                                 egui::RichText::new(&clip.name).color(theme::RED),
                             );
                             theme::kv(ui, "duration", egui::RichText::new(format!("{:.2} s", clip.duration)));
-                            theme::kv(ui, "tracks", egui::RichText::new(clip.track_to_bone.len().to_string()));
+                            theme::kv(ui, "tracks", egui::RichText::new(clip.num_transform_tracks().to_string()));
                         });
                     }
                     return;
@@ -3590,7 +3753,7 @@ fn build_ui(
                         theme::kv(
                             ui,
                             "tracks",
-                            egui::RichText::new(clip.anim.num_transform_tracks.to_string()),
+                            egui::RichText::new(clip.num_transform_tracks().to_string()),
                         );
                     });
                 }

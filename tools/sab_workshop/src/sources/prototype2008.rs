@@ -138,6 +138,19 @@ struct PackedRef {
 }
 
 impl Prototype2008Source {
+    /// Read a 2008-build mesh handle straight into the retail `Smsh` shape the wgpu renderer
+    /// already accepts. Path: pack → `SubPack` → `.meshes` slot → mini-directory → inflate
+    /// first zlib stream → `MSH4` body → `parse_msh4` → `to_smsh`. Framing is proven; the
+    /// multi-stream VB/IB inside the payload is one decoder short (see `prototype2008_mesh`),
+    /// so today the returned `Smsh` has empty geometry vectors — the renderer draws nothing
+    /// rather than crashing.
+    pub fn read_mesh_smsh(&self, handle: &AssetHandle) -> Result<crate::formats::Smsh, String> {
+        let slot = <Self as GameSource>::read_mesh_bytes(self, handle)?;
+        let raw = crate::sources::prototype2008_mesh::inflate_first_msh4_stream(&slot)?;
+        let body = crate::sources::prototype2008_mesh::parse_msh4(&raw)?;
+        Ok(crate::sources::prototype2008_mesh::to_smsh(&body))
+    }
+
     pub fn open(root: &Path) -> Result<Self, String> {
         // The caller might have handed us `game-files/` (which contains Bin360/) or Bin360/
         // itself. Normalize.

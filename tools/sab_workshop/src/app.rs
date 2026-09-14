@@ -299,6 +299,7 @@ pub fn run(mut cfg: Config) {
                     source_handles.extend(s.list_meshes());
                     source_handles.extend(s.list_textures());
                     source_handles.extend(s.list_materials());
+                    source_handles.extend(s.list_animations());
                 }
                 println!(
                     "[sab_workshop] source opened: {} — {} browse handles",
@@ -446,6 +447,7 @@ pub fn run(mut cfg: Config) {
                                     source_handles.extend(s.list_meshes());
                                     source_handles.extend(s.list_textures());
                                     source_handles.extend(s.list_materials());
+                                    source_handles.extend(s.list_animations());
                                 }
                                 println!(
                                     "[sab_workshop] source re-opened: {} — {} browse handles",
@@ -3150,22 +3152,72 @@ fn build_ui(
                     });
                 }
                 (Page::Inspect, NavTab::Animations) if nav.source.map(|s| s.version()) == Some(crate::source::GameVersion::Prototype2008Xbox360) => {
-                    // 2008's Animations.pack has the same `AP04ANIM` magic as retail, but the
-                    // per-clip Havok blob shape isn't yet confirmed for BE Xenon — a targeted
-                    // probe against a known 2008 clip is the follow-up. For now the tab shows
-                    // an honest empty state instead of an infinite spinner or a stale retail
-                    // clip list from a previous session.
-                    ui.add_space(12.0);
-                    ui.label(theme::data_text("2008 prototype", 10.5, theme::FAINT));
+                    // 2008 catalog: every `AssetKind::Animation` handle in the shared
+                    // `source_handles` pool. Loose entries have a plaintext name (their
+                    // filename stem); packed anonymous rows have `hash: None` and render as
+                    // `(off:HHHHHHHH)` — visible so the count matches what the pack's outer
+                    // directory advertises (~1605 records), but distinguishable from the
+                    // named entries so a user knows which have a friendly name yet.
+                    use crate::source::AssetKind;
+                    let anim_rows: Vec<usize> = nav
+                        .source_handles
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, h)| (h.kind == AssetKind::Animation).then_some(i))
+                        .collect();
+                    let named = anim_rows
+                        .iter()
+                        .filter(|&&i| !nav.source_handles[i].name.is_empty())
+                        .count();
+                    let anon = anim_rows.len() - named;
+                    ui.horizontal(|ui| {
+                        ui.label(theme::data_text(
+                            format!(
+                                "{} clip(s) — {named} named (loose) + {anon} anonymous (pack)",
+                                anim_rows.len()
+                            ),
+                            10.5,
+                            theme::FAINT,
+                        ));
+                    });
+                    ui.label(theme::data_text(
+                        "2008 clips are Pandemic-custom ANM0(WAV|DEL|NOC)0 records — see docs/2008_animations_format.md. \
+                         Per-frame sampling waits on a Havok-4.6 codec probe.",
+                        9.5,
+                        theme::FAINT,
+                    ));
+                    ui.separator();
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Animation catalog for the 2008 build isn't wired yet. `Animations.pack` \
-                             shares its magic (`AP04ANIM`) with retail; the clip decoder needs a BE / \
-                             Xenon probe before this tab lights up.",
-                        )
-                        .color(theme::FAINT)
-                        .size(11.0),
+                    let needle_lo = needle.to_ascii_lowercase();
+                    let n_hex: Option<u32> =
+                        u32::from_str_radix(needle_lo.trim_start_matches("0x"), 16).ok();
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
+                        ui,
+                        18.0,
+                        anim_rows.len(),
+                        |ui, range| {
+                            for r in range {
+                                let i = anim_rows[r];
+                                let h = &nav.source_handles[i];
+                                let hash_match = n_hex
+                                    .and_then(|q| h.hash.map(|hh| hh == q))
+                                    .unwrap_or(false);
+                                if !needle_lo.is_empty()
+                                    && !h.name.to_ascii_lowercase().contains(&needle_lo)
+                                    && !hash_match
+                                {
+                                    continue;
+                                }
+                                let sel = *nav.sel_source_handle == Some(i);
+                                let label = match (h.name.as_str(), h.hash) {
+                                    ("", _) => format!("(off:{:08X})", h.key as u32),
+                                    (n, _) => n.to_string(),
+                                };
+                                if ui.selectable_label(sel, label).clicked() {
+                                    *nav.sel_source_handle = Some(i);
+                                }
+                            }
+                        },
                     );
                 }
                 (Page::Inspect, NavTab::Animations) => {

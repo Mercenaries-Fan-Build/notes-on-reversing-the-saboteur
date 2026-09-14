@@ -101,6 +101,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::clip::AnimClip;
+use crate::havok::QsTransform;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind};
 
@@ -599,6 +601,62 @@ impl Clip2008 {
     pub fn noc0_shape(&self) -> Result<(usize, usize), String> {
         let (t, f, _) = noc0_shape(&self.header)?;
         Ok((t, f))
+    }
+
+    /// Effective track count regardless of codec. NOC0 static poses fold `num_tracks=0`
+    /// into `aux_count`; other codecs use `num_tracks` directly. Matches what
+    /// `AnimClip::sample_all` iterates over.
+    pub fn effective_tracks(&self) -> usize {
+        if self.header.num_tracks > 0 {
+            self.header.num_tracks as usize
+        } else {
+            self.header.aux_count as usize
+        }
+    }
+
+    /// Frame count for the transport. NOC0: derived from the shape's aux/eff-tracks
+    /// division. WAV0/DEL0: the codec header's `aux_count` (blocks for WAV0, frames for
+    /// DEL0) is the closest thing to a wall-clock frame count without full codec decode.
+    pub fn frame_count(&self) -> usize {
+        match self.header.codec {
+            ClipCodec::None => self.noc0_shape().map(|(_, f)| f).unwrap_or(1),
+            _ => (self.header.aux_count as usize).max(1),
+        }
+    }
+}
+
+impl AnimClip for Clip2008 {
+    fn duration(&self) -> f32 { self.header.duration_s }
+    fn num_transform_tracks(&self) -> usize { self.effective_tracks() }
+    fn num_frames(&self) -> usize { self.frame_count() }
+    fn track_to_bone(&self) -> &[i32] {
+        // 2008 stores the per-clip track→bone binding in `PclAnimationBank` + the FSM,
+        // both unreversed. Empty slice = every track treated as unbound by `skinning::posed`
+        // (rig sits at bind pose) — decoupled from clip sampling so the trait shape is
+        // honored without inventing a fake mapping.
+        &[]
+    }
+    fn sample_all(&self, time: f32) -> Vec<QsTransform> {
+        let n = self.effective_tracks();
+        let mut out = Vec::with_capacity(n);
+        for t in 0..n {
+            match self.sample_track(t as u32, time) {
+                Ok(s) => out.push(QsTransform {
+                    t: [s.pos[0], s.pos[1], s.pos[2], 0.0],
+                    r: s.rot,
+                    s: [s.scale[0], s.scale[1], s.scale[2], 1.0],
+                }),
+                Err(_) => out.push(QsTransform {
+                    // Identity fallback for per-track Err — keeps the returned vector's
+                    // length matched to `num_transform_tracks()` so consumers can zip it
+                    // against a `track_to_bone` slice without a length-mismatch branch.
+                    t: [0.0, 0.0, 0.0, 0.0],
+                    r: [0.0, 0.0, 0.0, 1.0],
+                    s: [1.0, 1.0, 1.0, 1.0],
+                }),
+            }
+        }
+        out
     }
 }
 

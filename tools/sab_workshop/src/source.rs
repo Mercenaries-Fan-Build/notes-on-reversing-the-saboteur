@@ -12,6 +12,7 @@
 
 use std::path::Path;
 
+use crate::clip::AnimClip;
 use crate::dtex::CpuTexture;
 
 /// A game build the workshop knows how to read. The `label()` is what the UI shows the user; the
@@ -131,6 +132,24 @@ pub trait GameSource: Send + Sync {
     /// picker rows / manifest when the retail path only has a hash but the 2008 packlogs know
     /// the plaintext name.
     fn name_of_hash(&self, _hash: u32) -> Option<String> { None }
+
+    /// Load one animation clip by handle and hand back a `Box<dyn AnimClip>` — the same trait
+    /// object the workshop transport samples every frame. This is the version-agnostic
+    /// entry point the app uses to play a clip from either build.
+    ///
+    /// The default returns `Err`. Retail keeps its clip flow through `crate::havok`'s
+    /// `SplineAnim` for now (Animations.pack is opened once, on a worker, and the app's
+    /// `PackData` owns the shared blob); the 2008 impl overrides this to return a
+    /// `Clip2008` wrapped in the trait.
+    fn load_animation_clip(
+        &self,
+        _handle: &AssetHandle,
+    ) -> Result<Box<dyn AnimClip>, String> {
+        Err(format!(
+            "{}: load_animation_clip not implemented for this source",
+            self.label()
+        ))
+    }
 }
 
 // ── version detection ────────────────────────────────────────────────────────────────────────

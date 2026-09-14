@@ -641,6 +641,15 @@ impl GameSource for Prototype2008Source {
         self.anim_catalog.handles()
     }
 
+    fn load_animation_clip(
+        &self,
+        handle: &AssetHandle,
+    ) -> Result<Box<dyn crate::clip::AnimClip>, String> {
+        let key = handle.key as u32;
+        let clip = self.anim_catalog.load_clip(key)?;
+        Ok(Box::new(clip))
+    }
+
     fn list_materials(&self) -> Vec<AssetHandle> {
         // Iterate MaterialIndex — each entry is a distinct MTLD record parsed at open time.
         // Name comes from `name_by_uid` (populated from the MTLD name field). Key mirrors the

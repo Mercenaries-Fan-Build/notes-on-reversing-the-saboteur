@@ -50,6 +50,9 @@ use sab_formats::ap0l::{
     set_static_translation, walk_spline_track_layouts, xml_spline_fingerprint, Ap0lPack,
     HkPackfile, StaticEditError, TrackLayout,
 };
+use sab_formats::spline_edit::{
+    offset_frame_translation, set_frame_rotation, set_frame_scale, set_frame_translation, ClipDims,
+};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 use std::{fs, io};
@@ -86,10 +89,21 @@ anim_patch_saboteur — author modded Havok clips in a Saboteur Animations.pack.
       --set-static-scale       <track> <sx> <sy> <sz>
       --offset-static-translation <track> <dx> <dy> <dz>
 
+    Frame flags (each carries its own <clip>; --clip may be omitted when
+    only frame flags are used; require --assetcc):
+      --set-frame-translation <clip> <track> <frame> <x> <y> <z>
+      --set-frame-rotation    <clip> <track> <frame> <qx> <qy> <qz> <qw>
+      --set-frame-scale       <clip> <track> <frame> <sx> <sy> <sz>
+      --offset-frame-translation <clip> <track> <frame> <dx> <dy> <dz>
+
     Static-value edits patch the raw compressed data stream directly and do
     NOT need AssetCc2. --set-duration edits an XML hkparam, so it needs the
-    AssetCc2 round-trip. If both kinds are given, the AssetCc2 round-trip
-    runs first and static edits are applied to the round-tripped blob.
+    AssetCc2 round-trip. Frame edits keyframe-bake the target track (CP-count
+    == num_frames, degree-1 knots), which changes the `data` hkArray size, so
+    they also need the AssetCc2 round-trip (which handles the packfile-level
+    plumbing). Any combination may be given: AssetCc2 round-trip + XML
+    edits (duration, frame `data` replacements) run first, then static edits
+    on the round-tripped blob.
 
   verify-splice <baseline.pack> <modified.pack>
   debug-map    <pack> <xml>                                # diagnostic
@@ -306,6 +320,63 @@ fn parse_f32s<const N: usize>(vals: &[&str]) -> Result<[f32; N], String> {
     Ok(out)
 }
 
+/// One parsed per-frame edit request. `clip` and `track` are fixup-order
+/// indices; `frame` is a 0-based frame index bounded by the clip's numFrames.
+///
+/// See the `spline_edit` module's docs for the keyframe-baking approach
+/// these ops all take.
+#[derive(Debug)]
+enum FrameEdit {
+    SetTranslation { clip: usize, track: usize, frame: usize, xyz: [f32; 3] },
+    SetRotation { clip: usize, track: usize, frame: usize, quat: [f32; 4] },
+    SetScale { clip: usize, track: usize, frame: usize, sxyz: [f32; 3] },
+    OffsetTranslation { clip: usize, track: usize, frame: usize, delta: [f32; 3] },
+}
+
+impl FrameEdit {
+    fn clip(&self) -> usize {
+        match *self {
+            FrameEdit::SetTranslation { clip, .. }
+            | FrameEdit::SetRotation { clip, .. }
+            | FrameEdit::SetScale { clip, .. }
+            | FrameEdit::OffsetTranslation { clip, .. } => clip,
+        }
+    }
+}
+
+fn collect_frame_edits(args: &[String]) -> Result<Vec<FrameEdit>, String> {
+    let mut out = Vec::new();
+    for v in collect_multi(args, "--set-frame-translation", 6)? {
+        let clip = parse_usize(v[0])?;
+        let track = parse_usize(v[1])?;
+        let frame = parse_usize(v[2])?;
+        let xyz = parse_f32s::<3>(&v[3..])?;
+        out.push(FrameEdit::SetTranslation { clip, track, frame, xyz });
+    }
+    for v in collect_multi(args, "--set-frame-rotation", 7)? {
+        let clip = parse_usize(v[0])?;
+        let track = parse_usize(v[1])?;
+        let frame = parse_usize(v[2])?;
+        let quat = parse_f32s::<4>(&v[3..])?;
+        out.push(FrameEdit::SetRotation { clip, track, frame, quat });
+    }
+    for v in collect_multi(args, "--set-frame-scale", 6)? {
+        let clip = parse_usize(v[0])?;
+        let track = parse_usize(v[1])?;
+        let frame = parse_usize(v[2])?;
+        let sxyz = parse_f32s::<3>(&v[3..])?;
+        out.push(FrameEdit::SetScale { clip, track, frame, sxyz });
+    }
+    for v in collect_multi(args, "--offset-frame-translation", 6)? {
+        let clip = parse_usize(v[0])?;
+        let track = parse_usize(v[1])?;
+        let frame = parse_usize(v[2])?;
+        let delta = parse_f32s::<3>(&v[3..])?;
+        out.push(FrameEdit::OffsetTranslation { clip, track, frame, delta });
+    }
+    Ok(out)
+}
+
 fn collect_static_edits(args: &[String]) -> Result<Vec<StaticEdit>, String> {
     let mut out = Vec::new();
     for v in collect_multi(args, "--set-static-translation", 4)? {
@@ -389,35 +460,101 @@ fn apply_static_edits_at(
 fn cmd_perturb_clip(args: &[String]) -> Result<(), String> {
     let pack = args.get(1).ok_or("need <pack>")?;
     let out = arg(args, "--out").ok_or("need --out <pack>")?;
-    let clip: usize = parse_usize(&arg(args, "--clip").ok_or("need --clip <index>")?)?;
     let keep = arg(args, "--keep-artifacts").map(PathBuf::from);
 
     let set_duration = arg(args, "--set-duration").map(|s| parse_f32(&s)).transpose()?;
     let static_edits = collect_static_edits(args)?;
-    let need_assetcc = set_duration.is_some();
+    let frame_edits = collect_frame_edits(args)?;
+
+    // --clip is required for static / duration edits (which are per-clip
+    // and take the clip from the flag). Frame edits carry clip inline; if
+    // ONLY frame edits are present --clip may be omitted.
+    let clip_opt = arg(args, "--clip").map(|s| parse_usize(&s)).transpose()?;
+    let need_static_clip = !static_edits.is_empty() || set_duration.is_some();
+    let clip: Option<usize> = match (clip_opt, need_static_clip) {
+        (Some(c), _) => Some(c),
+        (None, true) => return Err("need --clip <index> for --set-duration and --set-static-* edits".into()),
+        (None, false) => None,
+    };
+    let need_assetcc = set_duration.is_some() || !frame_edits.is_empty();
     if !need_assetcc && static_edits.is_empty() {
         return Err(
-            "need at least one edit flag (e.g. --set-duration <seconds> or \
-             --set-static-translation <track> <x> <y> <z>)".into()
+            "need at least one edit flag (e.g. --set-duration <seconds>, \
+             --set-static-translation <track> <x> <y> <z>, or \
+             --set-frame-translation <clip> <track> <frame> <x> <y> <z>)".into()
         );
     }
 
     let bytes = fs::read(pack).map_err(|e| format!("read pack: {e}"))?;
     let ap = Ap0lPack::parse(bytes).map_err(|e| e.to_string())?;
-    // Sanity: report the target clip's numTransformTracks so a maintainer can
-    // sanity-check they're editing what they think they're editing.
+    // Sanity: report each involved clip's numTransformTracks so a maintainer
+    // can sanity-check they're editing what they think they're editing.
     let hk = HkPackfile::parse(ap.hk_blob()).map_err(|e| e.to_string())?;
     let scas = hk.objects_of_class(CLASS_SPLINE);
-    let obj = *scas.get(clip).ok_or_else(|| {
-        format!("clip index {clip} out of range (pack has {} spline anims)", scas.len())
-    })?;
-    let ntt = hk.num_transform_tracks(obj);
-    println!(
-        "target clip #{clip} @ data+0x{:x}, numTransformTracks={} (Havok {})",
-        obj,
-        ntt,
-        hk.version()
-    );
+    let mut involved_clips: Vec<usize> = Vec::new();
+    if let Some(c) = clip {
+        involved_clips.push(c);
+    }
+    for fe in &frame_edits {
+        if !involved_clips.contains(&fe.clip()) {
+            involved_clips.push(fe.clip());
+        }
+    }
+    for &c in &involved_clips {
+        let obj = *scas.get(c).ok_or_else(|| {
+            format!("clip index {c} out of range (pack has {} spline anims)", scas.len())
+        })?;
+        let ntt = hk.num_transform_tracks(obj);
+        println!(
+            "target clip #{c} @ data+0x{:x}, numTransformTracks={} (Havok {})",
+            obj,
+            ntt,
+            hk.version()
+        );
+    }
+
+    // ------- Phase 0: bake frame-edited `data` blobs, per affected clip ---
+    // Each affected clip may have multiple frame edits (e.g., two translation
+    // edits on different tracks or the same track at different frames).
+    // We apply them in order to a per-clip `data` blob copy; the final copy
+    // becomes the replacement bytes we splice into XML in Phase 1.
+    let baked_by_clip: std::collections::HashMap<usize, Vec<u8>> = if frame_edits.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let mut m = std::collections::HashMap::new();
+        for &c in &involved_clips {
+            let obj = scas[c];
+            if hk.num_blocks(obj) != 1 {
+                return Err(format!(
+                    "clip #{c} has numBlocks={}; frame editing only supports single-block clips",
+                    hk.num_blocks(obj)
+                ));
+            }
+            let dims = ClipDims {
+                num_transform_tracks: hk.num_transform_tracks(obj) as usize,
+                num_frames: hk.num_frames(obj) as usize,
+                max_frames_per_block: hk.max_frames_per_block(obj) as usize,
+                mask_and_quant_size: hk.mask_and_quantization_size(obj) as usize,
+                frame_duration: hk.frame_duration(obj),
+                block_duration: hk.block_duration(obj),
+                block_inv_duration: hk.block_inv_duration(obj),
+            };
+            let cur = hk.spline_data(obj).to_vec();
+            let mut acc = cur;
+            for fe in frame_edits.iter().filter(|fe| fe.clip() == c) {
+                acc = apply_one_frame_edit(&acc, &dims, fe)?;
+            }
+            let orig_len = hk.spline_data(obj).len();
+            println!(
+                "  frame-bake clip #{c}: data {} B -> {} B (Δ={:+})",
+                orig_len,
+                acc.len(),
+                acc.len() as i64 - orig_len as i64
+            );
+            m.insert(c, acc);
+        }
+        m
+    };
 
     // -------- Phase 1: AssetCc2 round-trip (if any XML-level edit is needed) --------
     let blob_after_xml_edits: Vec<u8> = if need_assetcc {
@@ -432,25 +569,39 @@ fn cmd_perturb_clip(args: &[String]) -> Result<(), String> {
         let xml_text = fs::read_to_string(&xml).map_err(|e| format!("read xml: {e}"))?;
         // AssetCc2 emits objects in a different order than the Havok packfile's
         // virtual-fixup table. sab_havok65 / sab_animmeta both index clips by
-        // fixup order, so we translate --clip N (fixup order) into the matching
-        // XML declaration index by structural fingerprint.
+        // fixup order, so we translate fixup-order indices to XML declaration
+        // indices by structural fingerprint.
         let hk_fps: Vec<_> = scas.iter().map(|&s| hk.spline_fingerprint(s)).collect();
         let hk_hashes: Vec<_> = scas.iter().map(|&s| ap0l_hash_bytes(hk.spline_data(s))).collect();
         let hk_to_xml =
             map_hk_to_xml_indices(&xml_text, &hk_fps, &hk_hashes).map_err(|e| e.to_string())?;
-        let xml_idx = hk_to_xml[clip];
-        if xml_idx != clip {
-            println!(
-                "note: fixup clip #{clip} = XML object #{xml_idx} (AssetCc2 reordered on decompile)",
-            );
-        }
-        let (obj_start, obj_end) = find_nth_object(&xml_text, CLASS_SPLINE, xml_idx)
-            .ok_or_else(|| format!("clip #{clip} (XML idx {xml_idx}) not found in XML"))?;
         let mut mutated = xml_text.clone();
+        // Duration edit (single clip, given by --clip).
         if let Some(seconds) = set_duration {
+            let target_clip = clip.expect("--clip guaranteed present when --set-duration is set");
+            let xml_idx = hk_to_xml[target_clip];
+            if xml_idx != target_clip {
+                println!(
+                    "note: fixup clip #{target_clip} = XML object #{xml_idx} (AssetCc2 reordered on decompile)",
+                );
+            }
+            let (obj_start, obj_end) = find_nth_object(&mutated, CLASS_SPLINE, xml_idx)
+                .ok_or_else(|| format!("clip #{target_clip} (XML idx {xml_idx}) not found in XML"))?;
             let repl = format!("{seconds:.6}");
             mutated = set_hkparam_in_object(&mutated, obj_start, obj_end, "duration", &repl)?;
-            println!("set clip #{clip}.duration -> {repl}");
+            println!("set clip #{target_clip}.duration -> {repl}");
+        }
+        // Frame edits (one XML `data` rewrite per affected clip).
+        for &c in &involved_clips {
+            let Some(new_bytes) = baked_by_clip.get(&c) else { continue };
+            let xml_idx = hk_to_xml[c];
+            let (obj_start, obj_end) = find_nth_object(&mutated, CLASS_SPLINE, xml_idx)
+                .ok_or_else(|| format!("clip #{c} (XML idx {xml_idx}) not found in XML"))?;
+            mutated = replace_hkarray_bytes(&mutated, obj_start, obj_end, "data", new_bytes)?;
+            println!(
+                "rewrote clip #{c}.data with {} bytes of freshly baked spline stream",
+                new_bytes.len()
+            );
         }
         fs::write(&xml_mod, &mutated).map_err(|e| format!("write perturbed xml: {e}"))?;
         assetcc_compile(&exe, &xml_mod, &rt)?;
@@ -473,14 +624,15 @@ fn cmd_perturb_clip(args: &[String]) -> Result<(), String> {
     // -------- Phase 2: static-value edits (if any) directly in the blob --------
     let mut final_blob = blob_after_xml_edits;
     if !static_edits.is_empty() {
+        let target_clip = clip.expect("--clip guaranteed present when static edits are set");
         // The blob after AssetCc2 round-trip may have shifted object offsets, so
         // re-parse the packfile to locate clip N and extract just the offsets we
         // need — then drop the HkPackfile borrow before mutating the blob.
         let target = {
             let hk2 = HkPackfile::parse(&final_blob).map_err(|e| e.to_string())?;
             let scas2 = hk2.objects_of_class(CLASS_SPLINE);
-            let obj2 = *scas2.get(clip).ok_or_else(|| {
-                format!("clip index {clip} vanished after AssetCc2 round-trip (post-rt count = {})", scas2.len())
+            let obj2 = *scas2.get(target_clip).ok_or_else(|| {
+                format!("clip index {target_clip} vanished after AssetCc2 round-trip (post-rt count = {})", scas2.len())
             })?;
             let ntt2 = hk2.num_transform_tracks(obj2) as usize;
             let mq2 = hk2.mask_and_quantization_size(obj2) as usize;
@@ -516,6 +668,128 @@ fn cmd_perturb_clip(args: &[String]) -> Result<(), String> {
     );
     let _ = StaticEditError::ZeroQuaternion; // keep the type re-exported for downstream tools
     Ok(())
+}
+
+/// Apply one frame edit to a clip's `data` blob, returning the new blob.
+fn apply_one_frame_edit(
+    data: &[u8],
+    dims: &ClipDims,
+    fe: &FrameEdit,
+) -> Result<Vec<u8>, String> {
+    match *fe {
+        FrameEdit::SetTranslation { clip, track, frame, xyz } => {
+            let (new, old) = set_frame_translation(data, dims, track, frame, xyz)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "  clip#{clip} trk{track} frame{frame}: translation ({:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4})",
+                old[0], old[1], old[2], xyz[0], xyz[1], xyz[2]
+            );
+            Ok(new)
+        }
+        FrameEdit::SetRotation { clip, track, frame, quat } => {
+            let (new, old) = set_frame_rotation(data, dims, track, frame, quat)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "  clip#{clip} trk{track} frame{frame}: rotation ({:.4},{:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4},{:.4})",
+                old[0], old[1], old[2], old[3], quat[0], quat[1], quat[2], quat[3]
+            );
+            Ok(new)
+        }
+        FrameEdit::SetScale { clip, track, frame, sxyz } => {
+            let (new, old) = set_frame_scale(data, dims, track, frame, sxyz)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "  clip#{clip} trk{track} frame{frame}: scale ({:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4})",
+                old[0], old[1], old[2], sxyz[0], sxyz[1], sxyz[2]
+            );
+            Ok(new)
+        }
+        FrameEdit::OffsetTranslation { clip, track, frame, delta } => {
+            let (new, old, new_val) =
+                offset_frame_translation(data, dims, track, frame, delta).map_err(|e| e.to_string())?;
+            println!(
+                "  clip#{clip} trk{track} frame{frame}: translation ({:.4},{:.4},{:.4}) + \
+                 ({:+.4},{:+.4},{:+.4}) = ({:.4},{:.4},{:.4})",
+                old[0], old[1], old[2], delta[0], delta[1], delta[2], new_val[0], new_val[1], new_val[2]
+            );
+            Ok(new)
+        }
+    }
+}
+
+/// Rewrite an hkArray hkparam (both the `numelements` attribute and the
+/// space-separated decimal-byte payload) inside a single `<hkobject>` scope.
+/// Fails if the param is absent or ambiguous inside that scope.
+fn replace_hkarray_bytes(
+    xml: &str,
+    start: usize,
+    end: usize,
+    param: &str,
+    new_bytes: &[u8],
+) -> Result<String, String> {
+    let scope = &xml[start..end];
+    // hkArray hkparams look like: <hkparam name="data" numelements="N"> ... </hkparam>
+    let anchor = format!("<hkparam name=\"{param}\"");
+    let anchor_rel = scope
+        .find(&anchor)
+        .ok_or_else(|| format!("hkparam name={param:?} not found in <hkobject>"))?;
+    // Make sure it appears exactly once.
+    let mut cursor = anchor_rel + anchor.len();
+    if scope[cursor..].find(&anchor).is_some() {
+        return Err(format!("hkparam name={param:?} occurs more than once in <hkobject>"));
+    }
+    // Find `numelements="..."`.
+    let key = "numelements=\"";
+    let ne_key = scope[anchor_rel..]
+        .find(key)
+        .ok_or_else(|| format!("hkparam name={param:?} has no numelements attribute"))?
+        + anchor_rel
+        + key.len();
+    let ne_end_rel = scope[ne_key..]
+        .find('"')
+        .ok_or_else(|| format!("malformed numelements on {param:?}"))?;
+    let ne_end = ne_key + ne_end_rel;
+    // Payload = between the first '>' after the anchor and the matching '</hkparam>'.
+    let open_gt = scope[anchor_rel..]
+        .find('>')
+        .ok_or_else(|| format!("hkparam name={param:?} opening tag never closes"))?
+        + anchor_rel
+        + 1;
+    let close_rel = scope[open_gt..]
+        .find("</hkparam>")
+        .ok_or_else(|| format!("hkparam name={param:?} has no closing tag"))?;
+    let close = open_gt + close_rel;
+    // Build new payload — one byte per whitespace-separated decimal, wrapped
+    // conservatively at 32 bytes per line for git-diff sanity. AssetCc2's
+    // parser is whitespace-agnostic here.
+    let mut payload = String::with_capacity(new_bytes.len() * 4 + new_bytes.len() / 32 + 8);
+    payload.push('\n');
+    for (i, b) in new_bytes.iter().enumerate() {
+        if i > 0 {
+            if i % 32 == 0 {
+                payload.push('\n');
+            } else {
+                payload.push(' ');
+            }
+        }
+        use std::fmt::Write;
+        let _ = write!(payload, "{b}");
+    }
+    payload.push('\n');
+    cursor = 0; // no more scope reuse — build out into abs offsets.
+    let abs_ne_start = start + ne_key;
+    let abs_ne_end = start + ne_end;
+    let abs_payload_start = start + open_gt;
+    let abs_payload_end = start + close;
+    let mut out = String::with_capacity(xml.len() + payload.len());
+    out.push_str(&xml[..abs_ne_start]);
+    let _ = cursor;
+    let ne_new = format!("{}", new_bytes.len());
+    out.push_str(&ne_new);
+    out.push_str(&xml[abs_ne_end..abs_payload_start]);
+    out.push_str(&payload);
+    out.push_str(&xml[abs_payload_end..]);
+    Ok(out)
 }
 
 fn cmd_debug_map(args: &[String]) -> Result<(), String> {

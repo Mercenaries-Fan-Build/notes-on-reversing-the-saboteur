@@ -350,6 +350,61 @@ impl<'a> HkPackfile<'a> {
         read_u32_le(self.blob, self.data_pk + obj_src + 0x30)
     }
 
+    /// Read `numFrames` (+0x24) — total frame count across all blocks. The
+    /// keyframe-baking path in [`crate::spline_edit`] uses this to size the
+    /// baked knot vector and CP array.
+    pub fn num_frames(&self, obj_src: usize) -> u32 {
+        read_u32_le(self.blob, self.data_pk + obj_src + 0x24)
+    }
+
+    /// Read `maxFramesPerBlock` (+0x2c). In retail this is 256 for every clip;
+    /// keyframe baking needs it to reproduce the decoder's `fib` calculation.
+    pub fn max_frames_per_block(&self, obj_src: usize) -> u32 {
+        read_u32_le(self.blob, self.data_pk + obj_src + 0x2c)
+    }
+
+    /// Read `duration` (+0x0c, f32) — total clip duration in seconds.
+    pub fn duration(&self, obj_src: usize) -> f32 {
+        f32::from_le_bytes([
+            self.blob[self.data_pk + obj_src + 0x0c],
+            self.blob[self.data_pk + obj_src + 0x0d],
+            self.blob[self.data_pk + obj_src + 0x0e],
+            self.blob[self.data_pk + obj_src + 0x0f],
+        ])
+    }
+
+    /// Read `blockDuration` (+0x34, f32). For single-block clips this is
+    /// `(maxFramesPerBlock - 1) * frameDuration`.
+    pub fn block_duration(&self, obj_src: usize) -> f32 {
+        f32::from_le_bytes([
+            self.blob[self.data_pk + obj_src + 0x34],
+            self.blob[self.data_pk + obj_src + 0x35],
+            self.blob[self.data_pk + obj_src + 0x36],
+            self.blob[self.data_pk + obj_src + 0x37],
+        ])
+    }
+
+    /// Read `blockInverseDuration` (+0x38, f32). Used by the decoder to
+    /// compute the frame-in-block index from block-relative time.
+    pub fn block_inv_duration(&self, obj_src: usize) -> f32 {
+        f32::from_le_bytes([
+            self.blob[self.data_pk + obj_src + 0x38],
+            self.blob[self.data_pk + obj_src + 0x39],
+            self.blob[self.data_pk + obj_src + 0x3a],
+            self.blob[self.data_pk + obj_src + 0x3b],
+        ])
+    }
+
+    /// Read `frameDuration` (+0x3c, f32) — seconds per frame.
+    pub fn frame_duration(&self, obj_src: usize) -> f32 {
+        f32::from_le_bytes([
+            self.blob[self.data_pk + obj_src + 0x3c],
+            self.blob[self.data_pk + obj_src + 0x3d],
+            self.blob[self.data_pk + obj_src + 0x3e],
+            self.blob[self.data_pk + obj_src + 0x3f],
+        ])
+    }
+
     /// Structural fingerprint of a spline-anim object — stable across the
     /// AssetCc2 XML round-trip and (on the 2214-clip retail corpus)
     /// disambiguating: no two clips share the same tuple. Used by
@@ -710,6 +765,15 @@ pub enum StaticEditError {
     Truncated { at: usize, need: usize, have: usize },
     /// The supplied quaternion had a zero (or near-zero) norm; can't normalize.
     ZeroQuaternion,
+    /// Frame-edit target is outside `0..num_frames`. Emitted by the per-frame
+    /// authoring ops in [`crate::spline_edit`].
+    FrameOutOfRange { frame: usize, num_frames: usize },
+    /// A clip parameter used by the per-frame authoring path is out of the
+    /// domain the baker can handle. Currently emitted when `num_frames < 2`
+    /// (a single-frame clip would collapse degree-1 splines) or when it
+    /// exceeds the u8 knot-vector range (>255) which cannot fit in a
+    /// single-block spline anyway.
+    BadClipDims { reason: &'static str },
 }
 
 impl std::fmt::Display for StaticEditError {
@@ -737,6 +801,14 @@ impl std::fmt::Display for StaticEditError {
             StaticEditError::ZeroQuaternion => write!(
                 f,
                 "quaternion has zero or near-zero norm and cannot be normalized"
+            ),
+            StaticEditError::FrameOutOfRange { frame, num_frames } => write!(
+                f,
+                "frame {frame} out of range (clip has {num_frames} frames)"
+            ),
+            StaticEditError::BadClipDims { reason } => write!(
+                f,
+                "clip dimensions unsuitable for keyframe baking: {reason}"
             ),
         }
     }
@@ -774,6 +846,26 @@ pub struct TrackLayout {
     pub rot_payload_off: usize,
     /// Byte offset within `data` where the scale static/range floats begin.
     pub scl_static_off: usize,
+    /// Byte offset within `data` where this track's *entire* T/R/S region
+    /// begins. For track 0 this is `mask_and_quantization_size`; for
+    /// subsequent tracks it is the previous track's `track_end` (which is a
+    /// 4-multiple, since every channel walk finishes with an align-up to 4).
+    pub track_start: usize,
+    /// Byte offset within `data` just past this track's last byte, after
+    /// the final scale-channel align-up. Always 4-aligned relative to `data`.
+    pub track_end: usize,
+    /// Byte offset within `data` where the translation channel *begins*
+    /// (before any knot header). For a fully-static translation this equals
+    /// `trn_static_off`; for a spline translation this points at the u16 n_idx
+    /// preceding the knot bytes.
+    pub trn_channel_start: usize,
+    /// Byte offset within `data` where the rotation channel begins. Same as
+    /// `rot_payload_off` in current retail data (rotation has no pre-header
+    /// alignment beyond rot_align, which is 1 for THREECOMP40).
+    pub rot_channel_start: usize,
+    /// Byte offset within `data` where the scale channel begins (before any
+    /// knot header).
+    pub scl_channel_start: usize,
 }
 
 impl TrackLayout {
@@ -797,12 +889,12 @@ impl TrackLayout {
     }
 }
 
-fn align_up_usize(x: usize, a: usize) -> usize { (x + a - 1) & !(a - 1) }
+pub(crate) fn align_up_usize(x: usize, a: usize) -> usize { (x + a - 1) & !(a - 1) }
 
 /// Byte size of a packed rotation control point given its quant type.
 /// Type 1 = THREECOMP40 (5 bytes) — the only type used by retail. Others are
 /// listed for future callers but the mutator errors out on them.
-fn rot_cpsize(qtype: u8) -> usize {
+pub(crate) fn rot_cpsize(qtype: u8) -> usize {
     match qtype {
         0 => 4, // POLAR32
         1 => 5, // THREECOMP40
@@ -811,7 +903,7 @@ fn rot_cpsize(qtype: u8) -> usize {
         _ => 5,
     }
 }
-fn rot_align(_qtype: u8) -> usize { 1 }
+pub(crate) fn rot_align(_qtype: u8) -> usize { 1 }
 
 /// Replay the spline decoder's byte-pointer arithmetic to compute, for every
 /// track of a single-block clip, where its translation / rotation / scale
@@ -861,18 +953,25 @@ pub fn walk_spline_track_layouts(
         let rot_type = (ctrl >> 2) & 0xf;
         let scl_type = ctrl >> 6;
 
+        let track_start = ptr;
+
         // ---- translation channel ----
+        let trn_channel_start = ptr;
         let trn_static_off = walk_vec4_advance(data, &mut ptr, trn_mask, trn_type)?;
         ptr = align_up_usize(ptr, 4);
 
         // ---- rotation channel ----
+        let rot_channel_start = ptr;
         let rot_payload_off = ptr;
         walk_rotation(data, &mut ptr, rot_mask, rot_type)?;
         ptr = align_up_usize(ptr, 4);
 
         // ---- scale channel ----
+        let scl_channel_start = ptr;
         let scl_static_off = walk_vec4_advance(data, &mut ptr, scl_mask, scl_type)?;
         ptr = align_up_usize(ptr, 4);
+
+        let track_end = ptr;
 
         out.push(TrackLayout {
             ctrl,
@@ -882,6 +981,11 @@ pub fn walk_spline_track_layouts(
             trn_static_off,
             rot_payload_off,
             scl_static_off,
+            track_start,
+            track_end,
+            trn_channel_start,
+            rot_channel_start,
+            scl_channel_start,
         });
         let _ = t;
     }

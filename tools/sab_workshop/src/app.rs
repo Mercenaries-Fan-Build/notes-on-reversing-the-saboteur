@@ -1118,7 +1118,7 @@ pub fn run(mut cfg: Config) {
                     if let Some(hi) = pending_2008_clip.take() {
                         if let (Some(src), Some(handle)) = (source.as_ref(), source_handles.get(hi))
                         {
-                            match load_source_clip(src.as_ref(), handle) {
+                            match load_source_clip(src.as_ref(), handle, &skel) {
                                 Ok(c) => {
                                     println!(
                                         "[sab_workshop] loaded 2008 clip '{}' ({} tracks, {} frames, {:.3}s)",
@@ -2119,14 +2119,21 @@ fn load_clip(pack: &Option<PackData>, catalog: &AnimCatalog, ci: usize) -> Resul
 /// `LoadedClip` the transport can drive. Version-agnostic: any source that returns
 /// `Box<dyn AnimClip>` flows through here.
 ///
-/// `track_to_bone` starts empty when the source's `AnimClip` impl doesn't ship one (the 2008
-/// case today — see `Clip2008::track_to_bone`). `skinning::posed` treats an empty mapping as
-/// "every track unbound", so the rig stays at bind pose while the transport still scrubs
-/// real transforms. A resolver that consults the character's skeleton (or the FSM, once
-/// reversed) can fill this in later without touching the trait shape.
+/// Track→bone resolution: retail's boxed clips already carry a per-clip mapping (from the
+/// pack's ANIM block), which we adopt via `boxed.track_to_bone()`. 2008 clips return empty
+/// there but expose the per-track bone-hash trailer via `boxed.bind_hashes()`; when
+/// `current_skel` is a compatible rig (its bone names are `bone_{:08X}` — the on-load
+/// convention for a Msh4-driven skeleton), we resolve the trailer against those hashes
+/// here and populate `LoadedClip.track_to_bone`. `skinning::posed` then applies each
+/// track's transform to the right bone instead of leaving the rig at bind pose.
+///
+/// Falling back to empty is still safe — a rig whose bones aren't hash-named (retail) or
+/// a clip whose trailer doesn't share any hash with the current rig lands at bind pose,
+/// exactly the pre-resolver behavior.
 fn load_source_clip(
     src: &dyn crate::source::GameSource,
     handle: &crate::source::AssetHandle,
+    current_skel: &[Bone],
 ) -> Result<LoadedClip, String> {
     let boxed = src.load_animation_clip(handle)?;
     let duration = boxed.duration();
@@ -2141,7 +2148,24 @@ fn load_source_clip(
     } else {
         handle.name.clone()
     };
-    let track_to_bone = boxed.track_to_bone().to_vec();
+    // Resolution precedence:
+    //   1. If the boxed clip already carries a `track_to_bone` (retail's ANIM block), use it.
+    //   2. Else, if the clip exposes `bind_hashes` (2008 trailer) AND `current_skel` has a
+    //      hash-named layout, resolve against it.
+    //   3. Else, empty — rig stays at bind pose, transport still scrubs real transforms.
+    let track_to_bone = {
+        let inherited = boxed.track_to_bone();
+        if !inherited.is_empty() {
+            inherited.to_vec()
+        } else {
+            let hashes = boxed.bind_hashes();
+            if hashes.is_empty() {
+                Vec::new()
+            } else {
+                resolve_hashes_against_bones(hashes, current_skel)
+            }
+        }
+    };
     Ok(LoadedClip {
         backend: ClipBackend::Boxed(boxed),
         track_to_bone,
@@ -2150,6 +2174,33 @@ fn load_source_clip(
         frame_duration,
         frame_count,
     })
+}
+
+/// Resolve a per-track bone-hash list against a `Bone` array whose `name` fields are
+/// hex-encoded pandemic_hashes (`bone_HHHHHHHH`, the format the 2008 mesh loader
+/// emits from `Msh4Bone::name_hash`). Bones whose name doesn't match that pattern
+/// contribute nothing to the map; a track hash absent from the map lands as `-1`
+/// (unbound — `skinning::posed` leaves that bone at bind pose).
+///
+/// Cheap: one hashmap build sized to the rig, then one lookup per track. Called
+/// once per clip load, never per frame.
+fn resolve_hashes_against_bones(hashes: &[u32], skel: &[Bone]) -> Vec<i32> {
+    let mut by_hash: std::collections::HashMap<u32, i32> =
+        std::collections::HashMap::with_capacity(skel.len());
+    for (i, b) in skel.iter().enumerate() {
+        if let Some(rest) = b.name.strip_prefix("bone_") {
+            if let Ok(h) = u32::from_str_radix(rest, 16) {
+                by_hash.entry(h).or_insert(i as i32);
+            }
+        }
+    }
+    if by_hash.is_empty() {
+        return Vec::new();
+    }
+    hashes
+        .iter()
+        .map(|h| by_hash.get(h).copied().unwrap_or(-1))
+        .collect()
 }
 
 /// Load a 2008-prototype mesh + its materials + textures into the renderer.

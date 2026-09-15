@@ -99,12 +99,14 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::clip::AnimClip;
 use crate::havok::QsTransform;
 use crate::pack::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind};
+use crate::sources::prototype2008_mesh::Msh4Skeleton;
 
 /// The three flavours of `ANM0*0` clip magic seen in this build. Names line up with the
 /// Havok-4.6 skeletal-animation compression modes (`hkaWaveletSkeletalAnimation`,
@@ -252,6 +254,23 @@ pub struct Clip2008 {
     /// record (not a body-only slice) means every downstream consumer sees identical bytes
     /// whether the clip came from a loose file or the pack.
     pub bytes: Vec<u8>,
+    /// The per-track bone name-hashes recovered from the clip's trailer — the same
+    /// pandemic_hash values a character's `Msh4Skeleton.bones[i].name_hash` carries.
+    /// One entry per transform track (length = `effective_tracks()`), in track order.
+    /// All three codecs (`ANM0NOC0`, `ANM0WAV0`, `ANM0DEL0`) store this trailer at
+    /// `file_len - eff_tracks * 4`; see `read_track_bone_hashes` for the read logic
+    /// and the corpus verification in `resolver_recovers_known_sean_bone_names`.
+    /// Empty when the trailer can't be read (a truncated clip); the resolver treats
+    /// that as "every track unbound".
+    pub bind_hashes: Vec<u32>,
+    /// Track index → skeleton bone index, resolved against a specific character's
+    /// `Msh4Skeleton` by [`Clip2008::bind_to_skeleton`]. `-1` marks a track whose
+    /// bone hash is not in the target skeleton (a normal outcome: a body-part clip
+    /// can drive bones not present in a lower-LOD or facial-only skeleton). Empty
+    /// slice until `bind_to_skeleton` is called — `skinning::posed` treats empty as
+    /// "every track unbound" and the rig stays at bind pose, so an unresolved clip
+    /// still samples cleanly through the transport.
+    pub resolved_track_to_bone: Vec<i32>,
 }
 
 /// One track's local transform at a moment in time. TRS in bone-local space, in the same
@@ -563,6 +582,29 @@ impl Clip2008 {
         Ok(lerp_transform(a, b, frac))
     }
 
+    /// Read the per-track bone-hash trailer from any ANM0-family clip. Populated at load
+    /// time onto [`Clip2008::bind_hashes`]; also exposed as a method so a caller with
+    /// only the raw bytes (e.g. a probe) can pull the trailer without threading a full
+    /// clip. See the module doc on the shared trailer layout across all three codecs.
+    pub fn track_bone_hashes(&self) -> &[u32] {
+        &self.bind_hashes
+    }
+
+    /// Resolve every track to a bone index in `skeleton` by joining
+    /// `bind_hashes` against `Msh4Skeleton.bones[i].name_hash`. Populates
+    /// [`Clip2008::resolved_track_to_bone`] and returns the newly-computed slice.
+    /// Idempotent: calling it twice with the same skeleton is a no-op.
+    ///
+    /// This is the 2008 analogue of `hkSkeletonUtils::bindByName` (WildStar_d
+    /// @0x82d1d7d0) — retail Havok resolves track→bone by matching the animation's
+    /// `hkAnnotationTrack::m_trackName` strings against `hkSkeleton::m_bones[i].m_name`.
+    /// Pandemic replaced that string annotation table with a `pandemic_hash` u32
+    /// trailer (per-clip, all codecs); we replay the same join, just against hashes.
+    pub fn bind_to_skeleton(&mut self, skeleton: &Msh4Skeleton) -> &[i32] {
+        self.resolved_track_to_bone = resolve_track_to_bone(&self.bind_hashes, skeleton);
+        &self.resolved_track_to_bone
+    }
+
     /// The per-track descriptor trailer (typically the pandemic_hash of each track's
     /// driven bone). Useful for correlating tracks against a skeleton to name them; the
     /// same bone-hash values recur across clips so a hash→name table built from the rig
@@ -630,11 +672,18 @@ impl AnimClip for Clip2008 {
     fn num_transform_tracks(&self) -> usize { self.effective_tracks() }
     fn num_frames(&self) -> usize { self.frame_count() }
     fn track_to_bone(&self) -> &[i32] {
-        // 2008 stores the per-clip track→bone binding in `PclAnimationBank` + the FSM,
-        // both unreversed. Empty slice = every track treated as unbound by `skinning::posed`
-        // (rig sits at bind pose) — decoupled from clip sampling so the trait shape is
-        // honored without inventing a fake mapping.
-        &[]
+        // Populated by [`Clip2008::bind_to_skeleton`] once the character skeleton is
+        // known. Until then this is empty and `skinning::posed` treats every track as
+        // unbound (rig sits at bind pose). The clip still samples cleanly — the
+        // transport shows real transforms, they just aren't applied to a rig yet.
+        &self.resolved_track_to_bone
+    }
+    fn bind_hashes(&self) -> &[u32] {
+        // The clip's own trailer, populated at `Anim2008Catalog::load_clip` time. Retail
+        // returns empty from the default impl; the app's `load_source_clip` treats
+        // "non-empty here" as "use these to resolve against the currently-loaded rig",
+        // which is the version-agnostic hook for the 2008 → any-mesh bind step.
+        &self.bind_hashes
     }
     fn sample_all(&self, time: f32) -> Vec<QsTransform> {
         let n = self.effective_tracks();
@@ -809,7 +858,28 @@ impl Anim2008Catalog {
             }
         };
         let header = Anim2008Header::parse(&bytes)?;
-        Ok(Clip2008 { info, header, bytes })
+        // Effective-track count without materializing a `Clip2008` first — mirrors
+        // `Clip2008::effective_tracks` (num_tracks, or aux_count for NOC0 static poses
+        // where num_tracks==0). The trailer is `eff_tracks * 4` bytes at file tail.
+        let eff_tracks = if header.num_tracks > 0 {
+            header.num_tracks as usize
+        } else {
+            header.aux_count as usize
+        };
+        // The per-track bone-hash trailer is a fixed post-body slab on every codec.
+        // A read failure here is not fatal — a truncated / decode-failing clip should
+        // still surface through the browser with `bind_hashes` empty, and the resolver
+        // treats empty as "every track unbound" (rig stays at bind pose).
+        let bind_hashes = read_track_bone_hashes(&bytes, eff_tracks).unwrap_or_default();
+        Ok(Clip2008 {
+            info,
+            header,
+            bytes,
+            bind_hashes,
+            // Populated later by `bind_to_skeleton(character)` — the catalog doesn't
+            // know which character a caller is going to pose this clip against.
+            resolved_track_to_bone: Vec::new(),
+        })
     }
 
     /// The browser's flat handle list. Loose rows carry the real name and the true
@@ -841,6 +911,76 @@ impl Anim2008Catalog {
 /// offsets fold into low bits; the OR-in guarantees a top-bit set).
 fn pack_synthetic_key(offset: u64) -> u32 {
     ((offset as u32) & 0x7FFF_FFFF) | 0x8000_0000
+}
+
+/// Read the per-track bone-hash trailer at the tail of an ANM0-family clip's bytes.
+///
+/// Every codec (`ANM0NOC0`, `ANM0WAV0`, `ANM0DEL0`) shares the same trailer shape: a
+/// `u32-BE` array of `effective_tracks` entries at `bytes.len() - eff_tracks * 4`. Each
+/// value is the `pandemic_hash` of the bone the track drives — the same key
+/// `Msh4Skeleton.bones[i].name_hash` carries.
+///
+/// **Verification.** For NOC0 the trailer overlaps the frame-major transform array's
+/// end exactly (see `noc0_shape`), and its values match known biped bone names
+/// (`GlobalSRT`, `Bone_Root`, `Bone_LThigh`, `Bone_LShin`, …) on Sean_wave.hkx to
+/// 20/31 named biped bones. WAV0 and DEL0's compressed data buffer ends well
+/// before the trailer starts (their section indices address `data_base + section_off`
+/// only, never anywhere near `file_end`), and the trailing 240/96 bytes of a
+/// Sean/Bugatti/cinematic clip decode as those same bone-hash u32s. Retail's
+/// `hkSkeletonUtils::bindByName` (WildStar_d @0x82d1d7d0) is the retail-Havok
+/// equivalent — it joins the anim's `hkAnnotationTrack::m_trackName` strings against
+/// the skeleton's `hkBone::m_name` strings; Pandemic replaced the strings with
+/// hashes for the 2008 ship-format.
+///
+/// Returns `Err` when `bytes` is shorter than `eff_tracks * 4` — a real clip is never
+/// that short, so `Err` here means someone handed us a truncated record.
+pub fn read_track_bone_hashes(bytes: &[u8], eff_tracks: usize) -> Result<Vec<u32>, String> {
+    let trailer_size = eff_tracks * 4;
+    if bytes.len() < trailer_size {
+        return Err(format!(
+            "ANM0 clip trailer read past end: need {trailer_size} bytes at tail, have {}",
+            bytes.len(),
+        ));
+    }
+    let start = bytes.len() - trailer_size;
+    Ok((0..eff_tracks)
+        .map(|i| {
+            let o = start + i * 4;
+            u32::from_be_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+        })
+        .collect())
+}
+
+/// Join per-track bone-hashes against a character's `Msh4Skeleton`. Returns a
+/// `track_to_bone` slice in the shape `skinning::posed` consumes: one `i32` per
+/// track, giving the index into `skeleton.bones[]`, or `-1` for an unbound track.
+///
+/// Structurally the same operation as retail's [`hkSkeletonUtils::bindByName`] —
+/// for each track's identifier, find the bone whose identifier matches. Pandemic's
+/// version keys on `pandemic_hash(name)` so the join is a hashmap lookup rather than
+/// a string compare, but the semantics are identical.
+///
+/// A track whose hash isn't in the skeleton comes back `-1` (not an error): a
+/// full-body clip driving 60 tracks against a face-only skeleton has legitimately
+/// unbound tracks, and the same clip on a full biped may find every one. The caller
+/// (`skinning::posed`) already handles `-1` by leaving that track's bone at bind pose.
+pub fn resolve_track_to_bone(bind_hashes: &[u32], skeleton: &Msh4Skeleton) -> Vec<i32> {
+    // Build the hash → index lookup once per bind call. On a 100-bone skeleton this
+    // is 100 hashmap inserts — trivially cheap; a repeated per-track linear scan
+    // would be O(n·m) which for a 60-track clip against 200 bones is 12k comparisons,
+    // still cheap but this way the loop below is a straight O(n) lookup chain.
+    let mut hash_to_index: HashMap<u32, i32> = HashMap::with_capacity(skeleton.bones.len());
+    for (i, b) in skeleton.bones.iter().enumerate() {
+        // First writer wins — if two bones ever share a name hash the first-authored
+        // (lower index) one is the one the game's own resolver would pick too (it
+        // scans bones[] in order and takes the first match; retail Havok does the
+        // same, though we haven't observed a collision on any real skeleton).
+        hash_to_index.entry(b.name_hash).or_insert(i as i32);
+    }
+    bind_hashes
+        .iter()
+        .map(|h| hash_to_index.get(h).copied().unwrap_or(-1))
+        .collect()
 }
 
 /// Recursive `*.hkx` walk.
@@ -1558,5 +1698,322 @@ mod tests {
         let m = (s.rot[0] * s.rot[0] + s.rot[1] * s.rot[1] + s.rot[2] * s.rot[2] + s.rot[3] * s.rot[3]).sqrt();
         assert!((m - 1.0).abs() < 1e-6);
         assert_eq!(s.scale, scale);
+    }
+
+    // ── track→bone resolver tests ─────────────────────────────────────────────────────────
+    //
+    // These validate the "given a clip and a character skeleton, which bone does each track
+    // drive?" pipeline: the ANM0 trailer format, the hash-join against `Msh4Skeleton`, and
+    // the pose-application round trip that proves a bound clip actually moves the rig
+    // relative to bind pose.
+
+    /// Load Sean HD's `Msh4Skeleton` — used by the resolver tests to have a real target
+    /// rig with real `name_hash` values (~104 bones).
+    fn load_sean_hd_skeleton() -> Option<Msh4Skeleton> {
+        use crate::source::GameSource;
+        use crate::sources::prototype2008::Prototype2008Source;
+        let root = test_bin360()?;
+        let src = Prototype2008Source::open(root.parent().unwrap_or(&root)).ok()?;
+        let handle = src.list_meshes().into_iter().find(|h| h.name == "BP_AL_Sean_HD")?;
+        let body = src.read_mesh_body(&handle).ok()?;
+        body.skeleton
+    }
+
+    /// The end-to-end resolver on Sean HD + a Sean-referencing clip: every returned index
+    /// is either `-1` (unbound — a hash the target skeleton doesn't carry) or a valid
+    /// bone index in `0..bones.len()`, and most tracks bind (a Sean body clip against
+    /// Sean's own skeleton should be a near-total match).
+    #[test]
+    fn sean_hd_clip_track_bindings_are_valid() {
+        let Some(skeleton) = load_sean_hd_skeleton() else {
+            eprintln!("skip: no Bin360/ or Sean HD present");
+            return;
+        };
+        let Some(root) = test_bin360() else { return };
+        let cat = Anim2008Catalog::open(&root);
+        // `Sean_wave` is a WAV0 body clip authored specifically for Sean's rig — 60
+        // tracks and its trailer's u32-BE values match the pandemic_hash of known
+        // biped bone names (GlobalSRT, Bone_Root, Bone_LThigh, Bone_LShin, ...);
+        // see the `resolver_recovers_known_sean_bone_names` test.
+        let mut clip = cat
+            .load_clip(pandemic_hash("Sean_wave"))
+            .expect("Sean_wave clip loads");
+        assert_eq!(clip.header.codec, ClipCodec::Wavelet);
+        assert!(!clip.bind_hashes.is_empty(), "trailer must be populated at load time");
+        assert_eq!(
+            clip.bind_hashes.len(),
+            clip.effective_tracks(),
+            "one trailer entry per transform track"
+        );
+
+        let n_bones = skeleton.bones.len();
+        assert!(n_bones > 30, "expected a rigged Sean HD skeleton, got {n_bones} bones");
+
+        clip.bind_to_skeleton(&skeleton);
+        let t2b = clip.track_to_bone();
+        assert_eq!(t2b.len(), clip.effective_tracks());
+
+        // Every index is either -1 or in-range. A track pointing outside the skeleton
+        // would crash `skinning::posed` on GPU upload (the joint palette is sized
+        // `bones.len()`), so this is the load-bearing invariant.
+        for (k, &idx) in t2b.iter().enumerate() {
+            assert!(
+                idx == -1 || (0..(n_bones as i32)).contains(&idx),
+                "track {k}: bone index {idx} out of range 0..{n_bones}"
+            );
+        }
+        let bound = t2b.iter().filter(|&&i| i >= 0).count();
+        let unbound = t2b.len() - bound;
+        eprintln!(
+            "Sean_wave → Sean HD: {bound}/{} tracks bound, {unbound} unbound",
+            t2b.len()
+        );
+        // Sean_wave is Sean's own body clip. On Sean HD (a full body rig) the vast
+        // majority of the 60 tracks MUST bind — anything below half means either the
+        // trailer is being misread, the skeleton has the wrong bones, or the hash
+        // scheme is inconsistent between clip and skeleton.
+        assert!(
+            bound * 2 > t2b.len(),
+            "expected majority of Sean_wave tracks to bind Sean HD's skeleton, got {bound}/{}",
+            t2b.len()
+        );
+    }
+
+    /// The trailer hashes recovered from `Sean_wave.hkx` decode to the pandemic_hashes
+    /// of known biped bone names — proves the trailer really IS a bone-hash array
+    /// (and not, say, per-track flags that happen to be u32-shaped).
+    #[test]
+    fn resolver_recovers_known_sean_bone_names() {
+        let Some(root) = test_bin360() else {
+            eprintln!("skip: no Bin360/ prototype");
+            return;
+        };
+        let cat = Anim2008Catalog::open(&root);
+        let clip = cat
+            .load_clip(pandemic_hash("Sean_wave"))
+            .expect("Sean_wave clip loads");
+        // Sample of biped bone names every full-body clip should carry. Positions in
+        // the trailer are stable — they mirror the skeleton's authored track order:
+        // the root chain first (GlobalSRT / Bone_Root), then the leg pair, then the
+        // spine, then the arms.
+        let expect = [
+            ("GlobalSRT", 0),
+            ("Bone_Root", 1),
+            ("Bone_LThigh", 2),
+            ("Bone_LShin", 3),
+            ("Bone_RThigh", 6),
+            ("Bone_RShin", 7),
+            ("Bone_Chest", 12),
+            ("Bone_Neck", 13),
+            ("Bone_Head", 14),
+            ("Bone_LBicep", 20),
+            ("Bone_LForearm", 21),
+            ("Bone_LHand", 22),
+            ("Bone_RBicep", 40),
+            ("Bone_RForearm", 41),
+            ("Bone_RHand", 42),
+        ];
+        for (name, idx) in expect {
+            let h = pandemic_hash(name);
+            assert_eq!(
+                clip.bind_hashes.get(idx).copied(),
+                Some(h),
+                "expected trailer[{idx}] == pandemic_hash({name:?}) = {h:08X}"
+            );
+        }
+    }
+
+    /// A bound clip, sampled at two times, must move at least one bone through the
+    /// posed skinning path — the whole point of `bind_to_skeleton`. Sampling alone
+    /// (already covered by `sample_noc0_multi_frame_within_bounds_and_animates`) is
+    /// not enough: an empty `track_to_bone` would silently drop every transform.
+    #[test]
+    fn posed_pelvis_moves_across_frames() {
+        let Some(skeleton) = load_sean_hd_skeleton() else {
+            eprintln!("skip: no Bin360/ or Sean HD present");
+            return;
+        };
+        let Some(root) = test_bin360() else { return };
+        let cat = Anim2008Catalog::open(&root);
+
+        // `KD_head_front` is a NOC0 clip (7 frames × 55 tracks, verified in the sampler
+        // tests above) whose trailer shares 20+ hashes with `Sean_wave`, i.e. it drives
+        // a biped's root/spine/head chain — the same bones Sean HD ships. NOC0 rather
+        // than WAV0 because NOC0 is decoded end-to-end; a WAV0 clip that declines to
+        // decode a track would fall to the identity-fallback, breaking the "moves"
+        // assertion without an underlying bug.
+        let mut clip = match cat.load_clip(pandemic_hash("KD_head_front")) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        assert_eq!(clip.header.codec, ClipCodec::None);
+        let (eff_tracks, frames) = clip.noc0_shape().expect("shape");
+        assert!(frames > 1, "need a multi-frame clip for the motion test");
+
+        clip.bind_to_skeleton(&skeleton);
+        let t2b = clip.track_to_bone().to_vec();
+        // At least one track must bind — otherwise the motion test is trivially vacuous.
+        let bound_any = t2b.iter().any(|&i| i >= 0);
+        if !bound_any {
+            eprintln!("skip: KD_head_front does not bind any Sean HD bone");
+            return;
+        }
+
+        // Convert the parsed skeleton into the workshop's `Bone` list — the same
+        // shape `skinning::posed` consumes downstream. Every parent index is a valid
+        // bone (checked by the mesh module's `parses_skeleton_from_sean_hd`), so we
+        // can safely pass it to the world-matrix composer.
+        use crate::formats::Bone;
+        use std::collections::HashMap;
+        let mut ibm: HashMap<u32, [f32; 16]> = HashMap::new();
+        for r in &skeleton.remaps {
+            ibm.insert(r.bone_index, r.matrix);
+        }
+        let skel: Vec<Bone> = skeleton
+            .bones
+            .iter()
+            .enumerate()
+            .map(|(i, b)| Bone {
+                parent: b.parent,
+                name: format!("bone_{:08X}", b.name_hash),
+                t: b.translation,
+                r: b.rotation,
+                s: b.scale,
+                inv_bind: ibm.get(&(i as u32)).copied(),
+                local_m: None,
+            })
+            .collect();
+        let bind = crate::skinning::bind_pose(&skel);
+
+        let dur = clip.header.duration_s.max(0.1);
+        let pose0 = clip.sample_all(0.0);
+        let posem = clip.sample_all(0.5 * dur);
+        assert_eq!(pose0.len(), eff_tracks);
+        assert_eq!(posem.len(), eff_tracks);
+
+        // Apply both poses through the actual skinning path — the same code the
+        // GPU uploads. Root-lock ON matches the transport's default (Sean walks in
+        // place instead of translating past the camera).
+        let joint0 = crate::skinning::posed(&skel, &pose0, &t2b, true);
+        let jointm = crate::skinning::posed(&skel, &posem, &t2b, true);
+        assert_eq!(joint0.len(), skel.len());
+        assert_eq!(jointm.len(), skel.len());
+        for m in joint0.iter().chain(jointm.iter()) {
+            for &c in m.to_cols_array().iter() {
+                assert!(c.is_finite(), "posed joint matrix contains non-finite");
+            }
+        }
+
+        // At least one bound bone's joint matrix must differ between the two times, and
+        // must also differ from the bind pose — the "sensible motion" acceptance bar.
+        let mut moved_from_bind = 0usize;
+        let mut moved_between_times = 0usize;
+        for (k, &bone_idx) in t2b.iter().enumerate() {
+            if bone_idx < 0 {
+                continue;
+            }
+            let b = bone_idx as usize;
+            let m_bind = bind[b].to_cols_array();
+            let m_0 = joint0[b].to_cols_array();
+            let m_m = jointm[b].to_cols_array();
+            let d_bind: f32 = m_bind
+                .iter()
+                .zip(m_0.iter())
+                .map(|(a, b)| (a - b).abs())
+                .sum();
+            let d_time: f32 = m_0
+                .iter()
+                .zip(m_m.iter())
+                .map(|(a, b)| (a - b).abs())
+                .sum();
+            if d_bind > 1e-3 {
+                moved_from_bind += 1;
+            }
+            if d_time > 1e-3 {
+                moved_between_times += 1;
+                eprintln!(
+                    "  track {k} → bone {b}: |joint0-jointm|={d_time:.4} (moves in time)"
+                );
+            }
+        }
+        assert!(
+            moved_from_bind > 0,
+            "no bound bone's joint matrix moved off bind pose — the resolver produced \
+             indices but `skinning::posed` didn't actually apply the sampled transforms"
+        );
+        assert!(
+            moved_between_times > 0,
+            "no bound bone moved between t=0 and t=mid — the clip samples the same slot \
+             at both times, or the resolver's indices are wrong"
+        );
+    }
+
+    /// Trailer read must fail cleanly on a truncated input rather than panic on the
+    /// index math. Cheap synthetic check, always runs.
+    #[test]
+    fn read_track_bone_hashes_rejects_truncated_input() {
+        // 3 bytes, need 4 for one hash — must Err.
+        let buf = [0xDEu8, 0xAD, 0xBE];
+        let e = read_track_bone_hashes(&buf, 1).expect_err("must reject");
+        assert!(e.contains("past end"), "unhelpful error: {e}");
+        // Empty request always succeeds — 0 tracks, 0 bytes.
+        let ok = read_track_bone_hashes(&[], 0).expect("zero-length ok");
+        assert!(ok.is_empty());
+    }
+
+    /// `resolve_track_to_bone` must map exact-hash hits to indices and give -1 for
+    /// misses — a synthetic-skeleton always-on test that doesn't need an install.
+    #[test]
+    fn resolve_track_to_bone_maps_hits_and_marks_misses() {
+        use crate::sources::prototype2008_mesh::Msh4Bone;
+        let bones = vec![
+            Msh4Bone {
+                name_hash: pandemic_hash("A"),
+                parent: -1,
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 4],
+                flag: 0,
+            },
+            Msh4Bone {
+                name_hash: pandemic_hash("B"),
+                parent: 0,
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 4],
+                flag: 0,
+            },
+            Msh4Bone {
+                name_hash: pandemic_hash("C"),
+                parent: 0,
+                translation: [0.0; 3],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [1.0; 3],
+                aabb_min: [0.0; 3],
+                aabb_max: [0.0; 4],
+                flag: 0,
+            },
+        ];
+        let skel = Msh4Skeleton {
+            bones,
+            remaps: Vec::new(),
+            model_pos: [0.0; 3],
+            model_sphere: [0.0; 4],
+        };
+        let hashes = vec![
+            pandemic_hash("B"),
+            0xDEAD_BEEF, // not in skeleton
+            pandemic_hash("A"),
+            pandemic_hash("C"),
+        ];
+        let t2b = resolve_track_to_bone(&hashes, &skel);
+        assert_eq!(t2b, vec![1, -1, 0, 2]);
     }
 }

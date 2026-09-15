@@ -596,6 +596,25 @@ fn main() {
         return;
     }
 
+    // Drill-down of the rotation-channel convex-hull soft overshoots
+    // that `validate-trs` reports as informational-only.  For each
+    // overshoot, recomputes the pre-normalization Cox-de Boor blend
+    // through an independent implementation and prints the raw hull,
+    // the pre-norm value, |pre|, and both the ACTUAL overshoot and the
+    // one PREDICTED by pure post-blend renormalization.  If those two
+    // agree and pre[c] itself stays inside the raw hull, the deviation
+    // is a mathematical consequence of renormalizing a de Boor blend of
+    // unit quaternions with |·|<1 — NOT a decoder bug.
+    //   `sab_havok65 validate-trs-drill <pack> [clip_idx] [max_reports]`
+    if args.get(1).map(|s| s == "validate-trs-drill").unwrap_or(false) {
+        let pack = args.get(2).map(|s| s.as_str())
+            .unwrap_or("C:/GOG Games/The Saboteur/Animations.pack");
+        let target = args.get(3).and_then(|s| s.parse::<usize>().ok());
+        let max_reports = args.get(4).and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
+        trs_validate::drill(pack, target, max_reports);
+        return;
+    }
+
     // Skeleton-only export needs no animation pack: `sab_havok65 skeleton <skel> <out.glb>`
     if args.get(1).map(|s| s == "skeleton").unwrap_or(false) {
         let skel_path = args.get(2).map(|s| s.as_str()).unwrap_or("skeleton.skel");

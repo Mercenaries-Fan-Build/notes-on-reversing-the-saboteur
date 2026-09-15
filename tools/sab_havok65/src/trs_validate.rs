@@ -85,6 +85,39 @@ use crate::{
 };
 use std::fs;
 
+/// Cox-de Boor evaluation, reimplemented independently of `main.rs::de_boor`
+/// so the drill-down does not read its own answer back from the sampler's
+/// own code path.
+///
+/// Given `p+1` local control points `cps[0..=p]` (already hemisphere-flipped
+/// for rotations) and the `2p` local knot values in *seconds*
+/// (`U[span-p+1..=span+p]`), evaluates the spline at `u`.  Returns the
+/// blended (pre-normalization) vec4.
+fn de_boor_local(p: usize, uk: &[f32], cps: &[[f32; 4]], u: f32) -> [f32; 4] {
+    if p == 0 {
+        return cps[0];
+    }
+    let mut d: Vec<[f32; 4]> = cps.to_vec();
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let ui = uk[j - 1];
+            let uipr = uk[j + p - r];
+            let denom = uipr - ui;
+            let a = if denom.abs() < 1e-20 {
+                0.0
+            } else {
+                (u - ui) / denom
+            };
+            let mut nv = [0f32; 4];
+            for c in 0..4 {
+                nv[c] = (1.0 - a) * d[j - 1][c] + a * d[j][c];
+            }
+            d[j] = nv;
+        }
+    }
+    d[p]
+}
+
 /// Absolute tolerance used for unit-quaternion checks and endpoint
 /// matches. The sampler renormalizes after de Boor, and HCT's own
 /// re-quantization budget for rotations is 0.001 (memory
@@ -865,6 +898,355 @@ pub fn run(pack_path: &str) {
     println!("\nAll strict properties hold across the corpus.");
 }
 
+// ------------------------------------------------------------- drill-down
+
+/// One rotation-channel convex-hull overshoot, fully explained.
+#[derive(Debug, Clone)]
+struct RotOvershoot {
+    clip: usize,
+    track: usize,
+    time: f32,
+    component: usize,
+    hull_lo: f32,
+    hull_hi: f32,
+    /// De Boor blend of the local (hemisphere-aligned) CPs, before
+    /// normalization.
+    pre_norm: [f32; 4],
+    pre_norm_mag: f32,
+    /// The sampler's final (normalized) output.
+    sampled: [f32; 4],
+    /// Signed overshoot outside `[hull_lo, hull_hi]` in this component.
+    actual_overshoot: f32,
+    /// Predicted overshoot from the pure-renormalization model:
+    /// `pre_norm[c] * (1/|pre_norm| - 1)` clipped by the hull edge.
+    predicted_overshoot: f32,
+    /// Was `pre_norm[c]` itself inside the raw hull? (Convex-hull property
+    /// of Cox-de Boor holds pre-normalization.)
+    pre_in_hull: bool,
+}
+
+/// Drill-down: run the same property checks as `run`, but on every
+/// rotation-channel overshoot recompute the pre-normalization blend from
+/// an independent `de_boor_local` walk and record the intermediates so
+/// each violation can be classified as (a) pure post-normalization noise,
+/// or (b) some other decoder disagreement.
+///
+/// If `target_clip` is `Some(i)`, only that clip is drilled.
+///
+/// The verification hypothesis being tested is that every rotation
+/// overshoot decomposes into three simultaneous facts:
+///   1. `hull_lo <= pre_norm[c] <= hull_hi` (Cox-de Boor convex-hull holds
+///      exactly, pre-normalization).
+///   2. `sampled == pre_norm / |pre_norm|` (bit-close: the only step the
+///      primary sampler applies AFTER de Boor is unit renormalization).
+///   3. Therefore `overshoot == |pre_norm[c]| * (1/|pre_norm| - 1)` up to
+///      the hull edge — a mathematical identity, not a decoder error.
+pub fn drill(pack_path: &str, target_clip: Option<usize>, max_reports: usize) {
+    let pack = fs::read(pack_path).unwrap_or_else(|e| {
+        eprintln!("read pack {pack_path}: {e}");
+        std::process::exit(1)
+    });
+    let ap = parse_ap0l(&pack).unwrap_or_else(|e| {
+        eprintln!("parse AP0L: {e}");
+        std::process::exit(1)
+    });
+    let blob = &pack[ap.blob_off..ap.blob_off + ap.hk_size];
+    let pk = Packfile::parse(blob).unwrap_or_else(|e| {
+        eprintln!("parse packfile: {e}");
+        std::process::exit(1)
+    });
+    let scas: Vec<usize> = pk
+        .vfixups
+        .iter()
+        .filter(|(_, c)| c == "hkaSplineCompressedAnimation")
+        .map(|(s, _)| *s)
+        .collect();
+
+    let iter: Box<dyn Iterator<Item = (usize, usize)>> = match target_clip {
+        Some(i) => Box::new(std::iter::once((i, scas[i]))),
+        None => Box::new(scas.iter().copied().enumerate()),
+    };
+
+    // Buckets for the classification result over the whole run.
+    let mut oversights: Vec<RotOvershoot> = Vec::new();
+    let mut clean_pre_hull = 0u64;
+    let mut clean_renorm = 0u64;
+    let mut worst_actual: f32 = 0.0;
+    let mut worst_renorm_gap: f32 = 0.0;
+    let mut worst_hull_gap: f32 = 0.0;
+    let mut min_pre_mag: f32 = 1.0;
+
+    println!(
+        "drill: {} hkaSplineCompressedAnimation clips (Havok {}), target={:?}",
+        scas.len(),
+        pk.version,
+        target_clip,
+    );
+
+    for (i, src) in iter {
+        let anim = read_spline_anim(&pk, src);
+        if anim.num_blocks > 1 {
+            continue;
+        }
+        let decomp = match decompose_block(&anim, blob, 0) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("  clip #{i}: decompose error {e}");
+                continue;
+            }
+        };
+        let last_t = if anim.num_frames > 0 {
+            (anim.num_frames - 1) as f32 * anim.frame_duration
+        } else {
+            0.0
+        };
+        // Same sample-time policy as `run()`.
+        let mut times = vec![0.0f32];
+        let nfr = anim.num_frames.max(2);
+        for k in 1..(nfr - 1) {
+            if k * 8 % (nfr - 1) < 8 || k == nfr / 2 {
+                times.push(k as f32 * anim.frame_duration);
+            }
+        }
+        times.push(last_t);
+        if times.len() > 12 {
+            let step = times.len() / 12;
+            let mut sel = Vec::new();
+            for k in 0..12 {
+                sel.push(times[k * step]);
+            }
+            times = sel;
+        }
+
+        for &t in &times {
+            let frame = anim.sample_at(blob, t);
+            let fib = ((t
+                * anim.block_inv_duration
+                * (anim.max_frames_per_block as f32 - 1.0))
+                .round()
+                .clamp(0.0, 255.0)) as u8;
+            for (ti, qs) in frame.iter().enumerate() {
+                let chan = &decomp[ti][1]; // rotation only
+                let Some(spline) = &chan.spline else { continue };
+                let span = find_span(spline.n, spline.degree, fib, &spline.knots);
+                let start = span.saturating_sub(spline.degree);
+                let end = span.min(spline.n);
+                // Rebuild the local hemisphere-aligned CP window.
+                let mut local: Vec<[f32; 4]> =
+                    (start..=end).map(|i| spline.cps[i]).collect();
+                if local.len() > 1 {
+                    let first = local[0];
+                    for cp in local.iter_mut().skip(1) {
+                        let dot: f32 = (0..4).map(|k| first[k] * cp[k]).sum();
+                        if dot < 0.0 {
+                            for k in 0..4 {
+                                cp[k] = -cp[k];
+                            }
+                        }
+                    }
+                }
+                // Independent Cox-de Boor blend, using the same knot mapping
+                // as the sampler (raw byte knots scaled by frame_duration).
+                let block_time = t; // single-block path
+                let p = spline.degree;
+                // Local knot window: uk[j] = knots[span - p + 1 + j] * fd,
+                // for j in 0..2p.
+                let mut uk = Vec::with_capacity(2 * p);
+                for j in 0..(2 * p) {
+                    let ki = span + 1 + j - p; // matches main.rs line 250 mapping
+                    uk.push(spline.knots[ki] as f32 * anim.frame_duration);
+                }
+                let pre = de_boor_local(p, &uk, &local, block_time);
+                let pre_mag = (pre[0] * pre[0]
+                    + pre[1] * pre[1]
+                    + pre[2] * pre[2]
+                    + pre[3] * pre[3])
+                    .sqrt();
+                if pre_mag < min_pre_mag && pre_mag > 0.0 {
+                    min_pre_mag = pre_mag;
+                }
+
+                // Compute per-component hull and check every axis.
+                for c in 0..4 {
+                    let mut lo = f32::INFINITY;
+                    let mut hi = f32::NEG_INFINITY;
+                    for cp in &local {
+                        if cp[c] < lo {
+                            lo = cp[c];
+                        }
+                        if cp[c] > hi {
+                            hi = cp[c];
+                        }
+                    }
+                    let width = (hi - lo).abs().max(1e-6);
+                    // Match `run`'s widen: 5% + F_TOL. Only report the ones
+                    // that would have counted as "soft" overshoots.
+                    let widen_amt = 0.05 * width + F_TOL;
+                    let vlo = lo - widen_amt;
+                    let vhi = hi + widen_amt;
+                    let v = qs.r[c];
+                    if !v.is_finite() {
+                        continue;
+                    }
+                    let signed = if v < vlo {
+                        v - vlo
+                    } else if v > vhi {
+                        v - vhi
+                    } else {
+                        continue;
+                    };
+                    let hull_signed = if v < lo {
+                        v - lo
+                    } else if v > hi {
+                        v - hi
+                    } else {
+                        0.0
+                    };
+                    // Renormalization prediction: sampled = pre / |pre|,
+                    // so the overshoot outside the raw hull is
+                    //   sampled[c] - hi   (if v > hi)
+                    // = pre[c]/|pre| - hi
+                    // and since pre[c] ∈ [lo, hi], the maximum inflation
+                    // is pre[c] * (1/|pre| - 1) when hi == pre[c].
+                    let scale = if pre_mag > 0.0 { 1.0 / pre_mag } else { 0.0 };
+                    let sampled_from_pre = pre[c] * scale;
+                    let renorm_gap = (qs.r[c] - sampled_from_pre).abs();
+
+                    let pre_in_hull = pre[c] >= lo - 1e-6 && pre[c] <= hi + 1e-6;
+                    if pre_in_hull {
+                        clean_pre_hull += 1;
+                    }
+                    if renorm_gap < 1e-5 {
+                        clean_renorm += 1;
+                    }
+
+                    worst_actual = worst_actual.max(hull_signed.abs());
+                    worst_renorm_gap = worst_renorm_gap.max(renorm_gap);
+                    worst_hull_gap = worst_hull_gap.max(if pre_in_hull {
+                        0.0
+                    } else {
+                        (pre[c] - hi).max(lo - pre[c])
+                    });
+
+                    // Only capture SOFT overshoots (v outside widened hull).
+                    if signed.abs() > 0.0 && oversights.len() < max_reports {
+                        oversights.push(RotOvershoot {
+                            clip: i,
+                            track: ti,
+                            time: t,
+                            component: c,
+                            hull_lo: lo,
+                            hull_hi: hi,
+                            pre_norm: pre,
+                            pre_norm_mag: pre_mag,
+                            sampled: qs.r,
+                            actual_overshoot: hull_signed,
+                            predicted_overshoot: sampled_from_pre
+                                - (if v > hi { hi } else { lo }),
+                            pre_in_hull,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    oversights.sort_by(|a, b| {
+        b.actual_overshoot
+            .abs()
+            .partial_cmp(&a.actual_overshoot.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    println!();
+    println!("=== rotation-channel convex-hull soft-violation drill-down ===");
+    println!("captured: {}", oversights.len());
+    println!(
+        "  worst |hull overshoot| (actual)         : {:.3e}",
+        worst_actual
+    );
+    println!(
+        "  worst |sampled - pre/|pre|| gap         : {:.3e}",
+        worst_renorm_gap
+    );
+    println!(
+        "  worst |pre - hull| (should be ~0)       : {:.3e}",
+        worst_hull_gap
+    );
+    println!(
+        "  min pre-norm |q| seen                   : {:.6}  (renorm scale 1/|q| = {:.6})",
+        min_pre_mag,
+        1.0 / min_pre_mag.max(1e-12)
+    );
+    println!(
+        "  pre_in_hull hits                        : {}",
+        clean_pre_hull
+    );
+    println!(
+        "  sampled == pre/|pre| (within 1e-5)      : {}",
+        clean_renorm
+    );
+
+    for (n, o) in oversights.iter().take(12).enumerate() {
+        println!();
+        println!(
+            "  [#{n}] clip={} track={} t={:.4}s comp={}  q'[{}]={:+.6}",
+            o.clip, o.track, o.time, o.component, o.component, o.sampled[o.component]
+        );
+        println!(
+            "       hull                 [{:+.6}, {:+.6}]  width {:.3e}",
+            o.hull_lo,
+            o.hull_hi,
+            o.hull_hi - o.hull_lo
+        );
+        println!(
+            "       pre-norm value          {:+.6}   in hull? {}",
+            o.pre_norm[o.component], o.pre_in_hull
+        );
+        println!(
+            "       pre-norm |q|            {:.6}   (renorm scale {:.6})",
+            o.pre_norm_mag,
+            1.0 / o.pre_norm_mag.max(1e-12),
+        );
+        println!(
+            "       actual overshoot       {:+.3e}   predicted from renorm  {:+.3e}",
+            o.actual_overshoot, o.predicted_overshoot,
+        );
+        println!(
+            "       |actual - predicted|   {:.3e}",
+            (o.actual_overshoot - o.predicted_overshoot).abs()
+        );
+    }
+
+    // Hypothesis: if every observed overshoot satisfies
+    //   * pre_in_hull, and
+    //   * sampled == pre/|pre| within ULP-noise,
+    // then the deviation is 100% a post-normalization mathematical
+    // artifact and NOT a decoder bug. Emit a one-line verdict.
+    let all_pre_in_hull = oversights.iter().all(|o| o.pre_in_hull);
+    let all_renorm_ok = worst_renorm_gap < 5e-5;
+    println!();
+    if all_pre_in_hull && all_renorm_ok {
+        println!(
+            "VERDICT: all soft overshoots are renormalization artifacts.\n\
+             (Convex-hull property holds pre-normalization; sampler ==\n\
+             de_boor / |de_boor| exactly. No decoder discrepancy.)"
+        );
+    } else if !all_pre_in_hull {
+        println!(
+            "VERDICT: pre-normalization value falls outside the raw hull\n\
+             on {} sample(s) — investigate the decomposer or sampler.",
+            oversights.iter().filter(|o| !o.pre_in_hull).count()
+        );
+    } else {
+        println!(
+            "VERDICT: sampler output disagrees with independent\n\
+             de_boor/|de_boor| by up to {:.3e} — possible decoder bug.",
+            worst_renorm_gap
+        );
+    }
+}
+
 // ------------------------------------------------------------- unit tests
 
 #[cfg(test)]
@@ -912,6 +1294,66 @@ mod tests {
         }
         let q = unpack_quat_ref(&bytes);
         assert!((q[3] + 1.0).abs() < 1e-4, "w = {}", q[3]);
+    }
+
+    /// Directly pins the mechanism behind the "soft" rotation-channel
+    /// convex-hull overshoots that `validate-trs` reports (129 across
+    /// 2.3M rotation checks, worst 1.75e-3, memory
+    /// `[[havok65-trs-oracle-gap]]`).
+    ///
+    /// Construction: two hemisphere-aligned unit quaternions with an
+    /// identical shared component (w = 0.8) but different vectorial
+    /// axes.  The de Boor blend at u=0.5 keeps that shared component
+    /// EQUAL to hull_hi (a degenerate hull along w), but drops |pre|
+    /// below 1 — Cauchy-Schwarz strict, since the quats are not
+    /// parallel.  Renormalization then divides pre[3] by |pre| < 1,
+    /// producing sampled[3] STRICTLY ABOVE the raw hull.
+    ///
+    /// The property proved: `sampled[c] == pre[c] / |pre|`, and the
+    /// overshoot `sampled[c] - hull_hi == pre[c] * (1/|pre| - 1)`
+    /// (when hull_hi == pre[c]).  Pure math, not a decoder artifact —
+    /// so an "overshoot" of exactly this shape can NEVER be a decoder
+    /// bug.  If the corpus-run drill-down finds the same identity to
+    /// within FP tolerance, the 129 soft overshoots are explained.
+    #[test]
+    fn renormalization_predicts_convex_hull_overshoot() {
+        // Two unit quats, same w = 0.8, different vectorial axes.
+        let cp0 = [0.6f32, 0.0, 0.0, 0.8];
+        let cp1 = [0.0f32, 0.6, 0.0, 0.8];
+        // Sanity: unit-norm, same-hemisphere.
+        for cp in [&cp0, &cp1] {
+            let m = (cp[0].powi(2) + cp[1].powi(2) + cp[2].powi(2) + cp[3].powi(2)).sqrt();
+            assert!((m - 1.0).abs() < 1e-6, "|cp|-1 = {}", m - 1.0);
+        }
+        // Blend at u=0.5 (linear midpoint of a degree-1 span).
+        let pre = [
+            0.5 * (cp0[0] + cp1[0]),
+            0.5 * (cp0[1] + cp1[1]),
+            0.5 * (cp0[2] + cp1[2]),
+            0.5 * (cp0[3] + cp1[3]),
+        ];
+        let mag = (pre[0].powi(2) + pre[1].powi(2) + pre[2].powi(2) + pre[3].powi(2)).sqrt();
+        assert!(mag < 1.0, "|pre| = {mag} (expected < 1 for non-parallel quats)");
+        let sampled = [pre[0] / mag, pre[1] / mag, pre[2] / mag, pre[3] / mag];
+
+        // Look at the w component, whose raw hull is [0.8, 0.8].
+        let hull_lo = cp0[3].min(cp1[3]);
+        let hull_hi = cp0[3].max(cp1[3]);
+        assert!(pre[3] >= hull_lo - 1e-6 && pre[3] <= hull_hi + 1e-6,
+                "pre {} outside hull [{}, {}]", pre[3], hull_lo, hull_hi);
+        assert!(sampled[3] > hull_hi, "renorm did NOT push above hull: {} vs {}",
+                sampled[3], hull_hi);
+        let actual = sampled[3] - hull_hi;
+        // With hull_hi == pre[3], the closed-form predicted overshoot
+        // is exactly pre[3] * (1/|pre| - 1).
+        let predicted = pre[3] * (1.0 / mag - 1.0);
+        let err = (actual - predicted).abs();
+        assert!(err < 1e-6, "actual {} vs predicted {} disagree by {}",
+                actual, predicted, err);
+        // Sanity: the overshoot's magnitude is on the same order as
+        // the corpus's worst (1.75e-3) for this contrived case.
+        // Here we get ~8.3e-2 because the quats are wider apart.
+        assert!(actual > 1e-3 && actual < 1e-1);
     }
 
     /// The two THREECOMP40 unpackers (main.rs and this file) MUST agree

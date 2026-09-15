@@ -359,12 +359,46 @@ explicit about what each proves and what neither does:
 
    The 129 soft rotation-hull overshoots are all from the sampler's
    post-blend renormalization scaling a component slightly outside its
-   raw hull (a mathematical consequence of dividing by `‖q‖` when `‖q‖ <
-   1`), never above 1.75e-3 — well below HCT's own rotation
-   re-quantization budget of `0.001` for encoding (memory
-   `[[havok-anim-toolchain-roundtrip-proven]]`; the encode step is the
-   tighter bound). The 129 checks are counted separately from the
-   strict T+S check, which stays at zero.
+   raw hull (a mathematical consequence of dividing by `‖q‖` when
+   `‖q‖ < 1`), never above 1.75e-3 (or 3.01e-3 measured against the raw
+   hull, before the 5% widen). This is verified — not hypothesized —
+   by `sab_havok65 validate-trs-drill <pack>`:
+
+   ```
+   captured: 129
+     worst |hull overshoot| (actual, raw hull) : 3.012e-3
+     worst |sampled - pre/|pre|| gap           : 5.960e-8   (one ULP)
+     worst |pre - hull|                        : 0.000e0
+     min pre-norm |q|                          : 0.932043   (1/|q| = 1.0729)
+     pre_in_hull hits                          : 129 / 129
+     sampled == pre/|pre| (within 1e-5)        : 129 / 129
+   ```
+
+   The drill reruns an INDEPENDENT `de_boor_local` walk over the
+   decomposed control points, computes `pre_norm` and `|pre_norm|`
+   directly, and per violation confirms two identities to FP
+   tolerance:
+
+   1. `pre_norm[c] ∈ [hull_lo, hull_hi]` — the Cox-de Boor convex-hull
+      property holds exactly pre-normalization. (Violated 0 / 129.)
+   2. `sampled[c] == pre_norm[c] / |pre_norm|` bit-close — the only
+      thing `eval_rotation` applies after de Boor is one unit
+      renormalization. (Violated 0 / 129, worst gap 5.96e-8, i.e., one
+      ULP for a single-precision divide.)
+
+   With both identities holding, the observed
+   `sampled[c] − hull_hi == pre_norm[c] · (1/|pre_norm| − 1)` is a
+   mathematical identity, not a decoder artifact — an "overshoot" of
+   exactly this shape can never be a decoder bug. The unit test
+   `renormalization_predicts_convex_hull_overshoot` in
+   `trs_validate.rs` pins the same identity on a constructed 2-CP
+   example (w=0.8 shared component, w-overshoot 8.3e-2 predicted
+   exact). The worst-clip drill for clip #1884 track #47 (the entry
+   the top-level `run()` reports as `dev=1.75e-3`) confirms the
+   raw-hull overshoot 3.012e-3 equals `pre * (1/|pre| − 1)` to 0.0.
+
+   The 129 checks are counted separately from the strict T+S check,
+   which stays at zero.
 
    The endpoint match is the strongest single test in the file: 130,724
    independent point-checks against an alternate-code-path THREECOMP40

@@ -35,12 +35,31 @@ pub trait AnimClip: Send + Sync {
     /// rather than a crash. A stderr line (in debug builds) tells you which clip declined.
     fn sample_all(&self, time: f32) -> Vec<QsTransform>;
     /// Track index → skeleton bone index. `-1` = unbound (`skinning::posed` skips it).
-    /// Retail carries an authored per-clip mapping from the `ANIM` block; 2008 has no
-    /// per-clip mapping at load time (that lives in `PclAnimationBank` + the FSM, both
-    /// unreversed), so its slice is empty and the shared skinning call treats every track
-    /// as unbound — the rig stays at bind pose, but `sample_all` still computes real
-    /// transforms that a future track→bone resolver can consume.
+    ///
+    /// Retail carries an authored per-clip mapping from the `ANIM` block, populated at
+    /// pack-open time. 2008 clips carry their own per-track bone-hash trailer at the
+    /// tail of every ANM0-family record (see [`super::sources::prototype2008_anim::
+    /// read_track_bone_hashes`]) — a hash-based mirror of retail Havok's
+    /// `hkAnnotationTrack::m_trackName` array. Resolving the trailer to a target
+    /// skeleton's bone indices is [`super::sources::prototype2008_anim::
+    /// resolve_track_to_bone`], invoked at load time via
+    /// [`super::sources::prototype2008_anim::Clip2008::bind_to_skeleton`] so this
+    /// method returns real indices from the moment a 2008 clip is opened against a
+    /// mesh. An unbound clip (rare, e.g. one loaded through the raw catalog without
+    /// a target skeleton) returns an empty slice; `skinning::posed` treats that as
+    /// "every track unbound" and the rig stays at bind pose.
     fn track_to_bone(&self) -> &[i32];
+
+    /// The per-track BONE-NAME HASHES the clip drives, in track order — the
+    /// unresolved form of `track_to_bone`. Retail returns empty by default
+    /// (its binding is `ANIM`-block indices, not hashes), so app-side code
+    /// treats an empty return as "this backend has no self-describing
+    /// binding; fall back to `track_to_bone` populated elsewhere". 2008 overrides
+    /// to return the ANM0 trailer's u32-BE array so the app can resolve
+    /// against whatever character skeleton is currently loaded without
+    /// baking the target into the clip. See [`super::sources::prototype2008_anim::
+    /// read_track_bone_hashes`] for the trailer layout.
+    fn bind_hashes(&self) -> &[u32] { &[] }
 }
 
 #[cfg(test)]
@@ -161,12 +180,15 @@ mod tests {
             return;
         };
         let dyn_clip: &dyn AnimClip = &clip;
-        // 2008's mapping is empty today (FSM not reversed) — the shape is honored so
-        // `skinning::posed` can zip pose against `track_to_bone` without a length check.
+        // A freshly-loaded clip is unresolved (`bind_to_skeleton` hasn't been called),
+        // so the mapping is empty and `skinning::posed` treats every track as unbound.
+        // Once resolved (see `Clip2008::bind_to_skeleton` and its tests), the slice
+        // has exactly `num_transform_tracks` entries — the trait shape lets a caller
+        // zip pose against `track_to_bone` without a length check either way.
         let t2b = dyn_clip.track_to_bone();
         assert!(
-            t2b.is_empty() || t2b.len() >= dyn_clip.num_transform_tracks(),
-            "track_to_bone must be either empty (unresolved) or at least as long as num_transform_tracks"
+            t2b.is_empty() || t2b.len() == dyn_clip.num_transform_tracks(),
+            "track_to_bone must be either empty (unresolved) or exactly as long as num_transform_tracks"
         );
     }
 

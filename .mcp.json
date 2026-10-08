@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "corpus": {
+      "command": "node",
+      "args": ["../notes-on-the-released-game/tools/corpus_mcp/src/server.js"]
+    }
+  }
+}

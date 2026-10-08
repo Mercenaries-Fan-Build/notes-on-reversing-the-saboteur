@@ -1,0 +1,1141 @@
+{
+  "metadata": {
+    "generated": "2026-09-13T16:20:42Z",
+    "source_path": "C:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360",
+    "source_archive_note": "Extracted from 'The Saboteur (Jun 26, 2008 prototype).rar' in parent game-files/ dir",
+    "build_info_txt": "The Saboteur (Xbox 360) / Pre-Release / May 20 18:08:22 2008",
+    "observed_content_freeze_mtime": "2008-05-22 (17116 / 17148 files carry this mtime)",
+    "observed_rebuild_dates": [
+      "2008-06-24 (MemoryPools_v3.ini)",
+      "2008-06-26 (Replay tools + WildStar_p.xex)"
+    ],
+    "platform_verified": "Xbox 360 (Saboteur.xex magic XEX2, .xma audio, XeCrypt in imports) AND Windows PC devkit binaries (WildStar_*.exe are PE / MZ) shipped alongside",
+    "retail_compare_base": "C:/GOG Games/The Saboteur"
+  },
+  "totals": {
+    "bin360_files": 17148,
+    "bin360_bytes": 14267602635,
+    "retail_files": 221,
+    "retail_bytes": 7782035380,
+    "delta_bytes": 6485567255
+  },
+  "bin360_by_top_dir": [
+    {
+      "name": "France",
+      "files": 3122,
+      "bytes": 7326857842
+    },
+    {
+      "name": "Global",
+      "files": 3202,
+      "bytes": 4006447733
+    },
+    {
+      "name": "Bink",
+      "files": 13,
+      "bytes": 1406780648
+    },
+    {
+      "name": "sound",
+      "files": 3103,
+      "bytes": 783008937
+    },
+    {
+      "name": "(root)",
+      "files": 164,
+      "bytes": 414589915
+    },
+    {
+      "name": "AnimationTest",
+      "files": 39,
+      "bytes": 165257250
+    },
+    {
+      "name": "animations",
+      "files": 3586,
+      "bytes": 45370682
+    },
+    {
+      "name": "HudArt",
+      "files": 506,
+      "bytes": 45232998
+    },
+    {
+      "name": "Branches",
+      "files": 1221,
+      "bytes": 38925284
+    },
+    {
+      "name": "FaceFx",
+      "files": 9,
+      "bytes": 16894650
+    },
+    {
+      "name": "Replay",
+      "files": 25,
+      "bytes": 6829735
+    },
+    {
+      "name": "Scripts",
+      "files": 313,
+      "bytes": 4280915
+    },
+    {
+      "name": "Cinematics",
+      "files": 1497,
+      "bytes": 3072359
+    },
+    {
+      "name": "Effects",
+      "files": 215,
+      "bytes": 1862940
+    },
+    {
+      "name": "ObjectAnimations",
+      "files": 33,
+      "bytes": 1423329
+    },
+    {
+      "name": "AnimText",
+      "files": 54,
+      "bytes": 415725
+    },
+    {
+      "name": "(Obsolete)",
+      "files": 42,
+      "bytes": 325870
+    },
+    {
+      "name": "SultanOfSwing",
+      "files": 3,
+      "bytes": 25381
+    },
+    {
+      "name": "TestAnims",
+      "files": 1,
+      "bytes": 442
+    }
+  ],
+  "bin360_by_extension": [
+    {
+      "ext": ".pack",
+      "files": 4396,
+      "bytes": 11506035607
+    },
+    {
+      "ext": ".bik",
+      "files": 13,
+      "bytes": 1406780648
+    },
+    {
+      "ext": ".pck",
+      "files": 1,
+      "bytes": 359708672
+    },
+    {
+      "ext": ".xma",
+      "files": 3033,
+      "bytes": 329142272
+    },
+    {
+      "ext": ".pdb",
+      "files": 4,
+      "bytes": 176738304
+    },
+    {
+      "ext": ".strings",
+      "files": 3,
+      "bytes": 80460000
+    },
+    {
+      "ext": ".xex",
+      "files": 6,
+      "bytes": 64004096
+    },
+    {
+      "ext": ".hkx",
+      "files": 4499,
+      "bytes": 57820021
+    },
+    {
+      "ext": ".bnk",
+      "files": 65,
+      "bytes": 48985313
+    },
+    {
+      "ext": ".spk",
+      "files": 2,
+      "bytes": 45090816
+    },
+    {
+      "ext": ".dds",
+      "files": 615,
+      "bytes": 44031304
+    },
+    {
+      "ext": ".exe",
+      "files": 3,
+      "bytes": 39053824
+    },
+    {
+      "ext": ".map",
+      "files": 6,
+      "bytes": 23767136
+    },
+    {
+      "ext": ".pak",
+      "files": 4,
+      "bytes": 17057598
+    },
+    {
+      "ext": ".xdb",
+      "files": 2,
+      "bytes": 14800896
+    },
+    {
+      "ext": ".wsd",
+      "files": 582,
+      "bytes": 10600505
+    },
+    {
+      "ext": ".shaders",
+      "files": 3,
+      "bytes": 10579416
+    },
+    {
+      "ext": ".tga",
+      "files": 21,
+      "bytes": 9214273
+    },
+    {
+      "ext": ".ttf",
+      "files": 1,
+      "bytes": 6589652
+    },
+    {
+      "ext": ".lua",
+      "files": 475,
+      "bytes": 5294830
+    },
+    {
+      "ext": ".swf",
+      "files": 65,
+      "bytes": 2817298
+    },
+    {
+      "ext": ".cin",
+      "files": 154,
+      "bytes": 2203735
+    },
+    {
+      "ext": ".fx",
+      "files": 232,
+      "bytes": 1485191
+    },
+    {
+      "ext": ".xml",
+      "files": 4,
+      "bytes": 1084236
+    },
+    {
+      "ext": ".wsdlog",
+      "files": 1,
+      "bytes": 773217
+    },
+    {
+      "ext": ".txt",
+      "files": 101,
+      "bytes": 603200
+    },
+    {
+      "ext": ".packlog",
+      "files": 1399,
+      "bytes": 565631
+    },
+    {
+      "ext": ".bin",
+      "files": 5,
+      "bytes": 439148
+    },
+    {
+      "ext": ".dlg",
+      "files": 1,
+      "bytes": 379243
+    },
+    {
+      "ext": ".cnv",
+      "files": 1340,
+      "bytes": 247986
+    },
+    {
+      "ext": ".cnvpack",
+      "files": 1,
+      "bytes": 196755
+    },
+    {
+      "ext": ".shadermapping",
+      "files": 2,
+      "bytes": 154160
+    },
+    {
+      "ext": ".xpr",
+      "files": 1,
+      "bytes": 118796
+    },
+    {
+      "ext": ".paths",
+      "files": 1,
+      "bytes": 117502
+    },
+    {
+      "ext": ".trigs",
+      "files": 1,
+      "bytes": 100856
+    },
+    {
+      "ext": ".fxa",
+      "files": 2,
+      "bytes": 87776
+    },
+    {
+      "ext": ".xzp",
+      "files": 1,
+      "bytes": 83242
+    },
+    {
+      "ext": ".cinsplines",
+      "files": 3,
+      "bytes": 69564
+    },
+    {
+      "ext": ".exp",
+      "files": 2,
+      "bytes": 62384
+    },
+    {
+      "ext": ".fnt",
+      "files": 12,
+      "bytes": 60432
+    },
+    {
+      "ext": "(none)",
+      "files": 24,
+      "bytes": 36939
+    },
+    {
+      "ext": ".rnd",
+      "files": 1,
+      "bytes": 36456
+    },
+    {
+      "ext": ".gfx",
+      "files": 4,
+      "bytes": 16204
+    },
+    {
+      "ext": ".xls",
+      "files": 1,
+      "bytes": 15360
+    },
+    {
+      "ext": ".ini",
+      "files": 9,
+      "bytes": 13437
+    },
+    {
+      "ext": ".railway",
+      "files": 1,
+      "bytes": 13307
+    },
+    {
+      "ext": ".fxs",
+      "files": 2,
+      "bytes": 12216
+    },
+    {
+      "ext": ".aipts",
+      "files": 7,
+      "bytes": 11032
+    },
+    {
+      "ext": ".cxa",
+      "files": 1,
+      "bytes": 8506
+    },
+    {
+      "ext": ".airoads",
+      "files": 1,
+      "bytes": 8175
+    },
+    {
+      "ext": ".info",
+      "files": 3,
+      "bytes": 7288
+    },
+    {
+      "ext": ".fem",
+      "files": 4,
+      "bytes": 6498
+    },
+    {
+      "ext": ".rproj",
+      "files": 1,
+      "bytes": 3223
+    },
+    {
+      "ext": ".aical",
+      "files": 7,
+      "bytes": 2984
+    },
+    {
+      "ext": ".ui",
+      "files": 2,
+      "bytes": 2556
+    },
+    {
+      "ext": ".fef",
+      "files": 2,
+      "bytes": 1716
+    },
+    {
+      "ext": ".tuv",
+      "files": 1,
+      "bytes": 704
+    },
+    {
+      "ext": ".defen",
+      "files": 3,
+      "bytes": 232
+    },
+    {
+      "ext": ".str",
+      "files": 2,
+      "bytes": 128
+    },
+    {
+      "ext": ".hqpoints",
+      "files": 3,
+      "bytes": 88
+    },
+    {
+      "ext": ".water",
+      "files": 3,
+      "bytes": 24
+    },
+    {
+      "ext": ".ver",
+      "files": 1,
+      "bytes": 15
+    },
+    {
+      "ext": ".foliage",
+      "files": 3,
+      "bytes": 12
+    }
+  ],
+  "bin360_mtime_by_day": [
+    {
+      "day": "2008-04-29",
+      "files": 23
+    },
+    {
+      "day": "2008-05-22",
+      "files": 17116
+    },
+    {
+      "day": "2008-06-24",
+      "files": 1
+    },
+    {
+      "day": "2008-06-26",
+      "files": 6
+    },
+    {
+      "day": "2013-09-04",
+      "files": 2
+    }
+  ],
+  "retail_by_top_dir": [
+    {
+      "name": "France",
+      "files": 7,
+      "bytes": 2833473376
+    },
+    {
+      "name": "Sound",
+      "files": 8,
+      "bytes": 2388701287
+    },
+    {
+      "name": "Global",
+      "files": 3,
+      "bytes": 1101807616
+    },
+    {
+      "name": "Bink",
+      "files": 13,
+      "bytes": 934935240
+    },
+    {
+      "name": "(root)",
+      "files": 105,
+      "bytes": 240523913
+    },
+    {
+      "name": "DLC",
+      "files": 48,
+      "bytes": 181778453
+    },
+    {
+      "name": "FaceFX",
+      "files": 10,
+      "bytes": 92838246
+    },
+    {
+      "name": "Cinematics",
+      "files": 9,
+      "bytes": 7559653
+    },
+    {
+      "name": "Recordings",
+      "files": 9,
+      "bytes": 353732
+    },
+    {
+      "name": "AnimText",
+      "files": 6,
+      "bytes": 62720
+    },
+    {
+      "name": "G15",
+      "files": 3,
+      "bytes": 1144
+    }
+  ],
+  "retail_by_extension": [
+    {
+      "ext": ".megapack",
+      "files": 7,
+      "bytes": 3742070784
+    },
+    {
+      "ext": ".pck",
+      "files": 10,
+      "bytes": 2485579776
+    },
+    {
+      "ext": ".bik",
+      "files": 13,
+      "bytes": 934935240
+    },
+    {
+      "ext": ".pack",
+      "files": 21,
+      "bytes": 283842698
+    },
+    {
+      "ext": ".kilopack",
+      "files": 3,
+      "bytes": 173103104
+    },
+    {
+      "ext": ".pak",
+      "files": 8,
+      "bytes": 92726280
+    },
+    {
+      "ext": ".exe",
+      "files": 3,
+      "bytes": 16219744
+    },
+    {
+      "ext": ".dll",
+      "files": 4,
+      "bytes": 9740112
+    },
+    {
+      "ext": ".off",
+      "files": 1,
+      "bytes": 7077888
+    },
+    {
+      "ext": ".dlg",
+      "files": 6,
+      "bytes": 6441422
+    },
+    {
+      "ext": ".pdf",
+      "files": 1,
+      "bytes": 5545411
+    },
+    {
+      "ext": ".luap",
+      "files": 1,
+      "bytes": 5004097
+    },
+    {
+      "ext": ".materials",
+      "files": 1,
+      "bytes": 4288448
+    },
+    {
+      "ext": ".dat",
+      "files": 1,
+      "bytes": 2027272
+    },
+    {
+      "ext": "(none)",
+      "files": 1,
+      "bytes": 1997683
+    },
+    {
+      "ext": ".wav",
+      "files": 1,
+      "bytes": 1935074
+    },
+    {
+      "ext": ".cinpack",
+      "files": 1,
+      "bytes": 1293339
+    },
+    {
+      "ext": ".dds",
+      "files": 29,
+      "bytes": 1207120
+    },
+    {
+      "ext": ".hei",
+      "files": 1,
+      "bytes": 1113296
+    },
+    {
+      "ext": ".sabbak",
+      "files": 1,
+      "bytes": 1068005
+    },
+    {
+      "ext": ".cinsplines",
+      "files": 1,
+      "bytes": 587332
+    },
+    {
+      "ext": ".txt",
+      "files": 18,
+      "bytes": 523009
+    },
+    {
+      "ext": ".dynpack",
+      "files": 2,
+      "bytes": 506801
+    },
+    {
+      "ext": ".bin",
+      "files": 4,
+      "bytes": 437486
+    },
+    {
+      "ext": ".paths",
+      "files": 1,
+      "bytes": 423464
+    },
+    {
+      "ext": ".vcr",
+      "files": 9,
+      "bytes": 353732
+    },
+    {
+      "ext": ".zip",
+      "files": 1,
+      "bytes": 339985
+    },
+    {
+      "ext": ".trigs",
+      "files": 1,
+      "bytes": 256761
+    },
+    {
+      "ext": ".ico",
+      "files": 3,
+      "bytes": 241728
+    },
+    {
+      "ext": ".profile",
+      "files": 1,
+      "bytes": 159736
+    },
+    {
+      "ext": ".asi",
+      "files": 1,
+      "bytes": 139264
+    },
+    {
+      "ext": ".ttf",
+      "files": 1,
+      "bytes": 120844
+    },
+    {
+      "ext": ".fxa",
+      "files": 2,
+      "bytes": 111966
+    },
+    {
+      "ext": ".railway",
+      "files": 1,
+      "bytes": 101750
+    },
+    {
+      "ext": ".otf",
+      "files": 1,
+      "bytes": 95628
+    },
+    {
+      "ext": ".tga",
+      "files": 1,
+      "bytes": 65580
+    },
+    {
+      "ext": ".ini",
+      "files": 8,
+      "bytes": 59089
+    },
+    {
+      "ext": ".freeplay",
+      "files": 1,
+      "bytes": 51064
+    },
+    {
+      "ext": ".wsd",
+      "files": 4,
+      "bytes": 41566
+    },
+    {
+      "ext": ".cxa",
+      "files": 1,
+      "bytes": 35618
+    },
+    {
+      "ext": ".gpsgraph",
+      "files": 1,
+      "bytes": 32353
+    },
+    {
+      "ext": ".lua",
+      "files": 4,
+      "bytes": 26955
+    },
+    {
+      "ext": ".msg",
+      "files": 1,
+      "bytes": 23077
+    },
+    {
+      "ext": ".rnd",
+      "files": 1,
+      "bytes": 14608
+    },
+    {
+      "ext": ".strings",
+      "files": 1,
+      "bytes": 11805
+    },
+    {
+      "ext": ".fnt",
+      "files": 2,
+      "bytes": 10072
+    },
+    {
+      "ext": ".info",
+      "files": 3,
+      "bytes": 8136
+    },
+    {
+      "ext": ".waterflow",
+      "files": 1,
+      "bytes": 5084
+    },
+    {
+      "ext": ".log",
+      "files": 1,
+      "bytes": 4441
+    },
+    {
+      "ext": ".ambush",
+      "files": 1,
+      "bytes": 4040
+    },
+    {
+      "ext": ".tuv",
+      "files": 1,
+      "bytes": 3844
+    },
+    {
+      "ext": ".spore",
+      "files": 1,
+      "bytes": 3236
+    },
+    {
+      "ext": ".pov",
+      "files": 13,
+      "bytes": 2816
+    },
+    {
+      "ext": ".cnvpack",
+      "files": 1,
+      "bytes": 2726
+    },
+    {
+      "ext": ".waterctrl",
+      "files": 1,
+      "bytes": 2508
+    },
+    {
+      "ext": ".map",
+      "files": 2,
+      "bytes": 2378
+    },
+    {
+      "ext": ".hqpoints",
+      "files": 1,
+      "bytes": 2357
+    },
+    {
+      "ext": ".lnk",
+      "files": 1,
+      "bytes": 1639
+    },
+    {
+      "ext": ".script",
+      "files": 1,
+      "bytes": 1575
+    },
+    {
+      "ext": ".bmp",
+      "files": 3,
+      "bytes": 1144
+    },
+    {
+      "ext": ".wsdlog",
+      "files": 1,
+      "bytes": 678
+    },
+    {
+      "ext": ".defen",
+      "files": 1,
+      "bytes": 452
+    },
+    {
+      "ext": ".hashdb",
+      "files": 1,
+      "bytes": 252
+    },
+    {
+      "ext": ".rndnodes",
+      "files": 1,
+      "bytes": 8
+    }
+  ],
+  "top_dir_diff": {
+    "only_in_bin360": [
+      "(Obsolete)",
+      "AnimationTest",
+      "Branches",
+      "Effects",
+      "FaceFx",
+      "HudArt",
+      "ObjectAnimations",
+      "Replay",
+      "Scripts",
+      "SultanOfSwing",
+      "TestAnims",
+      "animations",
+      "sound"
+    ],
+    "only_in_retail": [
+      "DLC",
+      "FaceFX",
+      "G15",
+      "Recordings",
+      "Sound"
+    ],
+    "in_both": [
+      "(root)",
+      "AnimText",
+      "Bink",
+      "Cinematics",
+      "France",
+      "Global"
+    ]
+  },
+  "ext_diff": {
+    "only_in_bin360": [
+      ".aical",
+      ".aipts",
+      ".airoads",
+      ".bnk",
+      ".cin",
+      ".cnv",
+      ".exp",
+      ".fef",
+      ".fem",
+      ".foliage",
+      ".fx",
+      ".fxs",
+      ".gfx",
+      ".hkx",
+      ".packlog",
+      ".pdb",
+      ".rproj",
+      ".shadermapping",
+      ".shaders",
+      ".spk",
+      ".str",
+      ".swf",
+      ".ui",
+      ".ver",
+      ".water",
+      ".xdb",
+      ".xex",
+      ".xls",
+      ".xma",
+      ".xml",
+      ".xpr",
+      ".xzp"
+    ],
+    "only_in_retail": [
+      ".ambush",
+      ".asi",
+      ".bmp",
+      ".cinpack",
+      ".dat",
+      ".dll",
+      ".dynpack",
+      ".freeplay",
+      ".gpsgraph",
+      ".hashdb",
+      ".hei",
+      ".ico",
+      ".kilopack",
+      ".lnk",
+      ".log",
+      ".luap",
+      ".materials",
+      ".megapack",
+      ".msg",
+      ".off",
+      ".otf",
+      ".pdf",
+      ".pov",
+      ".profile",
+      ".rndnodes",
+      ".sabbak",
+      ".script",
+      ".spore",
+      ".vcr",
+      ".waterctrl",
+      ".waterflow",
+      ".wav",
+      ".zip"
+    ]
+  },
+  "notable": {
+    "xex_binaries": [
+      {
+        "path": "WildStar_d.xex",
+        "bytes": 20987904,
+        "mtime": "2008-05-22 04:09:02"
+      },
+      {
+        "path": "WildStar_p.xex",
+        "bytes": 13647872,
+        "mtime": "2008-06-26 23:24:34"
+      },
+      {
+        "path": "Saboteur.xex",
+        "bytes": 11415552,
+        "mtime": "2008-05-22 03:22:24"
+      },
+      {
+        "path": "WildStar_p-org.xex",
+        "bytes": 11350016,
+        "mtime": "2008-05-22 08:35:50"
+      },
+      {
+        "path": "ReplayLauncher-Xenon.xex",
+        "bytes": 3842048,
+        "mtime": "2008-06-26 07:17:30"
+      },
+      {
+        "path": "ReplayCore-xenon.xex",
+        "bytes": 2760704,
+        "mtime": "2008-06-26 07:16:28"
+      }
+    ],
+    "pe_binaries": [
+      {
+        "path": "WildStar_d.exe",
+        "bytes": 22340608,
+        "mtime": "2008-05-22 09:43:36"
+      },
+      {
+        "path": "WildStar_p.exe",
+        "bytes": 12113408,
+        "mtime": "2008-05-22 09:44:10"
+      },
+      {
+        "path": "Branches/WildStar-MS/Saboteur.exe",
+        "bytes": 4599808,
+        "mtime": "2008-05-22 03:50:10"
+      }
+    ],
+    "pdb_files": [
+      {
+        "path": "WildStar_d.pdb",
+        "bytes": 69929984,
+        "mtime": "2008-05-22 09:44:04"
+      },
+      {
+        "path": "Saboteur.pdb",
+        "bytes": 45026304,
+        "mtime": "2008-05-22 09:35:30"
+      },
+      {
+        "path": "WildStar_p.pdb",
+        "bytes": 44993536,
+        "mtime": "2008-05-22 09:44:28"
+      },
+      {
+        "path": "Branches/WildStar-MS/Saboteur.pdb",
+        "bytes": 16788480,
+        "mtime": "2008-05-22 09:10:02"
+      }
+    ],
+    "linker_maps_root": [
+      {
+        "path": "WildStar_d.map",
+        "bytes": 13706851,
+        "mtime": "2008-05-22 09:43:40"
+      },
+      {
+        "path": "WildStar_p.map",
+        "bytes": 8650404,
+        "mtime": "2008-05-22 09:44:14"
+      },
+      {
+        "path": "France.map",
+        "bytes": 1225692,
+        "mtime": "2008-05-22 09:23:24"
+      },
+      {
+        "path": "Global.map",
+        "bytes": 171420,
+        "mtime": "2008-05-22 09:34:08"
+      },
+      {
+        "path": "AnimationTest.map",
+        "bytes": 12368,
+        "mtime": "2008-05-22 09:08:40"
+      },
+      {
+        "path": "SultanOfSwing.map",
+        "bytes": 401,
+        "mtime": "2008-05-22 09:43:26"
+      }
+    ],
+    "packlogs_count": 1399,
+    "packlogs_bytes_total": 565631,
+    "loose_lua_count": 475,
+    "loose_wsd_count": 582,
+    "loose_cnv_count": 1340,
+    "root_txt_configs": [
+      {
+        "path": "tuner.txt",
+        "bytes": 37380,
+        "mtime": "2008-05-22 09:43:28"
+      },
+      {
+        "path": "InputTemplates_v3.txt",
+        "bytes": 3471,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "InputTemplates_v2.txt",
+        "bytes": 2836,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "InputTemplates_v6.txt",
+        "bytes": 2593,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "ModelInfo.txt",
+        "bytes": 2384,
+        "mtime": "2008-05-22 09:35:12"
+      },
+      {
+        "path": "InputTemplates_v5.txt",
+        "bytes": 2303,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "InputTemplates_v4.txt",
+        "bytes": 2084,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "InputTemplates.txt",
+        "bytes": 1910,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "LODExceptions.txt",
+        "bytes": 1106,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "hud_config.txt",
+        "bytes": 682,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "ItemValues.txt",
+        "bytes": 250,
+        "mtime": "2008-05-22 09:35:10"
+      },
+      {
+        "path": "Asserts.TXT",
+        "bytes": 190,
+        "mtime": "2013-09-04 08:36:22"
+      },
+      {
+        "path": "textures.txt",
+        "bytes": 16,
+        "mtime": "2008-05-22 09:43:26"
+      },
+      {
+        "path": "haveitperforce.txt",
+        "bytes": 0,
+        "mtime": "2008-05-22 09:34:34"
+      }
+    ]
+  },
+  "dev_indicators": {
+    "perforce_marker": "haveitperforce.txt (0-byte marker) - Perforce VCS in use",
+    "source_tree_from_asserts": "D:\\projects\\WildStar\\Code\\WildStar\\GameLayer\\ (from Asserts.TXT)",
+    "pack_cache_from_packlog": "D:\\projects\\wildstar\\art\\Cache\\PackData\\Xbox 360\\<Region>\\<pandemic-hash>.<type>",
+    "engineer_named": "Justin Truman (author of an assert in WSJoystick::atoInputType)",
+    "engine_codename": "WildStar",
+    "branch_present": "Branches/WildStar-MS (1221 files, ~37 MB, alt copy of engine data)",
+    "obsolete_present": "(Obsolete)/ (42 files, dead Areas/Missions/Global/Conversation lua bits)",
+    "test_maps": [
+      "AnimationTest (39 files, ~158 MB, full map)",
+      "SultanOfSwing (3 files, stub)",
+      "ParisTest*.aical/aipts (root .aipts+aical only)"
+    ],
+    "version_churn_configs": [
+      "InputTemplates.txt / _v2 / _v3 / _v4 / _v5 / _v6",
+      "MemoryPools.ini / _v2.ini / _v3.ini"
+    ],
+    "excel_source_asset": "ItemValues.xls (item price authoring source, alongside .txt export)"
+  }
+}

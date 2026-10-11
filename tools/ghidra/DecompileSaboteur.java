@@ -23,9 +23,6 @@ import java.util.Set;
 import java.util.TreeMap;
 
 public class DecompileSaboteur extends GhidraScript {
-    private static final String OUT_DIR =
-        "C:\\Users\\Shadow\\Desktop\\notes-on-reversing-the-sabetour\\output\\_ghidra_saboteur\\";
-
     private PrintWriter fp;
     private DecompInterface decomp;
     private ConsoleTaskMonitor mon;
@@ -62,8 +59,19 @@ public class DecompileSaboteur extends GhidraScript {
 
     @Override
     public void run() throws Exception {
-        String outPath = OUT_DIR + "saboteur_all_functions_decomp.txt";
-        new File(OUT_DIR).mkdirs();
+        // Output directory is the script's one required argument (no machine path baked in):
+        //   -postScript DecompileSaboteur.java <checkout>/output/_ghidra_saboteur
+        String[] argv = getScriptArgs();
+        if (argv.length != 1) {
+            throw new IllegalArgumentException(
+                "DecompileSaboteur.java needs exactly one script arg: the output directory "
+                + "(e.g. <checkout>/output/_ghidra_saboteur); got " + argv.length);
+        }
+        File outDir = new File(argv[0]);
+        if (!outDir.isDirectory() && !outDir.mkdirs()) {
+            throw new IllegalStateException("cannot create output directory " + outDir);
+        }
+        String outPath = new File(outDir, "saboteur_all_functions_decomp.txt").getPath();
         fp = new PrintWriter(new File(outPath), "UTF-8");
         decomp = new DecompInterface();
         decomp.openProgram(currentProgram);

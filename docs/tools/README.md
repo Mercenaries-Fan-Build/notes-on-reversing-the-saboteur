@@ -26,6 +26,7 @@ Every tool prints its usage when run with no arguments.
 | Check a mod will actually load, before launching | `sab_validator` | — |
 | Find out why a mod *didn't* load | `sab_validator`, then `sab_probe` | — |
 | Watch engine state in a running game | `sab_asi` | — |
+| Run the game on a Mac to check a mod (Wine, windowed) | Wine + `config.ini` | [run-on-macos](workflows/run-on-macos.md) |
 
 ## The tools
 

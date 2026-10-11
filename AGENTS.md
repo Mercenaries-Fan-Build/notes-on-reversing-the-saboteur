@@ -22,12 +22,18 @@ or assets. Never copy a Mercs 2 offset, struct, or hash into a Saboteur doc with
    There is **no** `output/_ghidra_saboteur/` under this repo; the old relative path here sent every
    agent looking in the wrong place. The exe is unpacked, so the decomp is authoritative for engine
    behavior. Grep it.
+   It can also be **regenerated into this repo** (`output/_ghidra_saboteur/`, gitignored) with
+   [`tools/ghidra/README.md`](tools/ghidra/README.md) — use the **GOG** exe, never the Steam one. On a
+   machine where you have done that, grep the local copy; it reproduces the same 36,935 entries.
    Two caveats worth knowing before you conclude "it isn't there": Ghidra drops some bodies as
    *unreachable blocks* (e.g. the whole `GameText.dlg` record loop in `FUN_0095f370`), and a few
    FPU-heavy functions are absent entirely (`FUN_00f22470`). When the decomp is silent, disassemble
-   `C:/GOG Games/The Saboteur/Saboteur.exe` directly — VA→file offset is `VA - 0x400E00` for `.text`.
+   `C:/GOG Games/The Saboteur/Saboteur.exe` directly — VA→file offset is `VA - 0x400E00` for `.text`
+   (and for `.rdata`, which follows it with the same delta — handy for IAT slots and string literals).
 2. **RTTI / bindings** — `data/rtti_classes_all.txt`, `data/ws_engine_classes.txt`, `data/lua_bindings.txt`.
 3. **The retail install** — `C:\GOG Games\The Saboteur` (assets, `LuaScripts.luap`, `.pck`, megapacks).
+   On a Mac it can be installed into a Wine prefix and launched to check a mod in-game — see
+   [`docs/tools/workflows/run-on-macos.md`](docs/tools/workflows/run-on-macos.md).
 4. **SaboteurToolset** (PredatorCZ) & **SabTool** — community format prior art to cross-check, not to trust blindly.
 
 ## Conventions

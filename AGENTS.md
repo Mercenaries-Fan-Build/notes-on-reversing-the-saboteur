@@ -51,6 +51,11 @@ table (e.g. destruction: Mercs 2 `_pristine`/`_ruin` nodes ↔ Saboteur `Pristin
 - **`tools/sab_formats` is the base library.** Every reader/writer of game bytes lives there (one
   copy per format; it may use `glam` for skeleton/bind maths). It holds **no probes and no CLIs** —
   tests only. Apps and tools consume it; they never carry a private parser, hash, or byte reader.
+- **The user-facing tooling lives in `tools/sab_tools`** — one crate for every command-line tool
+  (pack/unpack, texture convert, templates, mesh/skeleton export, animation, audio, Lua, maps), each
+  a thin layer over `sab_formats`. **`tools/sab_workshop` is the UI** over that tooling: presentation
+  and editing, no format code of its own. Most of this work is format juggling; the split mirrors the
+  Mercenaries 2 crates.
 - **Probes and investigations live in `tools/sab_probe`** (`src/bin/<probe>.rs`), built on
   `sab_formats`. A probe whose numbers a doc cites is named in that doc's Method section.
 - **Retire by deletion.** When a tool or module is replaced, delete it in the same pass — git keeps

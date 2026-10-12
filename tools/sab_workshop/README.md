@@ -138,8 +138,11 @@ workshop_export/CH_AL_SeanDevlin_01_FX/
 **Levels of detail.** A character clicked in the browser is assembled from its `GameTemplates`
 setup ([gametemplates.md](../../docs/formats/gametemplates.md#characters-body-setups-slots-and-lod)):
 one variation per setup slot — the first the setup lists — and, for each, the part template's
-`HighDetailModel` at LOD0 and its `LowDetailModel` at LOD1. In Blender the two arrive as sibling
-objects under one armature; hide one to see the other. Where a template names the same mesh for both
+`HighDetailModel` at LOD0 and its `LowDetailModel` at LOD1. Each level is its own glTF scene
+(`LOD0`, `LOD1`; LOD0 is the default) holding the skeleton and that level's object. Blender 5.2's
+importer makes them two collections by default — toggle one off to see the other — or, with
+**Scene as Collection** unticked in the import options, two Blender scenes, the armature shared by
+both. Where a template names the same mesh for both
 (Sean's parts), LOD1 is a copy of LOD0 — that is what the game draws. Later variations stay listed in
 the parts panel as `· alt N`. The viewport draws LOD0 only. Bundle version 2 (`bundle_version`) adds
 `lod` to `source.parts` and `submeshes`, plus `lods` and `lod_notes`.

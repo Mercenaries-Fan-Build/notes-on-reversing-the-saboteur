@@ -34,6 +34,7 @@ re-verified against the Saboteur binary/assets before you rely on it.
 | **World/map** | FFCS block index + `low_res_terrain` grid | `MAP6` descriptors + `HEI1` heightfield + tile packs | Different world model |
 | **DLC** | Xbox STFS → block injection into `vz-patch.wad` | `DLC/01` folder + `MAP6` + loose `.dynpack` (SBLA) | Folder/pack, not injection |
 | **Audio package** | PWS streams + wavebanks (IMA/PCM), sounddb | Wwise `1KCP` package → `.wem` (Wwise Vorbis) | Entirely different audio stack |
+| **Destruction states** | UCFX shard nodes `<shard>_pristine` / `_ruin` (+ `_interior`) under a SWIT orchestrator; named-state machine drives a per-segment state mask | GameTemplates damage groups → parts → mesh bones (`VO_*`), per-part `Pristine` flag; state 0/1 shows/hides the bones' drawcalls in one MESH ([`damage_and_destruction.md`](damage_and_destruction.md)) | Same idea — geometry on named nodes, state picks which draw — expressed in different containers and names. A sibling, not a copy |
 | **Save format** | `.profile` zlib blob, `u32 ProfileHash` @0x00 = CRC-32/BZIP2 over `[4:]` | (unreversed here) | Re-derive from Saboteur — though the CRC kernel above is a reasonable first hypothesis to *test* |
 
 ## DIFFERENT — new/incompatible; treat as from-scratch
@@ -51,5 +52,9 @@ re-verified against the Saboteur binary/assets before you rely on it.
 
 - **Names, hashes, compression, Lua-VM, half-floats** → reuse.
 - **Any binary layout, offset, struct, chunk tag, or Havok detail** → assume different; verify.
+- **Studio techniques and broad mechanisms** (how destruction, LOD, streaming or a container family
+  is organised) → often *siblings*: the same idea re-expressed. A Mercs 2 doc is a good map of what
+  to look for; it is never evidence of how The Saboteur does it. Find the Saboteur's own version in
+  the decomp/data, then record the pairing in the SIMILAR CONCEPT table.
 - When in doubt, the **clean Saboteur decomp is the oracle** — the exe is unpacked, so the code that
   parses/produces the format is right there to read.

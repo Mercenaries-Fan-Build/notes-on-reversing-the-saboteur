@@ -247,21 +247,79 @@ impl<'a> Cur<'a> {
     }
 }
 
+/// The directory of `global.map`, which prefixes the pack path of every global object.
+pub const GLOBAL_DIR: &str = "Global";
+
+fn insert_counts(
+    m: &mut std::collections::BTreeMap<u32, [u32; 9]>,
+    key: u32,
+    counts: [u32; 9],
+    what: &str,
+) -> Result<(), String> {
+    match m.insert(key, counts) {
+        Some(old) if old != counts => Err(format!("{what} 0x{key:08X}: counts {old:?} and {counts:?}")),
+        _ => Ok(()),
+    }
+}
+
+/// The pack path of a world streamblock, without extension (`FUN_009f5a10`): `<region>\<id>` for an id
+/// below 10, else `<region>\<first two digits of id>\<id>`. Its megapack entry's `crc` is
+/// `pandemic_hash` of the path plus `.pack`, and its `index` is `id`.
+pub fn streamblock_path(region: &str, id: u32) -> String {
+    let d = id.to_string();
+    if id < 10 {
+        format!("{region}\\{d}")
+    } else {
+        format!("{region}\\{}\\{d}", &d[..2])
+    }
+}
+
+/// The ALBS type counts of the map objects a megapack names by path, keyed by the megapack entry's
+/// `crc`: `pandemic_hash` of the object's path (`"%s\\%s"` via `FUN_006586c0`, set by the map
+/// loaders) plus the extension its pack loader appends.
+///
+/// ```text
+/// global.map dynamics    Global\<name>.dynpack         FUN_009f2a00; FUN_009f2370
+/// global.map list 2      Global\<name>1.palettepack    FUN_009f2df0 ("%s%d"); FUN_009f1520
+/// region list 2, list 3  <region>\<name>.pack          FUN_009f3bf0, FUN_009f3fa0; FUN_00658870
+/// ```
+///
+/// Two objects with one path and different counts are an error.
+pub fn pack_counts(
+    globals: &[&GlobalMap],
+    regions: &[&RegionMap],
+) -> Result<std::collections::BTreeMap<u32, [u32; 9]>, String> {
+    let mut m = std::collections::BTreeMap::new();
+    for g in globals {
+        for r in &g.dynamics {
+            let path = format!("{GLOBAL_DIR}\\{}.dynpack", r.name());
+            insert_counts(&mut m, crate::pandemic_hash(&path), r.tail.counts, &path)?;
+        }
+        for r in &g.list2 {
+            let path = format!("{GLOBAL_DIR}\\{}1.palettepack", r.name());
+            insert_counts(&mut m, crate::pandemic_hash(&path), r.tail.counts, &path)?;
+        }
+    }
+    for rm in regions {
+        let region = String::from_utf8(rm.region.clone()).map_err(|_| "region name is not UTF-8".to_string())?;
+        for r in rm.list2.iter().chain(&rm.list3) {
+            let path = format!("{region}\\{}.pack", r.name());
+            insert_counts(&mut m, crate::pandemic_hash(&path), r.tail.counts, &path)?;
+        }
+    }
+    Ok(m)
+}
+
 /// The ALBS type counts of every object in the given maps, by record hash: every record of a
-/// `global.map`, and every list record and extended tile of a region map. An object pack whose
-/// descriptor is empty takes its counts from the entry here whose hash is the megapack entry's
-/// `index`. Two entries with one hash and different counts are an error.
+/// `global.map`, and every list record and extended tile of a region map. A `.kiloPack` entry's
+/// `index` and a DLC loose pack's `pandemic_hash(file stem)` are the hash of the object whose counts
+/// its pack uses. Two entries with one hash and different counts are an error.
 pub fn object_counts(
     globals: &[&GlobalMap],
     regions: &[&RegionMap],
 ) -> Result<std::collections::BTreeMap<u32, [u32; 9]>, String> {
     let mut m = std::collections::BTreeMap::new();
-    let mut add = |hash: u32, counts: [u32; 9]| -> Result<(), String> {
-        match m.insert(hash, counts) {
-            Some(old) if old != counts => Err(format!("object 0x{hash:08X}: counts {old:?} and {counts:?}")),
-            _ => Ok(()),
-        }
-    };
+    let mut add = |hash: u32, counts: [u32; 9]| insert_counts(&mut m, hash, counts, "object");
     for g in globals {
         for r in g.list1.iter().chain(&g.list2).chain(&g.dynamics) {
             add(r.hash, r.tail.counts)?;

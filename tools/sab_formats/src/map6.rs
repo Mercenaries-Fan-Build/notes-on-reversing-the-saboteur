@@ -247,6 +247,53 @@ impl<'a> Cur<'a> {
     }
 }
 
+/// The ALBS type counts of every object in the given maps, by record hash: every record of a
+/// `global.map`, and every list record and extended tile of a region map. An object pack whose
+/// descriptor is empty takes its counts from the entry here whose hash is the megapack entry's
+/// `index`. Two entries with one hash and different counts are an error.
+pub fn object_counts(
+    globals: &[&GlobalMap],
+    regions: &[&RegionMap],
+) -> Result<std::collections::BTreeMap<u32, [u32; 9]>, String> {
+    let mut m = std::collections::BTreeMap::new();
+    let mut add = |hash: u32, counts: [u32; 9]| -> Result<(), String> {
+        match m.insert(hash, counts) {
+            Some(old) if old != counts => Err(format!("object 0x{hash:08X}: counts {old:?} and {counts:?}")),
+            _ => Ok(()),
+        }
+    };
+    for g in globals {
+        for r in g.list1.iter().chain(&g.list2).chain(&g.dynamics) {
+            add(r.hash, r.tail.counts)?;
+        }
+    }
+    for rm in regions {
+        for r in rm.list2.iter().chain(&rm.list3) {
+            add(r.hash, r.tail.counts)?;
+        }
+        for t in &rm.tiles {
+            if let Some(tail) = &t.tail {
+                add(t.hash, tail.counts)?;
+            }
+        }
+    }
+    Ok(m)
+}
+
+/// A [`Tail`] at `p`, and the offset just past it.
+pub(crate) fn parse_tail_at(buf: &[u8], p: usize) -> Result<(Tail, usize), String> {
+    let mut c = Cur { b: buf, p };
+    let t = c.tail()?;
+    Ok((t, c.p))
+}
+
+/// Append `t` in its on-disk form.
+pub(crate) fn write_tail(o: &mut Vec<u8>, t: &Tail) -> Result<(), String> {
+    check_tails(std::iter::once(t))?;
+    put_tail(o, t);
+    Ok(())
+}
+
 /// Parse `global.map` (main or DLC; both loaders read the same layout). The parse must consume `buf`
 /// exactly.
 pub fn parse_global(buf: &[u8]) -> Result<GlobalMap, String> {

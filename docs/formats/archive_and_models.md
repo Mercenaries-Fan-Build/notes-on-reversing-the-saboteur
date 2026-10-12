@@ -159,7 +159,11 @@ with `constTag == 0x1B`. ~18 known codes, e.g.:
   `DrawCall +0xe`, used only by unskinned meshes (vehicles, weapons, props) — see
   [mesh_geometry.md](mesh_geometry.md). Characters instead swap whole meshes: each body-part
   template names a `HighDetailModel` and a `LowDetailModel` (usually the `_LOD` mesh) — see
-  [gametemplates.md](gametemplates.md). Damage states remain unobserved.
+  [gametemplates.md](gametemplates.md).
+- **Damage states (2026-10-12):** a destructible is one mesh whose pieces hang off bones; GameTemplates
+  damage groups name the bones and flag the pristine ones, and the state shows/hides their drawcalls.
+  Separately-modelled `_DAM`/`_Destroyed` twins also exist for some world objects — see
+  [damage_and_destruction.md](../damage_and_destruction.md).
 
 ## Status / next
 
@@ -176,5 +180,7 @@ validating via SaboteurToolset. Both the readers **and** the writers now exist i
 | shared codecs | `tools/sab_formats` | the library the others build on (no README yet — see the module docs in `src/`) |
 | mod audit | [`sab_validator`](../../tools/sab_validator/README.md) | parses a mod the way the engine's mount path does |
 
-Remaining genuine gap in *this* area: damage-state handling is still unobserved (LOD is now
-documented above).
+Remaining genuine gap in *this* area: how world placements swap an intact mesh for its separately
+modelled `_DAM` twin (needs `France.map` placements decoded — see
+[damage_and_destruction.md](../damage_and_destruction.md) §10). LOD and in-mesh damage states are
+documented above.

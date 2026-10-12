@@ -24,6 +24,12 @@ is blob 1, immediately after blob 0**:
 
 Confirmed on Sean: blob0 `78 01 ED 7D…` 13753→36600 B; blob1 `78 01 8C BD…` 74242→142200 B.
 
+A blob whose stored size equals its inflated size is stored raw, not zlib. Every type-0 blob of an ALBS
+sub-pack ([sbla_subpack.md](sbla_subpack.md)) is exactly one MSHA record, `276 + c0 + c1` bytes, and
+both blobs of all 208,681 retail records decode to their declared sizes under that rule (2026-10-12,
+`sab_formats::mesh`, `tests/sbla_retail.rs`). 14,292 of those type-0 blobs are themselves stored at the
+ALBS level (`comp == uncomp`).
+
 ## MESH tail — in the decompressed **body**, immediately after the skeleton block
 
 Read in this order (SaboteurToolset `ProcessMesh`). Counts come from the MESH header:

@@ -73,7 +73,7 @@ mod tests {
     //! also skips cleanly when Bin360/ isn't present.
 
     use crate::clip::AnimClip;
-    use crate::pack::pandemic_hash;
+    use sab_formats::pandemic_hash;
     use crate::sources::prototype2008_anim::{Anim2008Catalog, Clip2008, ClipCodec};
 
     fn test_bin360() -> Option<std::path::PathBuf> {

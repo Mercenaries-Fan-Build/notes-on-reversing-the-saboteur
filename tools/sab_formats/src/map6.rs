@@ -290,24 +290,30 @@ pub fn pack_counts(
     regions: &[&RegionMap],
 ) -> Result<std::collections::BTreeMap<u32, [u32; 9]>, String> {
     let mut m = std::collections::BTreeMap::new();
+    for (path, counts) in pack_paths(globals, regions)? {
+        insert_counts(&mut m, crate::pandemic_hash(&path), counts, &path)?;
+    }
+    Ok(m)
+}
+
+/// Each map object's pack path (the table on [`pack_counts`]) with its ALBS type counts, in map order.
+pub fn pack_paths(globals: &[&GlobalMap], regions: &[&RegionMap]) -> Result<Vec<(String, [u32; 9])>, String> {
+    let mut v = Vec::new();
     for g in globals {
         for r in &g.dynamics {
-            let path = format!("{GLOBAL_DIR}\\{}.dynpack", r.name());
-            insert_counts(&mut m, crate::pandemic_hash(&path), r.tail.counts, &path)?;
+            v.push((format!("{GLOBAL_DIR}\\{}.dynpack", r.name()), r.tail.counts));
         }
         for r in &g.list2 {
-            let path = format!("{GLOBAL_DIR}\\{}1.palettepack", r.name());
-            insert_counts(&mut m, crate::pandemic_hash(&path), r.tail.counts, &path)?;
+            v.push((format!("{GLOBAL_DIR}\\{}1.palettepack", r.name()), r.tail.counts));
         }
     }
     for rm in regions {
         let region = String::from_utf8(rm.region.clone()).map_err(|_| "region name is not UTF-8".to_string())?;
         for r in rm.list2.iter().chain(&rm.list3) {
-            let path = format!("{region}\\{}.pack", r.name());
-            insert_counts(&mut m, crate::pandemic_hash(&path), r.tail.counts, &path)?;
+            v.push((format!("{region}\\{}.pack", r.name()), r.tail.counts));
         }
     }
-    Ok(m)
+    Ok(v)
 }
 
 /// The ALBS type counts of every object in the given maps, by record hash: every record of a

@@ -22,6 +22,7 @@ tbl_end Blob[N]                  back to back in record order; each record advan
 Record (24 bytes)
   +0x00  u32  hash      pandemic_hash of the sub-asset name; 0 on every type-8 record
   +0x04  u32  offset    relative to tbl_end; = running Σcomp of the preceding records EXCLUDING type 8
+                        (records with comp == 0 own no bytes; their offset follows no rule found)
   +0x08  u32  comp      stored size (the loader's read length)
   +0x0C  u32  uncomp    inflated size
   +0x10  u32  ?         not established
@@ -52,14 +53,21 @@ records first, then 7, 0, 2, 8, 4, 3, 1, 5.
 
 **The descriptor block** (`FUN_0065a470`), the same serialisation as a `global.map` record tail:
 
-1. If `obj.flags & 0x1C00 == 0x400` (`0x65a49a`): a heightfield — `"HEI1"`, `u32 w`, `u32 h`, two
-   `f32`, then `w·h` bytes.
+1. If `obj.flags & 0x1C00 == 0x400` (`obj+0x108`, `0x65a49a`): a heightfield — the tag `'HEI1'` as
+   a little-endian u32 (bytes `"1IEH"`; the engine reads and discards it), `u32 w`, `u32 h`, two `f32`,
+   then `w·h` bytes.
 2. `FUN_00658aad`: two lists, each `u32 n` + `n × 8` bytes.
 3. `FUN_00659f20`: `u32` + the nine `u32` counts (0x24 bytes).
 4. `FUN_00659f50`: `u32 n` + `4n`, `u32 m` + `4m`, `u32 L` + `L × (u32 id, u32 k, k × u32)`.
 
 **Telling the variants apart** — `X == 0`: an object pack (counts in a `.map`). `X == 0x3C`: a
-streamblock with an empty descriptor. `X ≥ 0xB4` with `"HEI1"` at `+8`: a terrain cell.
+streamblock with an empty descriptor. `X ≥ 0xB4` with the `'HEI1'` tag (bytes `"1IEH"`) at `+8`: a
+terrain cell. Every terrain cell in retail carries the tag; `sab_formats::sbla` selects the
+heightfield by it and requires the descriptor to consume exactly `X` bytes.
+
+**Which map object.** For an object pack the counts are those of the map object whose hash is the
+megapack entry's `index` — any record of `global.map`, or any list record or extended tile of a region
+map (`sab_formats::map6::object_counts`). For a DLC loose pack the hash is `pandemic_hash(file stem)`.
 
 ## Retail survey
 
@@ -70,9 +78,14 @@ streamblock with an empty descriptor. `X ≥ 0xB4` with `"HEI1"` at `+8`: a terr
 | `X ≥ 0xB4` terrain cells (all of Mega1 6,727 and Mega2 1,004; 12 elsewhere) | 7,743 | exact to EOF |
 | `X == 0x3C` | 188 | exact to EOF |
 | `X == 0`, counts from `global.map` (1,411 records) | 1,082 | exact to EOF |
-| `X == 0`, counts in `France.map` (not yet parsed) | 187 | not checked |
+| `X == 0`, counts from `France.map` / the DLC maps | 148 | exact to EOF |
+| `X == 0`, no map object with the entry's `index` (`France/Mega0.megapack` #10–12, 21–23, 28–31, 41–46, 61–72, 86–96; `index` 0x66–0x19C) | 39 | not checked |
 
-**9,013 / 9,013 packs with known counts end exactly at EOF; the `offset` rule holds in all of them.**
+**9,171 / 9,171 packs with known counts end exactly at EOF and rebuild byte for byte** (2026-10-12,
+`sab_formats` `tests/sbla_retail.rs`). The `offset` rule holds for every one of the 459,205 records
+with `comp != 0`; the 19 records with `comp == 0` (all type 1, hash 0) store other values. Where the 39
+unkeyed packs get their counts is open: no `global.map` / `France.map` / DLC map object has their
+`index`, `pandemic_hash` of its decimal text, or a tile at that ordinal.
 
 ## Correction (2026-10-12)
 
@@ -83,8 +96,8 @@ optional footers. For `X == 0` packs that "header" **is record 0** (`packNameHas
 998 packs. It fails on packs with one record ("empty directory", 74) or none (34), on `comp == 0` slots
 (ranges 24 bytes early), and on every terrain cell (`X` read as an "unknown flags variant": 7,743). The
 "57 packs with a genuine small footer" were misparses: with known counts the engine finds no trailing
-bytes. `0x44` was right for `X == 0x3C` only because `0x44 = 8 + 0x3C`. `sab_formats::sbla` and
-`tools/sab_sbla` implement the old reading and are being replaced.
+bytes. `0x44` was right for `X == 0x3C` only because `0x44 = 8 + 0x3C`. `sab_formats::sbla` now
+implements the layout above (read and write); `tools/sab_sbla` still implements the old reading.
 
 ## Tooling — `tools/sab_sbla` (std-only; old reading — being replaced)
 

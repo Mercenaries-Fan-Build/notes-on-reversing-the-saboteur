@@ -146,6 +146,40 @@ A modder edits a definition by locating its template (by name) and rewriting the
 
 ---
 
+## Characters: body setups, slots, and LOD
+
+A character is an `FxHumanBodySetup`. Its pairs are a **stream** that
+`WSFxHumanBodySetupBlueprint::SetProperty` (`0x515c40`, GOG exe; objdump — Ghidra did not recover
+it) replays in order:
+
+| key | name | effect |
+|---|---|---|
+| `0x79691A2F` / `0xDB9C23DC` / `0x9E288655` / `0xFC20CB8A` / `0x1E233FA7` / `0x37A9525D` | `UpperBody` / `LowerBody` / `GearA` / `GearB` / `GearC` / *(unnamed)* | open slot 0–5 with this many variations |
+| `0x922CC098` | `FxHumanBodyPartVariation` | start the next variation in the current slot |
+| `0xA1757F0A` | `BodyPart` | the variation's `FxHumanBodyPart` template |
+| `0xD0541403` | `BodyPartProbability` | the variation's weight (float) |
+| `0x44C27FCB` | `Head` | head variation count |
+| `0xC57D2B43` | `FxHumanHeadVariation` | start the next head variation |
+| `0x622DD842` | `Face` | the variation's `FxHumanHead` template |
+| `0xD594DB5B` | `FaceProbability` | the head variation's weight (float) |
+
+All 293 retail setups replay with no out-of-order entry. A slot's variations are **alternatives**:
+every retail weight is 1.0, and the lists hold things no body wears together — `FBS_CV_Elderly_F`'s
+UpperBody is a trench coat, student top, sweater or flower dress; its GearB is one of four scarves
+or `FBP_A_CF_NONE` (`CH_CM_None_GR`). So one figure is one variation per slot. (INFERRED from that
+structure and content; the spawn-time draw itself was not traced.)
+
+Each `FxHumanBodyPart` / `FxHumanHead` then names its meshes by level of detail —
+`WSFxHumanBodyPartBlueprint::SetProperty` (`0x514bd0`) stores `HighDetailModel 0x62404569`,
+`LowDetailModel 0xD9725C55` and `CombinedLODModel 0xCBA8D62C`, and its resolve step (`0x5192f0`)
+looks each up as an asset. Retail: `LowDetailModel` is the High mesh's `_LOD` twin for 456 parts and
+the same mesh as `HighDetailModel` for 106 (Sean's parts, for one); `CombinedLODModel` is almost
+always 0. A few `LowDetailModel`s name a `_LOD` mesh that is not shipped (e.g.
+`CH_NZ_Helmet_WM_GR_LOD`). `sab_workshop` assembles characters exactly this way —
+[`assets.rs`](../../tools/sab_workshop/src/assets.rs).
+
+---
+
 ## Texture / icon references (RE-2 — how a template names a texture)
 
 A pair whose 4-byte `data` is a `pandemic_hash` can reference a **texture**: the value is
@@ -170,8 +204,8 @@ Reversed texture-carrying properties (from the 10 761-template main DB):
 |---|---|---|---|---|
 | `0xF011157A` | **`Texture`** | 332 | 182 (Foliage/LightHalo/Decal) | generic texture ref; values in WSTX (world) + Palettes0 (shared) |
 | `0x7172B7AE` | *DecalTexture?* | 39 | 39/39 (WSTX) | only on `type=Decal`; not yet name-reversed |
-| `0x62404569` | *object diffuse?* | 889 | 705 (Dynamic0) | object material pair with ↓; not yet name-reversed |
-| `0xD9725C55` | *object normal?* | 889 | 689 (Dynamic0) | object material pair with ↑; not yet name-reversed |
+| `0x62404569` | **`HighDetailModel`** | 889 | 705 (Dynamic0) | a MESH name-hash, not a texture — see [Characters](#characters-body-setups-slots-and-lod) |
+| `0xD9725C55` | **`LowDetailModel`** | 889 | 689 (Dynamic0) | a MESH name-hash, not a texture — see [Characters](#characters-body-setups-slots-and-lod) |
 | `0xEE7D0BA3` / `0x1DCCDB2F` | *?* | 199 | 129 / 127 (Dynamic0) | second object-texture pair |
 
 Also reversed (non-texture) from the histogram: `Type 0x28E10525`, `LOD 0xA5FBBC36`,

@@ -27,3 +27,7 @@ required-features = ["retail"]
 [[test]]
 name = "archive_retail"
 required-features = ["retail"]
+
+[[test]]
+name = "sbla_retail"
+required-features = ["retail"]

@@ -24,7 +24,7 @@ library), three incompatible ALBS readings, two `global.map` readings. Most tool
 | 0 | `game_paths` (`.sab-local.toml`, folder rules), `retail` feature | **done** (`c00b4a4`…`654041d`) |
 | 1 | settle the facts the copies disagree on, from the engine | **done** — [`dtex_texture.md`](../formats/dtex_texture.md), [`sbla_subpack.md`](../formats/sbla_subpack.md), [`map6.md`](../formats/map6.md) |
 | 2 | golden outputs of every tool, before anything moves | **done** — see below |
-| 3 | shared primitives: one hash, one byte-reader set, one zlib helper | next |
+| 3 | shared primitives: one hash, one byte-reader set, one zlib helper | **done** — `sab_formats::{hash, bytes, zlib}`; the hash is the engine's own (sign-extends bytes ≥ 0x80, unlike `mercs2_formats`); private hash copies gone from `sab_workshop` and `sab_probe`; goldens re-run (`s3verify`) identical apart from the known non-deterministic rows and the new/removed library tests. Copies in tools due for deletion go with those tools; module-private byte readers go as each module is rewritten (stages 4–5; `ap0l` keeps the `mercs2_formats` readers until stage 5) |
 | 4 | archive layer: megapack read+write, ALBS (engine layout) read+write, MSHA, loosefiles, global.map/France.map | |
 | 5 | assets: MESH (body, skeleton, vertex formats, read+write), DTEX (any D3DFORMAT, BC codecs, DDS), WSAO, `.luap`, ANIM block, Havok (one packfile walker, one spline decoder), Wwise carving + decode (`ww2ogg` + `lewton`, approved 2026-10-12 — replaces vgmstream; [audio_1kcp.md](../formats/audio_1kcp.md)) | |
 | 6 | 2008 prototype formats out of `sab_workshop/src/sources/` | |

@@ -37,6 +37,11 @@ pub struct Prim {
     /// Rigid-attachment bone for UNSKINNED geometry (hats/props) — `DrawCall.parentBone`. Only
     /// present in SMSH v2; a v1 file reads back 0 and its accessories cannot be placed.
     pub parent_bone: u16,
+    /// Which level of detail this range belongs to. `0` is what the engine draws up close. A
+    /// character's `LowDetailModel` parts are assembled in at `1` (see `assets::Asset::assembly`);
+    /// a mesh's own geometry is `0` (formats with no LOD field carry only their drawn geometry, and
+    /// `meshload` refuses a retail drawcall at any other in-mesh level).
+    pub lod: u8,
 }
 
 /// Decoded SMSH geometry.
@@ -58,59 +63,117 @@ pub struct SubMesh {
     pub index_start: u32,
     pub index_count: u32,
     pub materials: Vec<u32>,
+    /// The level of detail of every prim in this range (`Prim::lod`). The viewer draws level 0;
+    /// the bundle writes one mesh object per level.
+    pub lod: u8,
 }
 
 /// Reduce the (possibly overlapping) per-drawcall `prims` to a clean cover of the index buffer.
 ///
 /// `sab_mesh` emits one prim per drawcall, so a mesh part shows up as a coarse "whole" range plus its
-/// split children, and several drawcalls (materials) can target the same range (LOD / damage passes).
-/// We keep only **leaf** ranges — those that don't strictly contain another distinct range — and
-/// collapse identical ranges into one `SubMesh` carrying every candidate material. If the leaves do
-/// not tile `[0, total_indices)` exactly (unexpected overlap/gap), we fall back to a single
-/// whole-buffer submesh so the mesh still renders (untextured) rather than double-drawing geometry.
+/// split children, and several drawcalls (materials) can target the same range (render passes). We
+/// keep only **leaf** ranges — those that don't strictly contain another distinct range — and
+/// collapse identical ranges into one `SubMesh` carrying every candidate material.
+///
+/// This is done **per level of detail**: a level's ranges never contain or merge with another
+/// level's, so LOD 1 can never be folded into (or stacked onto) LOD 0. Each level must occupy one
+/// contiguous span — `meshload::assemble` lays parts out level by level — and the spans must tile
+/// `[0, total_indices)`. Within a level whose leaves do not tile its span (unexpected overlap/gap),
+/// that level falls back to one whole-span submesh so it still renders (untextured) rather than
+/// double-drawing; if the levels themselves do not tile the buffer, each level becomes one
+/// untextured submesh over its own run of the buffer, so levels are never merged.
 pub fn submesh_cover(prims: &[Prim], total_indices: u32) -> Vec<SubMesh> {
-    let whole = || vec![SubMesh { index_start: 0, index_count: total_indices, materials: Vec::new() }];
+    let whole = || {
+        vec![SubMesh { index_start: 0, index_count: total_indices, materials: Vec::new(), lod: 0 }]
+    };
     if prims.is_empty() {
         return whole();
     }
-    // Distinct ranges, first-seen order, accumulating candidate materials per range.
-    let mut ranges: Vec<(u32, u32, Vec<u32>)> = Vec::new(); // (start, count, materials)
-    for p in prims {
-        if p.index_count == 0 {
-            continue;
-        }
-        match ranges.iter_mut().find(|(s, c, _)| *s == p.index_start && *c == p.index_count) {
-            Some((_, _, mats)) => {
-                if !mats.contains(&p.material_hash) {
-                    mats.push(p.material_hash);
+    let mut levels: Vec<u8> = prims.iter().filter(|p| p.index_count > 0).map(|p| p.lod).collect();
+    levels.sort_unstable();
+    levels.dedup();
+    let mut out: Vec<SubMesh> = Vec::new();
+    for lod in levels {
+        // Distinct ranges of this level, first-seen order, accumulating candidate materials.
+        let mut ranges: Vec<(u32, u32, Vec<u32>)> = Vec::new(); // (start, count, materials)
+        for p in prims.iter().filter(|p| p.lod == lod && p.index_count > 0) {
+            match ranges.iter_mut().find(|(s, c, _)| *s == p.index_start && *c == p.index_count) {
+                Some((_, _, mats)) => {
+                    if !mats.contains(&p.material_hash) {
+                        mats.push(p.material_hash);
+                    }
                 }
+                None => ranges.push((p.index_start, p.index_count, vec![p.material_hash])),
             }
-            None => ranges.push((p.index_start, p.index_count, vec![p.material_hash])),
+        }
+        // A leaf strictly contains no other distinct range.
+        let contains = |a: &(u32, u32, Vec<u32>), b: &(u32, u32, Vec<u32>)| {
+            let (ae, be) = (a.0 + a.1, b.0 + b.1);
+            a.0 <= b.0 && ae >= be && (a.0 != b.0 || a.1 != b.1)
+        };
+        let mut leaves: Vec<SubMesh> = ranges
+            .iter()
+            .filter(|r| !ranges.iter().any(|o| contains(r, o)))
+            .map(|(s, c, m)| SubMesh { index_start: *s, index_count: *c, materials: m.clone(), lod })
+            .collect();
+        leaves.sort_by_key(|s| s.index_start);
+        let span_start = ranges.iter().map(|r| r.0).min().unwrap_or(0);
+        let span_end = ranges.iter().map(|r| r.0 + r.1).max().unwrap_or(0);
+        // Verify the leaves tile this level's span exactly.
+        let mut pos = span_start;
+        let tiles = leaves.iter().all(|s| {
+            let ok = s.index_start == pos;
+            pos = s.index_start + s.index_count;
+            ok
+        }) && pos == span_end;
+        if tiles && !leaves.is_empty() {
+            out.extend(leaves);
+        } else {
+            out.push(SubMesh {
+                index_start: span_start,
+                index_count: span_end - span_start,
+                materials: Vec::new(),
+                lod,
+            });
         }
     }
-    // A leaf strictly contains no other distinct range.
-    let contains = |a: &(u32, u32, Vec<u32>), b: &(u32, u32, Vec<u32>)| {
-        let (ae, be) = (a.0 + a.1, b.0 + b.1);
-        a.0 <= b.0 && ae >= be && (a.0 != b.0 || a.1 != b.1)
-    };
-    let mut leaves: Vec<SubMesh> = ranges
-        .iter()
-        .filter(|r| !ranges.iter().any(|o| contains(r, o)))
-        .map(|(s, c, m)| SubMesh { index_start: *s, index_count: *c, materials: m.clone() })
-        .collect();
-    leaves.sort_by_key(|s| s.index_start);
-    // Verify the leaves tile [0, total) exactly.
+    // The levels themselves must tile the buffer: no gap, no overlap between levels.
+    out.sort_by_key(|s| s.index_start);
     let mut pos = 0u32;
-    let tiles = leaves.iter().all(|s| {
+    let tiles = out.iter().all(|s| {
         let ok = s.index_start == pos;
         pos = s.index_start + s.index_count;
         ok
     }) && pos == total_indices;
-    if tiles && !leaves.is_empty() {
-        leaves
-    } else {
-        whole()
+    if tiles {
+        return out;
     }
+    // Not tiled: one untextured submesh per level, each level running from its first index up to
+    // the next level's first index (the first from 0, the last to the end). Levels are laid out in
+    // order, so this covers the buffer once; a single whole-buffer submesh would stack them.
+    let mut starts: Vec<(u32, u8)> = Vec::new();
+    for s in &out {
+        match starts.iter_mut().find(|(_, l)| *l == s.lod) {
+            Some((st, _)) => *st = (*st).min(s.index_start),
+            None => starts.push((s.index_start, s.lod)),
+        }
+    }
+    starts.sort_unstable();
+    if starts.len() <= 1 {
+        return whole();
+    }
+    starts[0].0 = 0;
+    (0..starts.len())
+        .map(|k| {
+            let end = starts.get(k + 1).map(|n| n.0).unwrap_or(total_indices);
+            SubMesh {
+                index_start: starts[k].0,
+                index_count: end - starts[k].0,
+                materials: Vec::new(),
+                lod: starts[k].1,
+            }
+        })
+        .collect()
 }
 
 /// Rigidly bind UNSKINNED geometry to its prim's `parent_bone`.
@@ -198,6 +261,8 @@ pub fn read_smsh(b: &[u8]) -> Result<Smsh, String> {
             material_hash: rd_u32(o + 8),
             flags: rd_u32(o + 12),
             parent_bone: if version >= 2 { rd_u16(o + 16) } else { 0 },
+            // SMSH has no LOD field: a file holds one mesh's drawn geometry.
+            lod: 0,
         });
     }
     // NOTE: rigid attachments need the skeleton (bind world), so callers must run

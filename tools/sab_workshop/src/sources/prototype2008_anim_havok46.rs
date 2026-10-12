@@ -1043,9 +1043,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn test_bin360() -> Option<PathBuf> {
-        let root = PathBuf::from(
-            "c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360",
-        );
+        let root = crate::testenv::prototype2008_bin360()?;
         if root.join("Animations.pack").is_file() {
             Some(root)
         } else {

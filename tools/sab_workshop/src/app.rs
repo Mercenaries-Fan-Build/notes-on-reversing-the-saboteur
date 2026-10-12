@@ -412,7 +412,7 @@ pub fn run(mut cfg: Config) {
     // Background texture resolve for a clicked model: a monotonic request id (stale results from a
     // superseded click are discarded) and the result channel.
     let mut model_req: u64 = 0;
-    let (mtex_tx, mtex_rx) = std::sync::mpsc::channel::<ModelTex>();
+    let (mtex_tx, mtex_rx) = std::sync::mpsc::channel::<(u64, Result<ModelTex, String>)>();
     // The boot model gets the SAME engine-faithful texture resolve a click does — it is the same kind
     // of model, assembled the same way — so kick it off now that the submesh cover exists.
     if from_pack {
@@ -706,11 +706,26 @@ pub fn run(mut cfg: Config) {
                                 palettes = pal;
                             }
                             BgMsg::AnimPack(p) => pack = p,
+                            BgMsg::Error(e) => load_status = Some((e, true)),
                         }
                     }
                     // Apply a model's textures once the worker resolves them (newest request wins).
-                    while let Ok(mt) = mtex_rx.try_recv() {
-                        if mt.req == model_req {
+                    while let Ok((req, res)) = mtex_rx.try_recv() {
+                        if req != model_req {
+                            continue; // a superseded click's result
+                        }
+                        let mt = match res {
+                            Ok(mt) => mt,
+                            Err(e) => {
+                                // The model stays untextured — say why, and do not let a deferred
+                                // "load & export" write a bundle without its bindings.
+                                load_status = Some((format!("textures for {model_name}: {e}"), true));
+                                tex_pending = false;
+                                export_when_ready = false;
+                                continue;
+                            }
+                        };
+                        {
                             assets = mt.assets;
                             submesh_tex = mt.submesh_tex;
                             submesh_prov = mt.submesh_prov;
@@ -1228,6 +1243,8 @@ enum BgMsg {
     Packs { megapack: Option<pack::Megapack>, palettes: Option<pack::Megapack> },
     /// Animations.pack (187 MB) — needed only to PLAY a clip, so it is loaded last.
     AnimPack(Option<PackData>),
+    /// A stage failed in a way the user must see (surfaced in the status bar as an error).
+    Error(String),
 }
 
 /// Resolve a pack model's textures on a WORKER, so neither startup nor a click ever freezes the UI
@@ -1242,7 +1259,7 @@ fn spawn_tex_resolve(
     part_ranges: &[(String, u32, u32)],
     submeshes: &[SubMesh],
     req: u64,
-    tx: std::sync::mpsc::Sender<ModelTex>,
+    tx: std::sync::mpsc::Sender<(u64, Result<ModelTex, String>)>,
 ) {
     // Every part, with the slice of the index buffer it owns.
     let pinfo: Vec<(String, usize, u32, u32)> = part_ranges
@@ -1258,16 +1275,16 @@ fn spawn_tex_resolve(
     let mats: Vec<Option<u32>> = submeshes.iter().map(|s| s.materials.first().copied()).collect();
     let cfgw = cfg.clone();
     std::thread::spawn(move || {
-        if let Some(mt) = resolve_model_textures(cfgw, pinfo, starts, mats, req) {
-            let _ = tx.send(mt);
-        }
+        // Tagged with `req` even on failure, so the main thread can tell a current error from a
+        // stale one and report it instead of silently leaving the model untextured.
+        let _ = tx.send((req, resolve_model_textures(cfgw, pinfo, starts, mats)));
     });
 }
 
-/// Textures resolved (on a worker) for a model the user clicked in the browser. `req` tags the click
-/// so a stale result from a superseded click is discarded on the main thread.
+/// Textures resolved (on a worker) for a model the user clicked in the browser. The click's request
+/// tag travels beside it on the channel (`spawn_tex_resolve`), so a failure is tagged too and a stale
+/// result from a superseded click is discarded on the main thread.
 struct ModelTex {
-    req: u64,
     assets: Vec<resolve::TexAsset>,
     submesh_tex: Vec<resolve::SubmeshBinding>,
     submesh_prov: Vec<resolve::Prov>,
@@ -1322,18 +1339,17 @@ fn spawn_bundle_export(job: bundle::Job) -> Exporter {
 /// Resolve + BC-decode a clicked model's textures OFF the main thread. Reopens the megapacks (mmap is
 /// cheap) and binds each submesh the engine's way — `materials[0]` → WSMA record → WSTX slot 0
 /// (colour) → DTEX-by-name-hash — via `France.materials`. The name-suffix heuristic is kept only as a
-/// fallback for when WSAO can't answer (table missing, or a submesh with no material). Returns `None`
-/// if the pack can't be opened.
+/// fallback for when WSAO can't answer (table missing, or a submesh with no material). An error when
+/// the pack can't be opened or a sub-pack can't be read — never a silently texture-less model.
 fn resolve_model_textures(
     cfg: Config,
     parts: Vec<(String, usize, u32, u32)>, // (part name, file_off, index_start, index_count)
     submesh_starts: Vec<u32>,              // each submesh's index_start, to attribute it to a part
     submesh_mats: Vec<Option<u32>>,        // materials[0] per submesh — the WSAO material hash
-    req: u64,
-) -> Option<ModelTex> {
+) -> Result<ModelTex, String> {
     use std::collections::{HashMap, HashSet};
 
-    let mp = pack::Megapack::open(&cfg.megapack).ok()?;
+    let mp = pack::Megapack::open(&cfg.megapack)?;
     let palettes = pack::Megapack::open(&cfg.palettes).ok();
     let mut packs: Vec<&pack::Megapack> = vec![&mp];
     if let Some(p) = &palettes {
@@ -1398,7 +1414,7 @@ fn resolve_model_textures(
             let own_ref: Vec<&[u8]> = own.iter().map(|v| v.as_slice()).collect();
             resolve::take_hashes_from_slices(&own_ref, &mut needed, &mut found);
             if !needed.is_empty() {
-                resolve::take_hashes_from_packs(&packs, &mut needed, &mut found);
+                resolve::take_hashes_from_packs(&packs, &mut needed, &mut found)?;
             }
         }
 
@@ -1441,7 +1457,7 @@ fn resolve_model_textures(
             }
             let bundle =
                 mp.entry_containing(*file_off).map(|e| mp.slice(&e).to_vec()).unwrap_or_default();
-            let pool = resolve::texture_pool_for(&packs, &resolve::outfit_token(name), &bundle);
+            let pool = resolve::texture_pool_for(&packs, &resolve::outfit_token(name), &bundle)?;
             if pool.is_empty() {
                 continue;
             }
@@ -1468,7 +1484,7 @@ fn resolve_model_textures(
             }
         }
     }
-    Some(ModelTex { req, assets, submesh_tex, submesh_prov, decoded })
+    Ok(ModelTex { assets, submesh_tex, submesh_prov, decoded })
 }
 
 /// The clip catalog for a rig of `rig_bones` bones: the game's `Animations.pack`, or the generated
@@ -1543,7 +1559,14 @@ fn background_load(
     let mut decoded: Vec<(usize, usize, crate::dtex::CpuTexture)> = Vec::new();
     let mesh_path = cfg.mesh.clone().unwrap_or_default();
     if let (true, Some(mp)) = (legacy_textures, &megapack) {
-        let a = resolve::textures_in(mp, &cfg.char_token);
+        let a = match resolve::textures_in(mp, &cfg.char_token) {
+            Ok(a) => a,
+            Err(e) => {
+                // Shown in the status bar; the model stays untextured rather than silently so.
+                let _ = tx.send(BgMsg::Error(format!("textures for {}: {e}", cfg.char_token)));
+                Vec::new()
+            }
+        };
         (submesh_tex, submesh_prov) = resolve::load_sidecar(&mesh_path, n, &a).unwrap_or_else(|| {
             let assign = resolve::autoseed(&mesh_path, &submeshes, &a);
             let binding: Vec<resolve::SubmeshBinding> = assign
@@ -1610,6 +1633,7 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
 
     let filt = filter.to_ascii_lowercase();
     let (mut n_assets, mut tot_sub, mut tot_bound, mut tot_wsao) = (0usize, 0usize, 0usize, 0usize);
+    let mut n_failed = 0usize;
     for a in &assets {
         if !filt.is_empty() && !a.name.to_ascii_lowercase().contains(&filt) {
             continue;
@@ -1636,8 +1660,13 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
             .collect();
         let starts: Vec<u32> = submeshes.iter().map(|s| s.index_start).collect();
         let mats: Vec<Option<u32>> = submeshes.iter().map(|s| s.materials.first().copied()).collect();
-        let Some(mt) = resolve_model_textures(cfg.clone(), pinfo, starts, mats.clone(), 0) else {
-            continue;
+        let mt = match resolve_model_textures(cfg.clone(), pinfo, starts, mats.clone()) {
+            Ok(mt) => mt,
+            Err(e) => {
+                eprintln!("texcheck: {}: texture resolve failed: {e}", a.name);
+                n_failed += 1;
+                continue;
+            }
         };
 
         n_assets += 1;
@@ -1684,10 +1713,10 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
         }
     }
     println!(
-        "\ntexcheck '{filter}': {n_assets} assets, {tot_bound}/{tot_sub} submeshes bound ({tot_wsao} via WSAO, {} via heuristic)",
+        "\ntexcheck '{filter}': {n_assets} assets, {tot_bound}/{tot_sub} submeshes bound ({tot_wsao} via WSAO, {} via heuristic); {n_failed} texture resolve(s) FAILED",
         tot_bound - tot_wsao
     );
-    0
+    if n_failed > 0 { 1 } else { 0 }
 }
 
 /// Headless self-test: load assets, decode the N-th playable clip, run skinning over a few

@@ -66,6 +66,11 @@ the release job discovers crates with a `tools/sab_*` glob, which `saboteur_audi
 it is excluded even though it is not on the workflow's explicit skip list)*. Build those from source:
 `cargo build --release --manifest-path tools/<crate>/Cargo.toml`.
 
+## In progress
+
+[`format_consolidation.md`](format_consolidation.md) — moving every format reader/writer into
+`sab_formats`; stages, golden outputs, and what is expected to change.
+
 ## Ground rules
 
 1. **Never overwrite a base archive.** Every mod here ships as a `patch*.megapack` override, which

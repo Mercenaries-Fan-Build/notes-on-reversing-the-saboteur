@@ -14,6 +14,12 @@ Before stating that a Mercs 2 fact applies here, check [`docs/lineage_and_diverg
 If it isn't in the "shared" column, treat it as **unverified** and confirm against the Saboteur binary
 or assets. Never copy a Mercs 2 offset, struct, or hash into a Saboteur doc without re-deriving it.
 
+That rule is about *facts*, not *ideas*. Broader container families and studio techniques (how
+destruction, LOD or streaming is organised) are often **siblings** — the same concept re-expressed in
+different code and data. The Mercs 2 docs are a good map of what to look for; find the Saboteur's own
+version in the decomp/data, prove it there, and record the pairing in the lineage doc's SIMILAR CONCEPT
+table (e.g. destruction: Mercs 2 `_pristine`/`_ruin` nodes ↔ Saboteur `Pristine` damage parts).
+
 ## Ground truth, in priority order
 
 1. **The clean decomp** — ⚠️ **it lives in the SIBLING repo, not this one:**
@@ -35,6 +41,9 @@ or assets. Never copy a Mercs 2 offset, struct, or hash into a Saboteur doc with
    On a Mac it can be installed into a Wine prefix and launched to check a mod in-game — see
    [`docs/tools/workflows/run-on-macos.md`](docs/tools/workflows/run-on-macos.md).
 4. **SaboteurToolset** (PredatorCZ) & **SabTool** — community format prior art to cross-check, not to trust blindly.
+   Community tools live in `game-files/community-tools/` (SabTool's `Hashes.txt` is a large hash→name
+   dictionary — verify any name with `pandemic_hash` before using it); notes shared with us by community
+   members are in `game-files/community-research/`. Both are gitignored local copies.
 
 ## Conventions
 
@@ -46,6 +55,11 @@ or assets. Never copy a Mercs 2 offset, struct, or hash into a Saboteur doc with
   to regenerate them, plus small reference dumps.
 - Every format claim should cite its evidence: a decomp function VA, a byte offset in a named file, or
   a cross-reference to SaboteurToolset source.
+- **Write it up as you go.** When a research pass establishes how a feature works, document it in
+  `docs/` before digging further — grade each claim (PROVEN / INFERRED / SPECULATIVE), give a method to
+  regenerate it, and list the unknowns. Cross-link the docs it answers or extends. The Mercs 2 repo's
+  `docs/reverse_engineer/*_code_map.md` are the model for depth; [`docs/damage_and_destruction.md`](docs/damage_and_destruction.md)
+  is an example here.
 
 ## What is deliberately NOT carried over from the Mercs 2 repo
 

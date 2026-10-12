@@ -1159,10 +1159,7 @@ mod tests {
     // ── real-corpus checks — skipped cleanly when the prototype isn't extracted ─────────
 
     fn bin360_root() -> Option<std::path::PathBuf> {
-        let p = std::path::PathBuf::from(
-            "c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files",
-        );
-        if p.join("Bin360").is_dir() { Some(p) } else { None }
+        crate::testenv::prototype2008_root()
     }
 
     /// The prototype's five Sean parts must all parse cleanly, decode nonzero geometry,

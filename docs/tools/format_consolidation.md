@@ -95,9 +95,10 @@ chunks with `flag != 0` as stored (all are valid LuaQ).
 * `sab_pack`/`sab_dtex` per-entry loops over Mega1 (covered by list/scan instead).
 * Prototype formats in the single-format tools (they reject `MAP7`, `BLU2`, `AP04` — rejections captured).
 
-## Open decision
+## Where the command lines go (decided 2026-10-12)
 
-Where the **command lines** of the user-facing tools live once their format code is in the library —
-`sab_pack`, `sab_dtex`, `sab_gametemplates`, `sab_mesh`, `sab_skeleton`, `sab_havok65`, `sab_animmeta`,
-`saboteur_audio`, `saboteur_lua`, `sab_map6`, `sab_sbla` — since `sab_formats` holds no CLIs and
-`sab_probe` is read-only. To be decided before stage 7.
+The user-facing tools — `sab_pack`, `sab_dtex`, `sab_gametemplates`, `sab_mesh`, `sab_skeleton`,
+`sab_havok65`, `sab_animmeta`, `saboteur_audio`, `saboteur_lua`, `sab_map6`, `sab_sbla` — become one
+crate, **`tools/sab_tools`**, a thin command-line layer over `sab_formats`. `sab_workshop` is the UI over
+the same tooling (presentation and editing). Each old tool folder is deleted once its `sab_tools`
+replacement reproduces its goldens (or differs only by a listed fix).

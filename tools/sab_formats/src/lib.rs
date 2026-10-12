@@ -34,6 +34,7 @@ pub mod gametemplates;
 pub mod gametext;
 pub mod hash;
 pub mod loosefiles;
+pub mod map6;
 pub mod megapack;
 pub mod mesh;
 pub mod sbla;

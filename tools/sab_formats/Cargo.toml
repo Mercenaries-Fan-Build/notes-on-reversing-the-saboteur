@@ -17,3 +17,12 @@ flate2 = "1"
 
 [profile.release]
 opt-level = 3
+
+[features]
+# Builds the game-gated tests, which read the installs named by the repo-root `.sab-local.toml`
+# (see `game_paths`) and fail naming whatever is missing: `cargo test --features retail`.
+retail = []
+
+[[test]]
+name = "local_config_retail"
+required-features = ["retail"]

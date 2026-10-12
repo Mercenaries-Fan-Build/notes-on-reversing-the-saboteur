@@ -109,16 +109,21 @@ impl Megapack {
     /// Read entry `e`'s sub-pack into `buf` via a positioned file read (no mmap fault), returning the
     /// slice actually read. `buf` is reused across calls, so a full scan holds only ONE sub-pack in
     /// memory (~tens of MB) instead of mapping the whole pack resident.
-    pub fn read_into<'b>(&self, e: &Entry, buf: &'b mut Vec<u8>) -> &'b [u8] {
+    ///
+    /// A failed or short read is an error naming the entry — it used to come back as an empty (or
+    /// truncated) slice, which every caller then skipped as "no textures here".
+    pub fn read_into<'b>(&self, e: &Entry, buf: &'b mut Vec<u8>) -> Result<&'b [u8], String> {
         let n = e.size as usize;
         if buf.len() < n {
             buf.resize(n, 0);
         }
-        // The whole entry or nothing: a short read used to come back as a truncated bundle.
-        match read_exact_at(&self.file, &mut buf[..n], e.offset) {
-            Ok(()) => &buf[..n],
-            Err(_) => &[],
-        }
+        read_exact_at(&self.file, &mut buf[..n], e.offset).map_err(|err| {
+            format!(
+                "megapack entry crc {:08X} ({} bytes at offset 0x{:X}): {err}",
+                e.crc, e.size, e.offset
+            )
+        })?;
+        Ok(&buf[..n])
     }
 
     pub fn entry_count(&self) -> usize {

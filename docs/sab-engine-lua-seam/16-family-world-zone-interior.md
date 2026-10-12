@@ -595,6 +595,14 @@ The table is small but live: **6 corpus call sites**, all of `SetDamageState`. I
 defective pair of bindings in this doc — the setter has a **retail argument-marshalling bug** that makes
 its third parameter inert.
 
+> **Follow-up 2026-10-12 — [`damage_and_destruction.md`](../damage_and_destruction.md).** What a damage
+> group *is* is now known: a GameTemplates `DamageGroups` entry whose parts name bones in the object's
+> mesh; the state shows/hides those bones' drawcalls. That answers open question 4 (group names come
+> from `GroupName` in the object's template — for 675/856 damage templates it is the Model mesh name,
+> vehicles use piece names like `hood`, `wheel_fl`) and narrows 2 (retail code distinguishes only
+> states 0 and 1, `FUN_006678e0`). The writers of the state are `FUN_00667d60` and the
+> `0x01302230` queue drained by `FUN_00669c20` — whether `vfn[0x54]` feeds that queue is still inferred.
+
 ### The bindings
 
 Rows are the complete `Damage` partition of

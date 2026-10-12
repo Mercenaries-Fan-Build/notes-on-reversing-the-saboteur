@@ -20,17 +20,6 @@ fn u64le(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3], b[o + 4], b[o + 5], b[o + 6], b[o + 7]])
 }
 
-/// `pandemic_hash` — the game's name hash (FNV-1a/32 variant, case-folded). Verified kernel:
-/// `pandemic_hash("ANY") == 0xED057225`. Not needed for plaintext DTEX enumeration, but kept for
-/// resolving hash-keyed lookups (megapack index / future WSAO).
-pub fn pandemic_hash(name: &str) -> u32 {
-    let mut h: u32 = 0x811C_9DC5;
-    for &c in name.as_bytes() {
-        h = ((c as u32 | 0x20) ^ h).wrapping_mul(0x0100_0193);
-    }
-    (h ^ 0x2A).wrapping_mul(0x0100_0193)
-}
-
 /// Fill `buf` from byte `off` of `f` without moving a shared cursor — the positioned read each OS
 /// provides. Unix has an exact variant; Windows' `seek_read` may return short, so it is looped.
 #[cfg(unix)]

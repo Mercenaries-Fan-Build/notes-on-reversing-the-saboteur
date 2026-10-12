@@ -1,34 +1,26 @@
-//! MESH — a skinned-geometry resource wrapped by an `MSHA` block (on-disk 4CC `AHSM`).
-//!
-//! Located by content-scanning for the `AHSM` magic, exactly as the extractors do
-//! (`tools/sab_poc::scan_msha`, `tools/sab_workshop::meshload`). The 276-byte MSHA header is
-//! immediately followed by two raw zlib blobs: the MESH body and the `.dat` (VB/IB).
+//! MSHA — the record wrapping a MESH resource (on-disk 4CC `AHSM`). Every type-0 blob of an ALBS
+//! sub-pack ([`crate::sbla`]) is exactly one MSHA record.
 //!
 //! ```text
-//! MSHA header (276 bytes)
-//!   +0x00  char AHSM
-//!   +0x04  u32  unc0   MESH body uncompressed size
-//!   +0x08  u32  unc1   .dat (VB/IB) uncompressed size
-//!   +0x0C  u32  c0     MESH body compressed size
-//!   +0x10  u32  c1     .dat compressed size
-//!   +0x14  char name[256]  (NUL-terminated)
-//!   body  = zlib_inflate(buf[off+276 .. off+276+c0])  must be unc0 bytes
-//!   .dat  = zlib_inflate(buf[off+276+c0 .. +c1])       must be unc1 bytes
+//! +0x00  char AHSM
+//! +0x04  u32  unc0         MESH body inflated size
+//! +0x08  u32  unc1         .dat (VB/IB) inflated size
+//! +0x0C  u32  c0           MESH body stored size
+//! +0x10  u32  c1           .dat stored size
+//! +0x14  char name[256]    NUL-terminated
+//! +0x114 body[c0], then dat[c1]; a blob is zlib unless its stored size equals its inflated size,
+//!        in which case it is stored raw
 //! ```
 
-use std::io::Read;
+use crate::{bytes, zlib};
 
 pub const MAGIC: &[u8; 4] = b"AHSM";
 pub const HEADER: usize = 276;
 
-fn u32at(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
-}
-
-/// One MSHA wrapper located inside a sub-pack.
+/// One MSHA record, located in some buffer at `off`.
 #[derive(Clone, Debug)]
 pub struct Msha {
-    /// Byte offset of the `AHSM` magic within the scanned buffer.
+    /// Offset of the record (its `AHSM` magic) in the buffer it was found in.
     pub off: usize,
     pub name: String,
     pub unc0: u32,
@@ -37,34 +29,52 @@ pub struct Msha {
     pub c1: u32,
 }
 
-/// Content-scan `buf` for every valid MSHA wrapper. Applies the same acceptance test as the
-/// extractors (printable name, non-zero compressed/uncompressed body size, body in-bounds) so a
-/// hit is a real mesh, not a coincidental `AHSM` byte pattern.
+impl Msha {
+    /// The record's total size: header, body and `.dat`.
+    pub fn len(&self) -> usize {
+        HEADER + self.c0 as usize + self.c1 as usize
+    }
+}
+
+/// The MSHA record at `off` in `buf`. Its body and `.dat` must lie within `buf`.
+pub fn parse_msha_at(buf: &[u8], off: usize) -> Result<Msha, String> {
+    let h = bytes::slice(buf, off, HEADER, "MSHA header")?;
+    if &h[0..4] != MAGIC {
+        return Err(format!("MSHA at 0x{off:X}: magic {:02X?}", &h[0..4]));
+    }
+    let unc0 = bytes::u32_le(h, 4, "MSHA unc0")?;
+    let unc1 = bytes::u32_le(h, 8, "MSHA unc1")?;
+    let c0 = bytes::u32_le(h, 12, "MSHA c0")?;
+    let c1 = bytes::u32_le(h, 16, "MSHA c1")?;
+    let raw = &h[20..HEADER];
+    let n = raw.iter().position(|&b| b == 0).ok_or_else(|| format!("MSHA at 0x{off:X}: name has no NUL"))?;
+    let name = String::from_utf8(raw[..n].to_vec()).map_err(|_| format!("MSHA at 0x{off:X}: name is not UTF-8"))?;
+    let m = Msha { off, name, unc0, unc1, c0, c1 };
+    bytes::slice(buf, off, m.len(), &format!("MSHA '{}' body + .dat", m.name))?;
+    Ok(m)
+}
+
+/// The MSHA record that is all of `blob` (a type-0 ALBS blob).
+pub fn parse_msha(blob: &[u8]) -> Result<Msha, String> {
+    let m = parse_msha_at(blob, 0)?;
+    if m.len() != blob.len() {
+        return Err(format!("MSHA '{}' is {} bytes, the blob is {}", m.name, m.len(), blob.len()));
+    }
+    Ok(m)
+}
+
+/// Every offset in `buf` where [`parse_msha_at`] accepts a record with a printable, non-empty name.
+/// For buffers whose ALBS record table cannot be read (an object pack without its map counts); a
+/// parsed ALBS gives the records directly as its type-0 blobs.
 pub fn scan_msha(buf: &[u8]) -> Vec<Msha> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while i + HEADER <= buf.len() {
         if &buf[i..i + 4] == MAGIC {
-            let unc0 = u32at(buf, i + 4);
-            let unc1 = u32at(buf, i + 8);
-            let c0 = u32at(buf, i + 12);
-            let c1 = u32at(buf, i + 16);
-            let nb = &buf[i + 20..i + HEADER];
-            let end = nb.iter().position(|&b| b == 0).unwrap_or(0);
-            if end > 0
-                && nb[..end].iter().all(|&b| (0x20..0x7f).contains(&b))
-                && c0 > 0
-                && unc0 > 0
-                && i + HEADER + c0 as usize <= buf.len()
-            {
-                out.push(Msha {
-                    off: i,
-                    name: String::from_utf8_lossy(&nb[..end]).into_owned(),
-                    unc0,
-                    unc1,
-                    c0,
-                    c1,
-                });
+            if let Ok(m) = parse_msha_at(buf, i) {
+                if !m.name.is_empty() && m.name.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+                    out.push(m);
+                }
             }
         }
         i += 1;
@@ -72,89 +82,70 @@ pub fn scan_msha(buf: &[u8]) -> Vec<Msha> {
     out
 }
 
-/// Decode one blob. The cooker stores a blob raw when compression does not help, signalled by
-/// `comp == unc` (matches the "store if incompressible" pattern the engine's stream loader relies
-/// on: e.g. the intentionally-degenerate `*_Invisible_*` debris meshes). Otherwise it's zlib.
-fn decode(src: &[u8], comp: usize, unc: usize) -> Result<Vec<u8>, String> {
-    if comp == unc {
-        return Ok(src[..comp].to_vec());
+/// A blob stored `comp` bytes long that inflates to `unc`: raw when the two are equal, else zlib.
+fn decode(src: &[u8], unc: usize, field: &str) -> Result<Vec<u8>, String> {
+    if src.len() == unc {
+        return Ok(src.to_vec());
     }
-    let mut z = flate2::read::ZlibDecoder::new(src);
-    let mut out = Vec::with_capacity(unc);
-    z.read_to_end(&mut out).map_err(|e| format!("zlib inflate: {e}"))?;
-    Ok(out)
+    zlib::inflate_exact(src, unc, field)
 }
 
-/// Decode the MESH body and `.dat` blobs that follow a MSHA header, asserting each yields its
-/// declared uncompressed size. A mismatch is exactly the corruption a mod repack can introduce
-/// (the engine trusts these sizes when it allocates), so the caller reports it as fatal.
+/// The MESH body and `.dat` of the record `m` found in `buf`, each exactly its declared size.
 pub fn read_body_and_dat(buf: &[u8], m: &Msha) -> Result<(Vec<u8>, Vec<u8>), String> {
     let s0 = m.off + HEADER;
-    let e0 = s0 + m.c0 as usize;
-    if e0 > buf.len() {
-        return Err(format!("body blob [0x{s0:X}..0x{e0:X}] overruns buffer 0x{:X}", buf.len()));
-    }
-    let body = decode(&buf[s0..e0], m.c0 as usize, m.unc0 as usize)?;
-    if body.len() != m.unc0 as usize {
-        return Err(format!("body decoded to {} bytes, header declares {}", body.len(), m.unc0));
-    }
-    let dat = if m.c1 > 0 && e0 + m.c1 as usize <= buf.len() {
-        let d = decode(&buf[e0..e0 + m.c1 as usize], m.c1 as usize, m.unc1 as usize)?;
-        if d.len() != m.unc1 as usize {
-            return Err(format!(".dat decoded to {} bytes, header declares {}", d.len(), m.unc1));
-        }
-        d
-    } else if m.c1 > 0 {
-        return Err(format!(".dat blob (c1={}) overruns buffer", m.c1));
-    } else {
-        Vec::new()
-    };
+    let body_src = bytes::slice(buf, s0, m.c0 as usize, &format!("MSHA '{}' body", m.name))?;
+    let dat_src = bytes::slice(buf, s0 + m.c0 as usize, m.c1 as usize, &format!("MSHA '{}' .dat", m.name))?;
+    let body = decode(body_src, m.unc0 as usize, &format!("MSHA '{}' body", m.name))?;
+    let dat = decode(dat_src, m.unc1 as usize, &format!("MSHA '{}' .dat", m.name))?;
     Ok((body, dat))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
-    fn zlib(data: &[u8]) -> Vec<u8> {
-        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-        e.write_all(data).unwrap();
-        e.finish().unwrap()
+    fn record(name: &str, body: &[u8], unc0: u32, dat: &[u8], unc1: u32) -> Vec<u8> {
+        let mut b = Vec::from(*MAGIC);
+        for v in [unc0, unc1, body.len() as u32, dat.len() as u32] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut n = [0u8; 256];
+        n[..name.len()].copy_from_slice(name.as_bytes());
+        b.extend_from_slice(&n);
+        b.extend_from_slice(body);
+        b.extend_from_slice(dat);
+        b
     }
 
-    /// A blob whose comp == unc is stored raw (the `*_Invisible_*` debris case): copy, don't inflate.
     #[test]
-    fn decode_stored_when_comp_equals_unc() {
-        let raw = vec![0u8; 852];
-        assert_eq!(decode(&raw, 852, 852).unwrap(), raw);
-    }
-
-    /// A blob whose comp < unc is a zlib stream.
-    #[test]
-    fn decode_inflates_when_compressed() {
+    fn stored_and_zlib_blobs_decode() {
         let body = b"the quick brown fox".repeat(20);
-        let comp = zlib(&body);
-        let out = decode(&comp, comp.len(), body.len()).unwrap();
-        assert_eq!(out, body);
+        let z = zlib::deflate(&body, 9);
+        let rec = record("Mesh", &z, body.len() as u32, &[1, 2, 3, 4], 4);
+        let m = parse_msha(&rec).unwrap();
+        assert_eq!(m.name, "Mesh");
+        let (b, d) = read_body_and_dat(&rec, &m).unwrap();
+        assert_eq!(b, body);
+        assert_eq!(d, [1, 2, 3, 4]);
     }
 
-    /// A synthetic MSHA with a stored body + no .dat round-trips through read_body_and_dat.
     #[test]
-    fn read_stored_body() {
-        let mut buf = Vec::from(*MAGIC);
-        buf.extend_from_slice(&4u32.to_le_bytes()); // unc0
-        buf.extend_from_slice(&0u32.to_le_bytes()); // unc1
-        buf.extend_from_slice(&4u32.to_le_bytes()); // c0 == unc0 -> stored
-        buf.extend_from_slice(&0u32.to_le_bytes()); // c1
-        let mut name = [0u8; 256];
-        name[..4].copy_from_slice(b"Test"); // printable, NUL-terminated
-        buf.extend_from_slice(&name);
-        buf.extend_from_slice(&[1, 2, 3, 4]); // stored body
+    fn a_blob_longer_than_its_record_or_a_size_mismatch_is_an_error() {
+        let mut rec = record("M", &[9; 4], 4, &[], 0);
+        rec.push(0);
+        assert!(parse_msha(&rec).unwrap_err().contains("the blob is"));
+        let rec = record("M", &[9; 4], 4, &[], 7);
+        let m = parse_msha(&rec).unwrap();
+        assert!(read_body_and_dat(&rec, &m).is_err(), ".dat declared 7 bytes, stored 0");
+    }
+
+    #[test]
+    fn scan_finds_records_inside_a_larger_buffer() {
+        let mut buf = vec![0u8; 10];
+        buf.extend_from_slice(&record("Prop_A", &[1, 2], 2, &[], 0));
+        buf.extend_from_slice(b"AHSM junk");
         let found = scan_msha(&buf);
         assert_eq!(found.len(), 1);
-        let (body, dat) = read_body_and_dat(&buf, &found[0]).unwrap();
-        assert_eq!(body, vec![1, 2, 3, 4]);
-        assert!(dat.is_empty());
+        assert_eq!((found[0].off, found[0].name.as_str()), (10, "Prop_A"));
     }
 }

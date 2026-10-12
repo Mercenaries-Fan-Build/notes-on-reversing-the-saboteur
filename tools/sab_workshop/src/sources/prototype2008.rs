@@ -165,7 +165,7 @@ impl Prototype2008Source {
     pub fn open(root: &Path) -> Result<Self, String> {
         // The caller might have handed us the extract's outer folder (which contains Bin360/) or the
         // Bin360 contents themselves under any name. Same rule as `detect_version`.
-        let bin360 = crate::source::prototype2008_bin360(root).ok_or_else(|| {
+        let bin360 = sab_formats::game_paths::proto2008_bin360(root).ok_or_else(|| {
             format!(
                 "{} is not the 2008 build: it neither contains a `Bin360/` directory nor holds \
                  `Saboteur.xex` itself",

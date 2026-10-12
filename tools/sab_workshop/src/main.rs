@@ -35,6 +35,8 @@ mod settings;
 mod skinning;
 mod source;
 mod sources;
+#[cfg(test)]
+mod testenv;
 mod wsao;
 
 /// Resolved input paths (CLI overrides the built-in defaults).

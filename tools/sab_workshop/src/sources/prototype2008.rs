@@ -32,7 +32,7 @@ use std::sync::Mutex;
 
 use crate::dds;
 use crate::dtex::CpuTexture;
-use crate::pack::pandemic_hash;
+use sab_formats::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
 use crate::sources::prototype2008_anim::{Anim2008Catalog, Clip2008};
 use crate::sources::prototype2008_material::MaterialIndex;

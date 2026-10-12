@@ -117,7 +117,7 @@ mod tests {
             eprintln!("skip: megapack unavailable");
             return;
         };
-        let assets = resolve::textures_in(&mp, "SeanDevlin");
+        let assets = resolve::textures_in(&mp, "SeanDevlin").expect("scan the megapack");
         let normals: Vec<&resolve::TexAsset> =
             assets.iter().filter(|a| a.role == resolve::Role::Normal).take(6).collect();
         if normals.is_empty() {

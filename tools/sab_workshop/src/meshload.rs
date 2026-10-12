@@ -626,9 +626,8 @@ fn decode_geometry(tail: &MeshTail, dat: &[u8]) -> Result<Smsh, String> {
             .prims
             .get(d.primitive_index as usize)
             .ok_or_else(|| format!("drawcall references primitive {}", d.primitive_index))?;
-        // Every in-mesh LOD level above 0 in retail sits in an UNSKINNED stream (6716/6716 drawcalls),
-        // and this loader only takes skinned meshes — so a level above 0 here is new data. Refuse it:
-        // drawing it would stack a coarser copy of the mesh onto itself.
+        // A drawcall above in-mesh level 0 is refused: drawing it would stack a coarser copy of the
+        // mesh onto itself.
         let lod = (d.lod_flags & 7) as u8;
         if lod != 0 {
             return Err(format!(

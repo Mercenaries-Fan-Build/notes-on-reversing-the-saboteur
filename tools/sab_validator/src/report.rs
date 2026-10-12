@@ -60,6 +60,8 @@ pub struct Report {
     pub scanned: BTreeMap<&'static str, u64>,
     /// Per-format count of assets that raised at least one fatal.
     pub failed: BTreeMap<&'static str, u64>,
+    /// Per-check count of assets the check could not be applied to (it needs data the run lacks).
+    pub unchecked: BTreeMap<&'static str, u64>,
 }
 
 impl Report {
@@ -71,6 +73,9 @@ impl Report {
     }
     pub fn failed(&mut self, format: &'static str) {
         *self.failed.entry(format).or_default() += 1;
+    }
+    pub fn unchecked(&mut self, check: &'static str) {
+        *self.unchecked.entry(check).or_default() += 1;
     }
     pub fn count(&self, sev: Severity) -> usize {
         self.issues.iter().filter(|i| i.severity == sev).count()
@@ -105,6 +110,8 @@ impl Report {
         push_counter_map(&mut s, &self.scanned);
         s.push_str("},\n  \"failed\": {");
         push_counter_map(&mut s, &self.failed);
+        s.push_str("},\n  \"unchecked\": {");
+        push_counter_map(&mut s, &self.unchecked);
         s.push_str("},\n");
         s.push_str(&format!(
             "  \"summary\": {{\"fatal\":{},\"warn\":{},\"info\":{},\"exit_code\":{}}}\n",

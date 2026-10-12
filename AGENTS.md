@@ -61,6 +61,8 @@ table (e.g. destruction: Mercs 2 `_pristine`/`_ruin` nodes ↔ Saboteur `Pristin
   feature, read their paths from that file alone, and panic naming the missing file/key/path. No
   hardcoded machine paths anywhere.
 - **Verify artifacts by hash**, not size/mtime, when you produce or deploy anything.
+- **Edit files with the editor tools, never with scripts.** No `perl -pi`, `sed -i`, heredoc
+  `cat > file`, or splicing via `cp` from scratch. Shell is for building, running and reading.
 - **Ask, don't assume** on unverified setup/intent facts. State the defaults you pick.
 - **Minimal, faithful edits** to others' files; don't reword working prose.
 - **Don't commit game assets or huge regenerated outputs** — they're gitignored. Commit the *method*

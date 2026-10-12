@@ -74,7 +74,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::pack::pandemic_hash;
+use sab_formats::pandemic_hash;
 
 /// The seven known SBL-family magics. A `.Pack` whose first 4 bytes match any of these is
 /// parseable by this module; anything else (empty file, `MP00`, `AP04`, or a magic we

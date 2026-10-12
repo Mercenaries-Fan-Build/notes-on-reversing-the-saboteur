@@ -26,7 +26,7 @@ library), three incompatible ALBS readings, two `global.map` readings. Most tool
 | 2 | golden outputs of every tool, before anything moves | **done** — see below |
 | 3 | shared primitives: one hash, one byte-reader set, one zlib helper | next |
 | 4 | archive layer: megapack read+write, ALBS (engine layout) read+write, MSHA, loosefiles, global.map/France.map | |
-| 5 | assets: MESH (body, skeleton, vertex formats, read+write), DTEX (any D3DFORMAT, BC codecs, DDS), WSAO, `.luap`, ANIM block, Havok (one packfile walker, one spline decoder), Wwise carving | |
+| 5 | assets: MESH (body, skeleton, vertex formats, read+write), DTEX (any D3DFORMAT, BC codecs, DDS), WSAO, `.luap`, ANIM block, Havok (one packfile walker, one spline decoder), Wwise carving + decode (`ww2ogg` + `lewton`, approved 2026-10-12 — replaces vgmstream; [audio_1kcp.md](../formats/audio_1kcp.md)) | |
 | 6 | 2008 prototype formats out of `sab_workshop/src/sources/` | |
 | 7 | consumers rewired (`sab_workshop`, `sab_poc`, `sab_probe`, `sab_validator`, `sab_havok65`); replaced tools deleted | |
 | 8 | scratch probes into `sab_probe`; doc Method sections point at them | |

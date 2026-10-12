@@ -83,18 +83,14 @@ Our unique assets (from the clean decomp):
   `FUN_0065a900`/`FUN_006617d0`. Object (dir@0x20) + streamblock (dir@0x44) variants. Splice recomputes
   offsets; composes with sab_pack. `scan` = 0 in-scope mismatches on 1000+ real sub-packs. Closes drop-in
   multi-asset bundles. Doc: docs/formats/sbla_subpack.md.
-- ⚠️ **World/startup pack path_crc** (docs/formats/world_megapack_key.md): the index field is the
-  streamblock ID/ordinal (NOT name_crc); name_crc=pandemic_hash(name) at ALBS+8; path_crc is per-instance.
-  **CORRECTION** (a deeper sub-search, self-verified): the `pandemic_hash("<name>.pack")` form one
-  investigator claimed is **DISPROVEN** — `ph("France\0.pack")` matches ID=0's crc by coincidence but
-  `ph("France\1024.pack")≠` ID=1024's crc. Structural truth: the world/streamblock key is a **stored
-  PblCRC in the MAP6 stream-TOC** (`WSStreamTOC(PblCRC,…)`; loader `FUN_009f2df0`), NOT a load-time string
-  hash — its preimage exists only in the offline cooker. Ruled out streamblock+object forms via
-  meet-in-the-middle hash inversion (definitive negative). **Recover via:** x32dbg hw-bp on `FUN_00dc1e20`
-  (filter by return crc → read arg1 string) OR the retail `France.map`/WSD stream-TOC (stores name→PblCRC).
-  See [[vmx128-xenon-decomp]].
-  ★LESSON: I committed the ".pack" form before this deeper check disproved it — self-verify surprising
-  "CONFIRMED-from-decomp" claims (esp. inferred string forms) against real keys BEFORE committing.
+- ✅ **World pack path_crc — SOLVED 2026-10-12** (docs/formats/world_megapack_key.md): every `.megapack`
+  `crc` is `pandemic_hash` of a load-time pack path: streamblocks `France\<id>.pack` / `France\<2 digits>\<id>.pack`
+  (`FUN_009f5a10`), region records `France\<name>.pack`, dynamics `Global\<name>.dynpack`, palettes
+  `Global\<name>1.palettepack`. All 9,210 retail ALBS packs keyed and parsed. kiloPack `crc` still open.
+  The earlier "stored PblCRC, preimage only in the cooker" conclusion was WRONG: it read the `"%s\\%s"`
+  path builders as display names, and tested `France\1024.pack` where the path is `France\10\1024.pack`.
+  ★LESSON (twice now): a negative is only as good as the forms tested — read the string builders in the
+  decomp and test what they build before declaring a key unrecoverable.
 - ✅ **PC symbol map** → `data/symbol_map/pc_symbol_map.tsv` (1,414 names) — see [[prototype-symbols-goldmine]].
 
 **Still open / next:** wire name→key into `sab_pack` (compute keys, no hex); the world-pack `<name>` source

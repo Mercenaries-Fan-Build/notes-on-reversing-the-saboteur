@@ -887,14 +887,7 @@ mod tests {
     use crate::source::GameSource;
 
     fn test_root() -> Option<PathBuf> {
-        let candidate = PathBuf::from(
-            "c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files",
-        );
-        if candidate.join("Bin360").is_dir() {
-            Some(candidate)
-        } else {
-            None
-        }
+        crate::testenv::prototype2008_root()
     }
 
     /// Guard the discovered slot layout: at least one `.textures` slot in the extract must

@@ -19,7 +19,13 @@ sab_probe names <skeleton.json> -          recover bone names by hashing candida
 sab_probe anim  <anim_bone_map.json> <skeleton.json>
                                            does each track drive the bone it claims?
 sab_probe editnodes <info|list|tree> <EditNodes.pack>   dynamic-object DB (NPCs/vehicles/…)
+sab_probe editnodes lua-params <retail_dir>              every LuaParam leaf, decoded, by type
 sab_probe gametext  <info|list|get|hash|roundtrip> <GameText.dlg>   UI text + VO subtitles
+sab_probe albs-survey <retail_dir>          every ALBS sub-pack parsed with its map counts; offsets, blob heads
+sab_probe albs-keys   <retail_dir>          which pack-path forms hash to each ALBS entry's crc
+sab_probe hash-names  <retail_dir> <Saboteur.exe> <proto2008_dir> <community_tools_dir> <community_research_dir>
+                                           the hash→name table on stdout (data/hash_names.tsv), report on
+                                           stderr; see docs/hash_names.md
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

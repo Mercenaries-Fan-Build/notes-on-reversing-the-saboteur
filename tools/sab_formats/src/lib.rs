@@ -5,10 +5,8 @@
 //! crate for the pieces that are provably identical between the two games, and implement
 //! everything Saboteur-specific here.
 //!
-//! ## Shared primitives (one copy each; every module and tool uses these)
-//! * [`hash`] — the resource-name hash, `Saboteur.exe FUN_00dc1e20` reproduced exactly; re-exported
-//!   as [`pandemic_hash`]. Not `mercs2_formats::hash::pandemic_hash_m2`: the engine sign-extends
-//!   each byte (`movsx` at `0x00dc1e33`), so names with bytes `>= 0x80` hash differently.
+//! ## Primitives
+//! * [`hash`] — the resource-name hash, `Saboteur.exe FUN_00dc1e20`; re-exported as [`pandemic_hash`].
 //! * [`bytes`] — bounds-checked LE/BE scalar reads that name the field on failure.
 //! * [`zlib`] — inflate to an exact declared length; deflate.
 //!
@@ -53,8 +51,7 @@ pub use mercs2_formats::sges::decompress_sges;
 /// [`AccessViolation`] rather than panicking.
 pub use mercs2_formats::safe_slice::{AccessViolation, SafeSlice};
 
-/// Panicking little-endian readers from `mercs2_formats`, kept only for `ap0l` until the Havok code
-/// is unified in stage 5 of `docs/tools/format_consolidation.md`; new code uses [`bytes`].
+/// Little-endian readers from `mercs2_formats`; they panic on an out-of-bounds offset.
 pub use mercs2_formats::ffcs::{read_f32_le, read_u16_le, read_u32_le};
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! The machine's `.sab-local.toml` names a real retail install and a real 2008 prototype.
 //!
 //! Game-gated: built by the `retail` feature, reads only the repo-root `.sab-local.toml`, and fails
-//! naming the missing file, key or path. Every other retail test depends on these two resolving.
+//! naming the missing file, key or path.
 
 use std::path::Path;
 

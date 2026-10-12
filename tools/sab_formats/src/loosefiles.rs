@@ -63,6 +63,54 @@ pub fn next_header_offset(header_off: usize, size: usize) -> usize {
     (header_off + HEADER_SIZE + size + ALIGN - 1) & !(ALIGN - 1)
 }
 
+/// One loose-file entry.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    /// The stored `+0x00` field.
+    pub name_crc: u32,
+    /// The stored name (backslash-separated, original case).
+    pub name: String,
+    /// Offset of the entry's 128-byte header.
+    pub header_off: usize,
+    /// The payload's byte range in the pack.
+    pub data: std::ops::Range<usize>,
+}
+
+/// Walk every entry from offset 0. The walk must end exactly at the end of `buf`. An entry whose size
+/// is [`SIZE_FROM_DISK`] is an error: its payload is not in the pack, and how far the cursor moves past
+/// such a header is not established.
+pub fn entries(buf: &[u8]) -> Result<Vec<Entry>, String> {
+    let mut out = Vec::new();
+    let mut p = 0usize;
+    while p < buf.len() {
+        let name_crc = crate::bytes::u32_le(buf, p, "loose-file name_crc")?;
+        let size = crate::bytes::u32_le(buf, p + 4, "loose-file size")?;
+        let raw = crate::bytes::slice(buf, p + 8, HEADER_SIZE - 8, "loose-file name")?;
+        let len = raw.iter().position(|&b| b == 0).ok_or_else(|| format!("loose-file header at 0x{p:X}: name has no NUL"))?;
+        let name = String::from_utf8(raw[..len].to_vec())
+            .map_err(|_| format!("loose-file header at 0x{p:X}: name is not UTF-8"))?;
+        if size == SIZE_FROM_DISK {
+            return Err(format!("loose-file '{name}' at 0x{p:X}: size 0xFFFFFFFF (payload on disk) is not handled"));
+        }
+        let start = p + HEADER_SIZE;
+        crate::bytes::slice(buf, start, size as usize, &format!("loose-file '{name}' payload"))?;
+        out.push(Entry { name_crc, name, header_off: p, data: start..start + size as usize });
+        p = next_header_offset(p, size as usize);
+    }
+    if p != buf.len() {
+        return Err(format!("loose-file walk ends at 0x{p:X}, past the pack's end 0x{:X}", buf.len()));
+    }
+    Ok(out)
+}
+
+/// The entry named `name`, compared as the engine compares (`FUN_00dc1060`): case-insensitive, with
+/// `\` and `/` equal.
+pub fn find<'a>(entries: &'a [Entry], name: &str) -> Option<&'a Entry> {
+    let fold = |s: &str| s.to_ascii_lowercase().replace('/', "\\");
+    let want = fold(name);
+    entries.iter().find(|e| fold(&e.name) == want)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +148,40 @@ mod tests {
         assert_eq!(name_crc("GameTemplates.wsd"), name_crc("gametemplates.wsd"));
         assert_eq!(name_crc("GameTemplates.wsd"), name_crc("GAMETEMPLATES.WSD"));
         assert_ne!(name_crc(r"France\EditNodes\EditNodes.pack"), name_crc("France/EditNodes/EditNodes.pack"));
+    }
+
+    fn header(name: &str, size: u32) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(&name_crc(name).to_le_bytes());
+        h.extend_from_slice(&size.to_le_bytes());
+        h.extend_from_slice(name.as_bytes());
+        h.resize(HEADER_SIZE, 0);
+        h
+    }
+
+    #[test]
+    fn walks_entries_and_finds_by_folded_name() {
+        let mut b = header(r"France\A.bin", 3);
+        b.extend_from_slice(&[1, 2, 3]);
+        b.resize(next_header_offset(0, 3), 0);
+        let second = b.len();
+        b.extend_from_slice(&header("global.map", 16));
+        b.extend_from_slice(&[9; 16]);
+        let es = entries(&b).unwrap();
+        assert_eq!(es.len(), 2);
+        assert_eq!(&b[es[0].data.clone()], &[1, 2, 3]);
+        assert_eq!(es[1].header_off, second);
+        assert_eq!(find(&es, "france/a.BIN").map(|e| e.header_off), Some(0));
+        assert!(find(&es, "missing").is_none());
+    }
+
+    #[test]
+    fn a_truncated_payload_or_from_disk_entry_is_an_error() {
+        let mut b = header("x", 100);
+        b.extend_from_slice(&[0; 10]);
+        assert!(entries(&b).unwrap_err().contains("payload"));
+        let b = header("x", SIZE_FROM_DISK);
+        assert!(entries(&b).unwrap_err().contains("not handled"));
     }
 
     #[test]

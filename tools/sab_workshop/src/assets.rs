@@ -18,8 +18,7 @@ use sab_formats::pandemic_hash;
 use crate::meshload::MeshEntry;
 
 /// `WSFxHumanBodyPartBlueprint::SetProperty` (@0x514bd0) stores these two references and its resolve
-/// step (@0x5192f0) looks each one up as an asset. Data (retail): `LowDetailModel` names the part's
-/// `_LOD` mesh for 456 body parts, the same mesh as `HighDetailModel` for 106 (no separate LOD).
+/// step (@0x5192f0) looks each one up as an asset.
 const HIGH_DETAIL_MODEL: u32 = 0x6240_4569;
 const LOW_DETAIL_MODEL: u32 = 0xd972_5c55;
 
@@ -30,7 +29,7 @@ const LOW_DETAIL_MODEL: u32 = 0xd972_5c55;
 /// `Head 0x44c27fcb` (count), `FxHumanHeadVariation 0xc57d2b43`, `Face 0x622dd842`,
 /// `FaceProbability 0xd594db5b`. Slot keys and the slot index the engine stores each under:
 /// `UpperBody 0x79691a2f` 0, `LowerBody 0xdb9c23dc` 1, `GearA 0x9e288655` 2, `GearB 0xfc20cb8a` 3,
-/// `GearC 0x1e233fa7` 4, `0x37a9525d` (name not recovered) 5.
+/// `GearC 0x1e233fa7` 4, `0x37a9525d` 5.
 const SLOT_KEYS: [u32; 6] = [0x7969_1a2f, 0xdb9c_23dc, 0x9e28_8655, 0xfc20_cb8a, 0x1e23_3fa7, 0x37a9_525d];
 const HEAD_KEY: u32 = 0x44c2_7fcb;
 const BODY_PART_VARIATION: u32 = 0x922c_c098;
@@ -38,13 +37,8 @@ const HEAD_VARIATION: u32 = 0xc57d_2b43;
 const BODY_PART: u32 = 0xa175_7f0a;
 const FACE: u32 = 0x622d_d842;
 
-/// Where a part sits in its body setup: which slot, and which variation of it.
-///
-/// A slot's variations are ALTERNATIVES. Every retail weight is 1.0 (a slot's weights sum to its
-/// variation count), and the lists hold things no body wears at once — `FBS_CV_Elderly_F`'s upper
-/// body is a trench coat, a student top, a sweater or a flower dress; its GearB is one of four scarves
-/// or `FBP_A_CF_NONE` (`CH_CM_None_GR`). So a figure is one variation per slot. (The draw that picks
-/// one at spawn was not traced; this is the setup's structure plus what its lists contain.)
+/// Where a part sits in its body setup: which slot, and which variation of it. A slot's variations
+/// are alternatives; a figure wears one per slot (`docs/formats/gametemplates.md`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SetupSlot {
     /// The slot key (`SLOT_KEYS`, or `HEAD_KEY` for the head list).
@@ -78,7 +72,7 @@ pub struct Asset {
     pub category: &'static str,
     pub parts: Vec<PartRef>,
     /// Per part/head template, a model reference that names a mesh this install does not have —
-    /// `(slot it was listed under, message)`. Reported with the assembly instead of silently missing.
+    /// `(slot it was listed under, message)`. Surfaced in the assembly's notes.
     pub missing: Vec<(Option<SetupSlot>, String)>,
 }
 
@@ -122,8 +116,8 @@ impl Asset {
     /// `LowDetailModel` at level 1 — the same mesh again when the template names the same one, since
     /// that is what the engine draws at that distance.
     ///
-    /// Anything else (weapons, props, vehicles, a name-grouped boot character) uses the older
-    /// slot rules on part labels, at level 0 only.
+    /// Anything else (weapons, props, vehicles, a name-grouped boot character) uses the slot rules on
+    /// part labels, at level 0 only.
     pub fn assembly(&self) -> Assembly {
         if self.parts.iter().any(|p| p.lod.is_some()) {
             let mut picks: Vec<(usize, u8)> = Vec::new();
@@ -471,7 +465,7 @@ mod tests {
         assert!(chars > 0, "no characters assembled from this install");
         assert!(bad.is_empty(), "{} problems:\n{}", bad.len(), bad.join("\n"));
 
-        // The case that exposed this: four alternative upper bodies, one figure.
+        // Four alternative upper bodies; the figure wears the first.
         let elderly = assets.iter().find(|a| a.name == "FBS_CV_Elderly_F").expect("FBS_CV_Elderly_F");
         let asm = elderly.assembly();
         let ub: Vec<&str> = elderly

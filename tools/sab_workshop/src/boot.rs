@@ -23,11 +23,11 @@ pub struct BootModel {
     pub name: String,
     pub mesh: Smsh,
     pub bones: Vec<Bone>,
-    /// The megapack entries this was assembled from. Empty for a file-loaded mesh, whose textures
-    /// have to go through the legacy name-token path instead.
-    pub parts: Vec<MeshEntry>,
-    /// `(part name, index_start, index_count)` per part, in merge order.
-    pub part_ranges: Vec<(String, u32, u32)>,
+    /// The megapack entries this was assembled from, with their levels of detail. Empty for a
+    /// file-loaded mesh, whose textures have to go through the legacy name-token path instead.
+    pub parts: Vec<meshload::PartPick>,
+    /// `(part name, index_start, index_count, lod)` per part, in merge order.
+    pub part_ranges: Vec<(String, u32, u32, u8)>,
 }
 
 impl BootModel {
@@ -77,7 +77,7 @@ fn from_file_mesh(mesh_path: &str) -> Result<BootModel, String> {
         mesh,
         bones: Vec::new(),
         parts: Vec::new(),
-        part_ranges: vec![(name, 0, n)],
+        part_ranges: vec![(name, 0, n, 0)],
     })
 }
 
@@ -107,16 +107,16 @@ fn from_game(cfg: &Config) -> Result<BootModel, String> {
     let lm = meshload::assemble(mp.raw(), &picked)?;
     // `assemble` skips parts it cannot decode, so report what actually went in, not what was asked
     // for — otherwise a silently-dropped part looks like a mesh bug later.
-    let used: Vec<MeshEntry> = picked
+    let used: Vec<meshload::PartPick> = picked
         .iter()
-        .filter(|e| lm.part_ranges.iter().any(|(n, _, _)| n == &e.name))
+        .filter(|p| lm.part_ranges.iter().any(|(n, _, _, lod)| n == &p.entry.name && *lod == p.lod))
         .cloned()
         .collect();
     println!(
         "[sab_workshop] boot model {outfit} — {} part(s) from {}: {}",
         used.len(),
         cfg.megapack,
-        used.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
+        used.iter().map(|p| p.entry.name.as_str()).collect::<Vec<_>>().join(", ")
     );
     Ok(BootModel {
         // The OUTFIT, not `lm.name` — assembly names itself after whichever part happened to carry
@@ -149,10 +149,13 @@ fn outfit_key(name: &str) -> String {
 ///
 /// `want` is a case-insensitive name token (`--boot`), else the game's protagonist. Whichever outfit
 /// is chosen, the parts run through the SAME slot rules the browser uses for a click
-/// ([`crate::assets::Asset::assembly`]): one mesh per body slot, no LODs, and the head variants
+/// ([`crate::assets::Asset::assembly`]): one mesh per body slot, and the head variants
 /// (`_HD`/`_FM`/`_FX`) collapsed to one — stacking those buries three faces in one skull.
-/// Returns the outfit name and its parts.
-fn pick_character(list: &[MeshEntry], want: &str) -> Result<(String, Vec<MeshEntry>), String> {
+///
+/// Boot groups meshes by NAME, before GameTemplates is loaded, so it has no `HighDetailModel` /
+/// `LowDetailModel` to follow: the boot character is level 0 only. Clicking a character in the
+/// browser assembles it from its templates, both levels included. Returns the outfit name and parts.
+fn pick_character(list: &[MeshEntry], want: &str) -> Result<(String, Vec<meshload::PartPick>), String> {
     use std::collections::BTreeMap;
 
     // Group every character-looking mesh by outfit. `CH_` is the game's own character prefix.
@@ -180,15 +183,16 @@ fn pick_character(list: &[MeshEntry], want: &str) -> Result<(String, Vec<MeshEnt
     let (key, idxs) = chosen;
     let parts: Vec<crate::assets::PartRef> = idxs
         .iter()
-        .map(|&i| crate::assets::PartRef {
-            mesh_index: i,
-            name: list[i].name.clone(),
-            label: crate::assets::part_label(&list[i].name),
-        })
+        .map(|&i| crate::assets::PartRef::plain(i, &list[i].name, crate::assets::part_label(&list[i].name)))
         .collect();
-    let asset = crate::assets::Asset { name: key.clone(), category: "Characters", parts };
-    let picked: Vec<MeshEntry> =
-        asset.assembly().iter().filter_map(|&i| list.get(i).cloned()).collect();
+    let asset =
+        crate::assets::Asset { name: key.clone(), category: "Characters", parts, missing: Vec::new() };
+    let picked: Vec<meshload::PartPick> = asset
+        .assembly()
+        .picks
+        .iter()
+        .filter_map(|&(i, lod)| list.get(i).cloned().map(|entry| meshload::PartPick { entry, lod }))
+        .collect();
     if picked.is_empty() {
         return Err(format!("{key}: no loadable parts"));
     }

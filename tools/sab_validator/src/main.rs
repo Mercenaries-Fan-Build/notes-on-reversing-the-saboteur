@@ -104,6 +104,13 @@ fn main() {
         eprint!("{fmt}={n} ");
     }
     eprintln!("(total {scanned})");
+    if !report.unchecked.is_empty() {
+        eprint!("unchecked: ");
+        for (check, n) in &report.unchecked {
+            eprint!("{check}={n} ");
+        }
+        eprintln!();
+    }
     eprintln!(
         "verdict: {} fatal, {} warn, {} info",
         report.count(Severity::Fatal),

@@ -139,7 +139,7 @@ impl GameSource for RetailPcSource {
         if let Some(p) = &self.palettes {
             packs.push(p);
         }
-        resolve::take_hashes_from_packs(&packs, &mut needed, &mut found);
+        resolve::take_hashes_from_packs(&packs, &mut needed, &mut found)?;
         let asset = found
             .remove(&hash)
             .ok_or_else(|| format!("no DTEX with hash {hash:08X} in any open pack"))?;

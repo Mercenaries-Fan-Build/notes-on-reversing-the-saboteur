@@ -61,9 +61,11 @@ name, stored little-endian** — the exact convention GameText uses for a UI `as
 tag as an LE `u32` yields the hash directly, and `pandemic_hash("Position") == 0x05d7fc60` is the tag
 you will find on a Position node.
 
-The community inspector shipped an empirical `tag → name` dictionary; **250 of the 264 names now
-hash-verify** against their tag under this convention (`tools/sab_formats/src/editnodes.rs`'s
-`TAG_NAMES`, checked by the test `tag_names_sorted_and_mostly_preimages`).
+The community inspector shipped an empirical `tag → name` dictionary; 250 of its 264 names
+hash-verify against their tag under this convention. Tag names now come from the shared table
+[`data/hash_names.tsv`](../../data/hash_names.tsv) ([hash_names.md](../hash_names.md)), which names
+246 of the 272 param tags in the retail packs; the inspector's 14 placeholder labels (`Unknown_*`,
+`WTFPortal*`, `Root`, `Raw64_*`) are not names and are not in it.
 
 ### The names come from the exe — including the "placeholder" families ★
 
@@ -129,13 +131,15 @@ containers.
 their addressable name, and no other string param ever supplies it (brute-forced across every string
 param of every object in a path-known entry). The name exists only inside the hash and in Lua. So it
 **cannot be recovered** from an EditNodes file alone — but it can be *recomputed*, which is what lets
-an editor mint an addressable clone.
+an editor mint an addressable clone. (Other objects can name it, though: `LuaCrcList` parameters hold
+full object paths, and 541 objects are named that way — [LuaParam leaves](#luaparam-leaves).)
 
 This also explains the earlier evidence, all of which stands:
 
 * 13 426 objects, **13 397 distinct tags** — nearly unique because each object's *path* is unique,
   not because the ids are arbitrary. This is why only 131 of 13 669 distinct tags are "named" by the
-  parameter dictionary: the rest are path hashes, not parameter names.
+  parameter dictionary: the rest are path hashes, not parameter names. (6,251 object tags are now
+  named by their paths, 5,118 checked against their container — [hash_names.md](../hash_names.md).)
 * **640 `ClassName` values map to more than one tag** — the same NPC name in different mission
   containers yields different paths, so different hashes. `Spore_RS_Jules` appearing under four tags
   is four *placements*, not four ids for one thing.
@@ -253,15 +257,31 @@ presentation for a leaf's bytes:
 
 | test (in order) | → value |
 |---|---|
+| `tag == 0xdb0f705c` (`LuaParam`) | LuaParam, decoded exactly (below) |
 | `n == 0` / `1` / `4` | empty / bool / raw32 |
 | `n == 8` and `tag == d788e5b2` | raw64 |
 | `data` is printable + trailing NUL | string |
-| `name\0` + 4-byte type marker + payload | LuaParam / "named" |
 | `n == 12` and 3 plausible floats (or a whitelisted vector tag) | vec3 |
 | otherwise | opaque bytes |
 
-LuaParam type markers (little-endian bytes): float `a9 bd 93 2b`, bool `31 4f 44 1b` or `0f 00 00 00`,
-CRC list `f9 9d 05 b9`, string `c2 99 b7 f5`.
+### LuaParam leaves
+
+A leaf whose tag is `0xdb0f705c` = `pandemic_hash("LuaParam")` holds one Lua parameter: `name\0`, a
+4-byte type marker, then the value. `sab_formats::editnodes::lua_param` decodes it by the engine's
+layout (below) and requires the value to end exactly at the leaf's end. **All 4,553 retail LuaParam
+leaves decode** — main pack 4,548 (LuaBool 1,095, LuaFloat 1,191, LuaString 1,739, LuaCrcList 523),
+DLC 5 — and the old value heuristic picked out exactly these leaves and no others (2026-10-12,
+`sab_probe editnodes lua-params`; test `tests/editnodes_retail.rs`).
+
+The 523 `LuaCrcList` values hold 775 items, and they are **EditNodes object paths**
+(`lsExplosionLocators` → `Missions\act_1\escape\act1_escape_vehicles\ExplosionManager(3)\LOC_Explo…`,
+`tLocators` → `Missions\act_1\factory\main\LOC_Spawn1`): names the engine hashes into object tags
+when the script uses them. 541 items hash to an object tag in the packs, 352 of them inside the
+container their parent path names — the object names this file otherwise never stores
+([hash_names.md](../hash_names.md)).
+
+LuaParam type markers (little-endian bytes): float `a9 bd 93 2b`, bool `31 4f 44 1b`, CRC list
+`f9 9d 05 b9`, string `c2 99 b7 f5`.
 
 **The markers are hashed type names**, under the same convention as the tags — read the 4 marker
 bytes as a little-endian `u32` and it is `pandemic_hash` of a `Lua<Type>` name:
@@ -272,7 +292,7 @@ bytes as a little-endian `u32` and it is `pandemic_hash` of a `Lua<Type>` name:
 | `31 4f 44 1b` | `0x1b444f31` | `pandemic_hash("LuaBool")` |
 | `c2 99 b7 f5` | `0xf5b799c2` | `pandemic_hash("LuaString")` |
 | `f9 9d 05 b9` | `0xb9059df9` | `pandemic_hash("LuaCrcList")` (resolved 2026-10-12, from a hint by Katalizator; the exe holds the string `"LUACRCLIST"`, and the hash folds case) |
-| `0f 00 00 00` | `0x0000000f` | not a hash — a small enum, alternate bool encoding |
+| `0f 00 00 00` | `0x0000000f` | not a hash; the community inspector accepts it as a bool, but no retail LuaParam leaf uses it (0 of 4,553) and the engine reader has no case for it |
 
 The engine reads these in **`FUN_01634800`** @0x01634800 (and the near-copy `FUN_01634460`), for a
 field whose hash is `0xDB0F705C` = `pandemic_hash("LuaParam")`: a name string (≤ 128 bytes), a `u32`
@@ -289,8 +309,8 @@ type hash, then by type (PROVEN, decomp lines 1762748–1762811):
 
 `0x404d1343` = `pandemic_hash("LuaTable")` is checked as a *field* hash in the same function, not as a
 type. `FUN_0064bbc5` switches on the same type hashes when it writes parameters out, with the tag
-strings `"LUACRC"` and `"LUACRCLIST"`. Not established: whether the list's count is a `u32` or `i32`
-(read by `FUN_0045ef30`), and why bools sometimes carry `0x0000000f`.
+strings `"LUACRC"` and `"LUACRCLIST"`. The list's count (read by `FUN_0045ef30`) is compared as a
+signed int (`0 < (int)local_120`), and `lua_param` rejects a negative count.
 
 An earlier version of this section said none of these hashes appear as literals in the decomp. That
 was wrong: all of them are compared as constants in the three functions above.

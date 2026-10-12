@@ -249,12 +249,12 @@ mod tests {
 
     #[test]
     fn detects_2008_prototype_when_bin360_present() {
-        // Only runs on machines that have the prototype extracted. Skip cleanly otherwise.
-        let root = std::path::Path::new("c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files");
-        if !root.join("Bin360").is_dir() {
-            eprintln!("skip: no Bin360/ prototype at expected path");
+        // Only runs where SAB_2008_DIR points at the prototype. Skip cleanly otherwise.
+        let Some(root) = crate::testenv::prototype2008_root() else {
+            eprintln!("skip: SAB_2008_DIR not set to a 2008 prototype");
             return;
-        }
+        };
+        let root = root.as_path();
         let (v, fp) = detect_version(root).expect("prototype detected");
         assert_eq!(v, GameVersion::Prototype2008Xbox360);
         assert!(fp.matched.iter().any(|m| m.contains("Bin360")));

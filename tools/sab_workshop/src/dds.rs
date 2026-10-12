@@ -110,9 +110,10 @@ mod tests {
     /// is documented in `docs/2008_texture_format.md`, this test asserts the mechanical shape.
     #[test]
     fn decodes_cloud_proj_512x512_dxt1() {
-        let root = Path::new(
-            "c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360",
-        );
+        let Some(root) = crate::testenv::prototype2008_bin360() else {
+            eprintln!("skip: SAB_2008_DIR not set to a 2008 prototype");
+            return;
+        };
         let path = root.join("CloudProj.dds");
         if !path.exists() {
             eprintln!("skip: no CloudProj.dds at expected 2008 dump");

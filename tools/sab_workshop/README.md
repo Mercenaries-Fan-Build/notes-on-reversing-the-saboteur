@@ -69,8 +69,9 @@ Off Windows the UI uses egui's bundled faces instead of Segoe UI / Courier New, 
 `cargo test` runs the data-backed tests only when told where the data is — no path is hardcoded:
 
 - `SAB_GAME_DIR` — a retail install (the folder holding `Global/`, `France.materials`).
-- `SAB_2008_DIR` — the 2008 Xbox 360 prototype: a folder named `Bin360`, or one that contains
-  `Bin360/` (the shapes the prototype loader accepts).
+- `SAB_2008_DIR` — the 2008 Xbox 360 prototype: the `Bin360` contents under any folder name (it
+  holds `Saboteur.xex`), or a folder that contains `Bin360/` — the same rule the app applies when
+  you pick the folder on the Settings page (`source::prototype2008_bin360`).
 
 Without them those tests print `skip:` and **still report as passed** — read the output with
 `-- --nocapture` before trusting a green run.

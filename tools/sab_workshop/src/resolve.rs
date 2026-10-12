@@ -272,7 +272,7 @@ pub fn take_hashes_from_slices(
             break;
         }
         for (off, len, name) in dtex::find_records(sub) {
-            let h = pack::pandemic_hash(&name);
+            let h = sab_formats::pandemic_hash(&name);
             if !needed.remove(&h) {
                 continue;
             }

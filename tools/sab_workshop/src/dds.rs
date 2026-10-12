@@ -102,7 +102,6 @@ fn u32_at(b: &[u8], o: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     /// The one that gave us the "linear, not tiled" verdict during probing: 512×512 DXT1 cloud
     /// texture. If the decoder ever regresses to tiled interpretation, the pixel-count math is

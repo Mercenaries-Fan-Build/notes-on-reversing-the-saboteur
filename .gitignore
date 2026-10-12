@@ -49,3 +49,6 @@ __pycache__/
 _scratch/
 *.tmp
 .DS_Store
+
+# Machine-local paths to installs, prototypes and external tools (see AGENTS.md)
+.sab-local.toml

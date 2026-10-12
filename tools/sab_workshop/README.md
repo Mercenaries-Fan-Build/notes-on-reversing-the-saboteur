@@ -36,8 +36,10 @@ The original character/animation viewer is unchanged and is page 1.
 > (minutes vs ~1.4 s).
 
 **A game install is the only input.** No generated files, no repo checkout — the startup character,
-its rig, its textures and the whole clip list are read out of the packs. The install is found
-automatically (GOG / Galaxy / Steam / Pandemic layouts) or set once on the **Settings** page.
+its rig, its textures and the whole clip list are read out of the packs. The install location is
+**never guessed**: set it once on the **Settings** page (or pass `--game`). It is saved in
+`settings.json` under `%APPDATA%\sab_workshop\` on Windows and `$XDG_CONFIG_HOME/sab_workshop/`
+(else `~/.config/sab_workshop/`) on macOS and Linux.
 
 ```
 cd tools/sab_workshop
@@ -45,8 +47,33 @@ cargo run --release
 ```
 
 ```
-sab_workshop.exe    # or just run the built binary, from anywhere
+sab_workshop        # the built binary (sab_workshop.exe on Windows), run from anywhere
 ```
+
+### Platforms
+
+Windows, macOS and Linux build from the same source; the only OS-specific code is the positioned
+file read in `pack.rs` (a `cfg(unix)` / `cfg(windows)` pair; any other target is a compile error).
+
+| | compiles (`cargo check --all-targets`) | runs |
+|---|---|---|
+| Windows x86_64 (MSVC) | ✅ | the original development platform |
+| macOS (Apple Silicon, Intel) | ✅ | ✅ Apple Silicon: `--selftest` + the GUI (Metal) |
+| Linux x86_64 | ✅ | not yet run on a Linux machine |
+
+Off Windows the UI uses egui's bundled faces instead of Segoe UI / Courier New, which are read from
+`C:/Windows/Fonts` only when present.
+
+### Tests that read game data
+
+`cargo test` runs the data-backed tests only when told where the data is — no path is hardcoded:
+
+- `SAB_GAME_DIR` — a retail install (the folder holding `Global/`, `France.materials`).
+- `SAB_2008_DIR` — the 2008 Xbox 360 prototype: a folder named `Bin360`, or one that contains
+  `Bin360/` (the shapes the prototype loader accepts).
+
+Without them those tests print `skip:` and **still report as passed** — read the output with
+`-- --nocapture` before trusting a green run.
 
 Everything below is an override, not a requirement:
 
@@ -209,7 +236,7 @@ Two things sit on top of it:
   `CH_AC_Mouth` included). Each slot has its own combo, role-filtered but with a fallback to the
   whole pool so a misclassified name stays reachable. A pick is a decision, so it outranks both of
   the above and persists — beside the mesh for a `--mesh` file, else in
-  `%APPDATA%/sab_workshop/materials/<model>.materials.json`, keyed by model so one character's
+  `materials/<model>.materials.json` next to `settings.json` (see *Run*), keyed by model so one character's
   edits never land on another's. Legacy diffuse-only sidecars round-trip cleanly (migrate on load).
 
 ## Architecture

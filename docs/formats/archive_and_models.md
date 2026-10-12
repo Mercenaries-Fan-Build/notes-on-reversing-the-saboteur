@@ -155,6 +155,11 @@ with `constTag == 0x1B`. ~18 known codes, e.g.:
 - Positions: half-float (R16G16B16A16). Skinning: 4-bone, UNORM8 weights / UINT8 indices.
 - Materials are **external** — the drawcall references a material by hash into `.materials` (`WSAO`)
   files, not an inline chunk. LOD/damage-state handling not yet observed in the toolset (TBD).
+- **LOD (2026-10-11, decomp + retail data):** two mechanisms. In-mesh levels are the low 3 bits of
+  `DrawCall +0xe`, used only by unskinned meshes (vehicles, weapons, props) — see
+  [mesh_geometry.md](mesh_geometry.md). Characters instead swap whole meshes: each body-part
+  template names a `HighDetailModel` and a `LowDetailModel` (usually the `_LOD` mesh) — see
+  [gametemplates.md](gametemplates.md). Damage states remain unobserved.
 
 ## Status / next
 
@@ -171,4 +176,5 @@ validating via SaboteurToolset. Both the readers **and** the writers now exist i
 | shared codecs | `tools/sab_formats` | the library the others build on (no README yet — see the module docs in `src/`) |
 | mod audit | [`sab_validator`](../../tools/sab_validator/README.md) | parses a mod the way the engine's mount path does |
 
-Remaining genuine gap in *this* area: LOD/damage-state handling is still unobserved (noted above).
+Remaining genuine gap in *this* area: damage-state handling is still unobserved (LOD is now
+documented above).

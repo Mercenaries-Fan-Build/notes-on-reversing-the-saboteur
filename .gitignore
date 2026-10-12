@@ -36,6 +36,8 @@ tools/sab_poc/mattias_port/inventory/
 # Re-fetch rather than version: ffmpeg (gyan.dev build), JDK 21 (Temurin).
 tools/ffmpeg/
 tools/jdk21/
+# vgmstream-cli (Wwise .wem → WAV), https://vgmstream.org — re-fetch rather than version.
+tools/vgmstream/
 
 # Python bytecode caches
 __pycache__/

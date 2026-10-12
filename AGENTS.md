@@ -48,6 +48,18 @@ table (e.g. destruction: Mercs 2 `_pristine`/`_ruin` nodes ↔ Saboteur `Pristin
 ## Conventions
 
 - **Prefer Rust for tooling** (see `tools/saboteur_audio`). Small std-only binaries; document how to run.
+- **`tools/sab_formats` is the base library.** Every reader/writer of game bytes lives there (one
+  copy per format; it may use `glam` for skeleton/bind maths). It holds **no probes and no CLIs** —
+  tests only. Apps and tools consume it; they never carry a private parser, hash, or byte reader.
+- **Probes and investigations live in `tools/sab_probe`** (`src/bin/<probe>.rs`), built on
+  `sab_formats`. A probe whose numbers a doc cites is named in that doc's Method section.
+- **Retire by deletion.** When a tool or module is replaced, delete it in the same pass — git keeps
+  the history. A leftover copy gets taken as a "good example" by the next agent and contaminates the
+  research.
+- **Local paths come from `.sab-local.toml`** (repo root, gitignored; one `key = "path"` per line,
+  like the Mercs 2 repo's `.mercs2-local.toml`). Game-gated tests are built only with the `retail`
+  feature, read their paths from that file alone, and panic naming the missing file/key/path. No
+  hardcoded machine paths anywhere.
 - **Verify artifacts by hash**, not size/mtime, when you produce or deploy anything.
 - **Ask, don't assume** on unverified setup/intent facts. State the defaults you pick.
 - **Minimal, faithful edits** to others' files; don't reword working prose.

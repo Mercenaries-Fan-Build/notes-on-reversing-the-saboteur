@@ -311,8 +311,7 @@ mod tests {
     ];
 
     fn bin360() -> Option<PathBuf> {
-        let p = PathBuf::from("c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360");
-        if p.is_dir() { Some(p) } else { None }
+        crate::testenv::prototype2008_bin360()
     }
 
     fn act1_intkey_bytes() -> Option<Vec<u8>> {

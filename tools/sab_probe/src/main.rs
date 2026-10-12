@@ -962,6 +962,7 @@ mod albs_survey;
 mod audio;
 mod editnodes;
 mod gametext;
+mod hash_names;
 mod megapack_layout;
 mod texbind;
 
@@ -986,6 +987,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "albs-survey" {
         albs_survey::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "hash-names" {
+        hash_names::run(&args[2..]);
         return;
     }
     if args.len() > 1 && args[1] == "albs-keys" {

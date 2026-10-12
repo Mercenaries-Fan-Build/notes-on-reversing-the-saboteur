@@ -48,7 +48,7 @@ records first, then 7, 0, 2, 8, 4, 3, 1, 5.
 | 1 | texture (DTEX records) | PROVEN |
 | 7 | flash/UI (the 28 `global.map` names: `CommonUI`, `Font_*`, …) | INFERRED |
 | 2 | physics | SaboteurToolset naming, unverified |
-| 8 | the separately streamed part: `hash == 0` and `comp == uncomp` on all 15,860; `FUN_00658870` seeks to `base + Σcomp(types 6,7,0,2)` and reads table 8 | PROVEN |
+| 8 | the separately streamed part: `comp == uncomp` on all 16,202 (`hash == 0` on the 15,860 checked before the cinematic packs were keyed); `FUN_00658870` seeks to `base + Σcomp(types 6,7,0,2)` and reads table 8 | PROVEN |
 | 3, 4, 5, 6 | zero in every record whose counts are known | — |
 
 **The descriptor block** (`FUN_0065a470`), the same serialisation as a `global.map` record tail:
@@ -65,27 +65,37 @@ streamblock with an empty descriptor. `X ≥ 0xB4` with the `'HEI1'` tag (bytes 
 terrain cell. Every terrain cell in retail carries the tag; `sab_formats::sbla` selects the
 heightfield by it and requires the descriptor to consume exactly `X` bytes.
 
-**Which map object.** For an object pack the counts are those of the map object whose hash is the
-megapack entry's `index` — any record of `global.map`, or any list record or extended tile of a region
-map (`sab_formats::map6::object_counts`). For a DLC loose pack the hash is `pandemic_hash(file stem)`.
+**Which map object.** The engine looks an object pack up by its **pack path**: the map loader stores a
+path on the object, `FUN_00658870` appends `.pack` (`.dynpack`, `.palettepack` for the global packs)
+and the resolver bsearches the megapack on `pandemic_hash` of it — the entry's `crc`. The counts it
+then uses are that object's (`obj+0x12C`, read by the same `FUN_00659f20`). So for a `.megapack` entry
+the counts are those of the map object whose pack path hashes to the entry's `crc`
+(`sab_formats::map6::pack_counts`; the paths are in
+[world_megapack_key.md](world_megapack_key.md)). For a `.kiloPack` entry, whose `crc` matches no known
+path, the entry's `index` is the object's record hash (105/105); for a DLC loose pack,
+`pandemic_hash(file stem)` is (`map6::object_counts`).
 
 ## Retail survey
 
-9,200 ALBS sub-packs (Dynamic0, Palettes0, Mega0/1/2, three kiloPacks, DLC megapacks and loose files):
+9,210 ALBS sub-packs (Dynamic0, Palettes0, Mega0/1/2, three kiloPacks, DLC megapacks and loose files):
 
-| | packs | engine rule |
+| | packs | counts from |
 |---|---:|---|
-| `X ≥ 0xB4` terrain cells (all of Mega1 6,727 and Mega2 1,004; 12 elsewhere) | 7,743 | exact to EOF |
-| `X == 0x3C` | 188 | exact to EOF |
-| `X == 0`, counts from `global.map` (1,411 records) | 1,082 | exact to EOF |
-| `X == 0`, counts from `France.map` / the DLC maps | 148 | exact to EOF |
-| `X == 0`, no map object with the entry's `index` (`France/Mega0.megapack` #10–12, 21–23, 28–31, 41–46, 61–72, 86–96; `index` 0x66–0x19C) | 39 | not checked |
+| `X ≥ 0xB4` terrain cells (Mega1 6,727, Mega2 1,004, `dlc01mega0` 7, BelleStart0 5) | 7,743 | descriptor |
+| `X == 0x3C` (Mega0 172, BelleStart0 9, `dlc01mega0` 4, Palettes0 2) | 187 | descriptor |
+| `X == 0`, megapack entries: `global.map` dynamics 759 + DLC 2, list 2 319; `France.map` lists 2 + 3 72; DLC `FRANCE.map` 5 | 1,157 | map object by `crc` |
+| `X == 0`, kiloPack entries (BelleStart0 81, Start0 12, Start_German0 12) | 105 | map object by `index` |
+| `X == 0`, DLC loose packs | 18 | map object by file stem |
 
-**9,171 / 9,171 packs with known counts end exactly at EOF and rebuild byte for byte** (2026-10-12,
-`sab_formats` `tests/sbla_retail.rs`). The `offset` rule holds for every one of the 459,205 records
-with `comp != 0`; the 19 records with `comp == 0` (all type 1, hash 0) store other values. Where the 39
-unkeyed packs get their counts is open: no `global.map` / `France.map` / DLC map object has their
-`index`, `pandemic_hash` of its decimal text, or a tile at that ordinal.
+**9,210 / 9,210 end exactly at EOF and rebuild byte for byte** (2026-10-12, `sab_formats`
+`tests/sbla_retail.rs`). The `offset` rule holds for every one of the 459,756 records with
+`comp != 0`; the 19 records with `comp == 0` (all type 1, hash 0) store other values. Every type-0
+blob is exactly one MSHA record ([mesh_geometry.md](mesh_geometry.md)): 208,681 / 208,681.
+
+The 39 `France/Mega0.megapack` cinematic packs (#10–12, 21–23, 28–31, 41–46, 61–72, 86–96) were
+once listed here as unkeyed because they were matched by `index`: their `index` is the leading number
+of the cinematic name (`102_cinb_farmintro` → `0x66`), and their counts are those of the `France.map`
+list-3 record whose path `France\<name>.pack` hashes to the `crc`.
 
 ## Correction (2026-10-12)
 

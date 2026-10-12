@@ -1711,7 +1711,8 @@ mod tests {
         use crate::source::GameSource;
         use crate::sources::prototype2008::Prototype2008Source;
         let root = test_bin360()?;
-        let src = Prototype2008Source::open(root.parent().unwrap_or(&root)).ok()?;
+        // The prototype is present (test_bin360 said so); failing to open it is a real failure.
+        let src = Prototype2008Source::open(&root).expect("open 2008 source");
         let handle = src.list_meshes().into_iter().find(|h| h.name == "BP_AL_Sean_HD")?;
         let body = src.read_mesh_body(&handle).ok()?;
         body.skeleton

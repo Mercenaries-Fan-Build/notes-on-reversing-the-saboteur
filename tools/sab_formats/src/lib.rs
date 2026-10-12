@@ -27,6 +27,7 @@ pub mod ap0l;
 pub mod spline_edit;
 pub mod dtex;
 pub mod editnodes;
+pub mod game_paths;
 pub mod gametemplates;
 pub mod gametext;
 pub mod loosefiles;

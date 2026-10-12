@@ -69,23 +69,39 @@ Every stream is a standard **zlib** wrapper (`78 01`, CMF=0x78/32K window, FLEVE
 
 ## Format codes
 
-`format` is the value the engine's format map (`FUN_009bb910 @0x009bb910`) consumes. A value ≥
-`0x20000000` is an ASCII 4CC; a small value is a Direct3D 9 `D3DFORMAT` enum:
+**`format` is a Direct3D 9 `D3DFORMAT`, passed through untouched (PROVEN, 2026-10-12).** The engine
+never maps it: the header reader (`0x660470` region) stores the u32 (`0x6604e1..e8`) into the texture
+descriptor at `+0xC` (`0x660a66`/`0x660ab8`); the upload callback `0x65fa90` pushes `desc+0xC`
+(`0x65faf8`) to renderer vtable `+0x150` (`0x65fafd`, vtable `0x0108007c` → `0x00dd9d80`), which
+forwards it to `FUN_00dedac0`, whose device call `+0x5c` takes `(w, h, levels, usage, format, pool)`
+— `IDirect3DDevice9::CreateTexture` (vtable index 23; INFERRED from slot + argument shape). So any
+D3DFORMAT is legal, and the DXT codes are the D3D `MAKEFOURCC` values. The engine never derives
+bytes-per-pixel either: both mip-upload loops take the row pitch as `MipDesc.dataSize / height`
+(`0x65fbcd..d5`, `0x6501c4..cc`). `FUN_00dee1c0` only asks "is this DXT1/3/5".
 
-| `format` | Meaning | bytes/px or /4×4-block | Engine id (`FUN_009bb910`) | In retail Global packs |
-|---|---|---|---|---|
-| `0x31545844` | `"DXT1"` | 8 / block | 10 | ✓ (10,309) |
-| `0x33545844` | `"DXT3"` | 16 / block | 11 | not seen |
-| `0x35545844` | `"DXT5"` | 16 / block | 12 | ✓ (2,230) |
-| `0x15` | `D3DFMT_A8R8G8B8` | 4 / px | 1 | ✓ (20) |
-| `0x14` | `D3DFMT_X8R8G8B8` | 4 / px | — | not seen |
-| `0x1c` | `D3DFMT_A8` | 1 / px | 9 | not seen |
-| `0x32` | `D3DFMT_L8` | 1 / px | 8 | not seen |
-| `0x16` | `D3DFMT_R5G6B5` | 2 / px | — | not seen |
+> **Correction:** this section used to call `FUN_009bb910` "the engine's format map". It is the
+> Scaleform GFx image path's D3DFORMAT → `GImage` format mapper (only caller `FUN_009bf880`); it plays
+> no part in loading a DTEX.
 
-`FUN_00dee1c0 @0x00dee1c0` independently classifies `0x31/33/35545844` as "block-compressed".
-`mipDataSize` in each descriptor equals the format formula: DXT `ceil(w/4)·ceil(h/4)·blockBytes`,
-uncompressed `w·h·bytesPerPixel`.
+Retail census (all 7 Steam megapacks, every record inflated and mip-walked, no format whitelist):
+
+| `format` | D3DFORMAT | bytes/px or /4×4 block | Retail records | Grade |
+|---|---|---|---:|---|
+| `0x31545844` | `DXT1` | 8 / block | 14,557 | PROVEN |
+| `0x35545844` | `DXT5` | 16 / block | 2,515 | PROVEN |
+| `0x1A` | `A4R4G4B4` | 2 / px | **3,440** (`France_*_Mask`, 160², flags `0xA0`) | PROVEN (mip0 = w·h·2 on all) |
+| `0x15` | `A8R8G8B8` | 4 / px | 20 | PROVEN |
+| `0x33545844` | `DXT3` | 16 / block | 0 | INFERRED (passthrough) |
+| `0x16` | `X8R8G8B8` | 4 / px | 0 | INFERRED (passthrough) |
+| `0x17` | `R5G6B5` | 2 / px | 0 | INFERRED |
+| `0x14` | `R8G8B8` | **3** / px | 0 | INFERRED |
+| `0x1C` / `0x32` | `A8` / `L8` | 1 / px | 0 | INFERRED |
+| `0x21` | `X8B8G8R8` | 4 / px | 0 | INFERRED |
+
+20,532 records in all. **`0x1A` was missing from every reader in the repo**, whose whitelist scanners
+silently skipped all 3,440 mask textures (17%); earlier tables here also had `0x14` as X8R8G8B8 and
+`0x16` as R5G6B5 — both wrong per the D3DFORMAT enum. `mipDataSize` in each descriptor equals the
+format formula: DXT `ceil(w/4)·ceil(h/4)·blockBytes`, uncompressed `w·h·bytesPerPixel`.
 
 ## Flags (`format+0x04`) — INFERRED
 
@@ -157,8 +173,9 @@ the deflate body — the match-finder differs by zlib version. Consequences:
 | 24-byte MipDesc `{idx,w,h,0,1,size}` | **CONFIRMED** | every mip matches format formula; sums to `unc` |
 | Multi-stream = payload split at `0x180000`, concatenated | **CONFIRMED** | 4-stream texture decompresses to exact `unc` |
 | Streams are standard zlib | **CONFIRMED** | inflate + adler32 verified on all 12,559 |
-| `format` = D3DFMT int / DXT 4CC + meanings | **CONFIRMED** | decomp `FUN_009bb910 @0x009bb910`, `FUN_00dee1c0 @0x00dee1c0`; bytes |
+| `format` = D3DFORMAT passed to `CreateTexture` unmapped | **CONFIRMED** | `0x660470` region → desc `+0xC` → `0x65fa90` → vtable `+0x150` → `FUN_00dedac0`; census of 20,532 retail records (§Format codes) |
 | ALBS magic `0x53424C41` dispatch | **CONFIRMED** | decomp @0x00e34f70-region; sub-pack bytes |
 | `flags` semantics (usage bits) | **INFERRED** | name-suffix correlation only; preserved verbatim on write |
-| DXT3 / X8R8G8B8 / A8 / L8 / R5G6B5 decode | **INFERRED** | format map known; not exercised (absent from Global packs) |
+| A4R4G4B4 (`0x1A`) | **CONFIRMED** | 3,440 retail mask textures, mip0 = w·h·2 on every one |
+| DXT3 / X8R8G8B8 / R5G6B5 / R8G8B8 / A8 / L8 decode | **INFERRED** | D3DFORMAT passthrough; not exercised (absent from retail) |
 | DEFLATE byte-reproduction | **NOT ACHIEVABLE** | modern zlib can't match 2009 encoder (adler ok, body differs) |

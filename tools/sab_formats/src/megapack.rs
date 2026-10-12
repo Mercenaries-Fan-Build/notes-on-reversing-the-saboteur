@@ -11,8 +11,10 @@
 //!        boundary (the file ends on one)
 //!
 //! Entry (20 bytes)
-//!   +0x00  u32  crc      path_crc = pandemic_hash("global\\<name>.dynpack"); the lookup key
-//!   +0x04  u32  index    name_crc = pandemic_hash(name) (a streamblock ordinal in world packs)
+//!   +0x00  u32  crc      pandemic_hash of the asset's pack path (`map6::pack_counts`,
+//!                        `map6::streamblock_path`); the lookup key
+//!   +0x04  u32  index    the id of a streamblock; for an object, its map record hash, except the
+//!                        France cinematic packs, whose name's leading number it is
 //!   +0x08  u32  size     sub-pack byte length
 //!   +0x0C  u64  offset   absolute offset of the sub-pack
 //! ```
@@ -32,9 +34,9 @@ pub const PAD: u8 = 0xCB;
 /// One index entry (20 bytes on disk).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// `path_crc` — the key the mounter looks entries up by.
+    /// `pandemic_hash` of the pack path — the key the mounter looks entries up by.
     pub crc: u32,
-    /// `name_crc` for Global dynpacks; a streamblock ordinal for world packs.
+    /// The id of a streamblock; for an object, its map record hash (see the module docs).
     pub index: u32,
     /// Sub-pack byte length.
     pub size: u32,

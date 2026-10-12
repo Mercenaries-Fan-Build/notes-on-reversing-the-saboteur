@@ -190,12 +190,12 @@ impl Settings {
         match version {
             Some(crate::source::GameVersion::Prototype2008Xbox360) => {
                 // Prototype root can be either the extract's outer dir (containing `Bin360/`)
-                // or Bin360 itself — both fingerprint. Report relative to what's actually
-                // there so the paths render meaningfully.
-                let bin_prefix = if std::path::Path::new(&format!("{}/Bin360", self.game_dir)).is_dir() {
-                    "Bin360/"
-                } else {
-                    ""
+                // or the Bin360 contents under any name — `source::prototype2008_bin360` decides.
+                // Report relative to what's actually there so the paths render meaningfully.
+                let root = std::path::Path::new(&self.game_dir);
+                let bin_prefix = match crate::source::prototype2008_bin360(root) {
+                    Some(bin) if bin != root => "Bin360/",
+                    _ => "",
                 };
                 let p = |rel: &str| format!("{bin_prefix}{rel}");
                 vec![

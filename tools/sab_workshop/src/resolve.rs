@@ -92,12 +92,12 @@ pub fn classify(name: &str) -> Role {
 /// head submeshes need. Duplicate names collapse to the first occurrence.
 pub fn load_character_textures(megapack_path: &str, token: &str) -> Result<Vec<TexAsset>, String> {
     let mp = Megapack::open(megapack_path)?;
-    Ok(textures_in(&mp, token))
+    textures_in(&mp, token)
 }
 
 /// As `load_character_textures`, but over an already-open megapack (the app keeps one resident for
 /// browsing + click-to-load, so re-reading 715 MB per asset would be wasteful).
-pub fn textures_in(mp: &Megapack, token: &str) -> Vec<TexAsset> {
+pub fn textures_in(mp: &Megapack, token: &str) -> Result<Vec<TexAsset>, String> {
     // The token (character name) can appear anywhere in a bundle — its main body textures live past
     // any small header window (proven: a 64 KB window found only 3 of 222) — so the token match must
     // scan every sub-pack fully. To avoid faulting the whole 714 MB pack into our working set (which
@@ -107,7 +107,7 @@ pub fn textures_in(mp: &Megapack, token: &str) -> Vec<TexAsset> {
     let mut seen: Vec<String> = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
     for (i, e) in mp.entries().iter().enumerate() {
-        let sub = mp.read_into(e, &mut buf);
+        let sub = mp.read_into(e, &mut buf)?;
         if !sub.is_empty() && pack::contains_ascii_ci(sub, token) {
             collect_records(sub, &mut out, &mut seen);
         }
@@ -116,7 +116,7 @@ pub fn textures_in(mp: &Megapack, token: &str) -> Vec<TexAsset> {
         }
     }
     out.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
-    out
+    Ok(out)
 }
 
 /// Every texture in ONE bundle — used for a model loaded from the navigator (its own bundle carries
@@ -301,14 +301,14 @@ pub fn take_hashes_from_packs(
     packs: &[&Megapack],
     needed: &mut std::collections::HashSet<u32>,
     out: &mut std::collections::HashMap<u32, TexAsset>,
-) {
+) -> Result<(), String> {
     let mut buf: Vec<u8> = Vec::new();
     for mp in packs {
         for (i, e) in mp.entries().iter().enumerate() {
             if needed.is_empty() {
-                return;
+                return Ok(());
             }
-            let sub = mp.read_into(e, &mut buf);
+            let sub = mp.read_into(e, &mut buf)?;
             if !sub.is_empty() {
                 take_hashes_from_slices(&[sub], needed, out);
             }
@@ -317,6 +317,7 @@ pub fn take_hashes_from_packs(
             }
         }
     }
+    Ok(())
 }
 
 /// The texture pool for a model loaded from the navigator.
@@ -327,20 +328,24 @@ pub fn take_hashes_from_packs(
 /// diffuse. `packs` should be the dynamic pack AND `Palettes0` (see `Config::palettes`). An empty
 /// pool means nothing matched: the model renders white and the picker has nothing to offer, which
 /// the Materials panel says out loud.
-pub fn texture_pool_for(packs: &[&Megapack], model_name: &str, bundle: &[u8]) -> Vec<TexAsset> {
+pub fn texture_pool_for(
+    packs: &[&Megapack],
+    model_name: &str,
+    bundle: &[u8],
+) -> Result<Vec<TexAsset>, String> {
     let own = textures_in_slice(bundle);
     if own.iter().any(|a| a.role == Role::Diffuse) {
-        return own;
+        return Ok(own);
     }
     for tok in name_tokens(model_name) {
         for mp in packs {
-            let hit = textures_in(mp, &tok);
+            let hit = textures_in(mp, &tok)?;
             if hit.iter().any(|a| a.role == Role::Diffuse) {
-                return hit;
+                return Ok(hit);
             }
         }
     }
-    own
+    Ok(own)
 }
 
 /// Per-submesh texture assignment persisted next to the mesh (`<mesh>.materials.json`). Stores

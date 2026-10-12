@@ -585,11 +585,8 @@ fn write_glb(
         }
         nodes.push(n);
     }
-    // ---- scenes: one per level, each the skeleton + that level's mesh node ----
-    //
-    // The skeleton's root nodes are shared by every scene. Blender 5.2's importer turns each scene
-    // into a collection named after it (default), or — with "Scene as Collection" unticked — into its
-    // own Blender scene, the armature linked into each; scene 0 (LOD0) is the default.
+    // ---- scenes: one per level, each the skeleton's roots + that level's mesh node; scene 0 (LOD0)
+    // is the default ----
     let mut scenes: Vec<serde_json::Value> = Vec::new();
     for (m, &lod) in levels.iter().enumerate() {
         let mut mn = serde_json::json!({ "name": lod_object_name(label, lod), "mesh": m });

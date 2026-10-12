@@ -2816,10 +2816,10 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
                 ui.add(
                     egui::TextEdit::singleline(&mut sx.s.vgmstream_path)
                         .desired_width(320.0)
-                        .hint_text("path to vgmstream-cli.exe"),
+                        .hint_text("path to vgmstream-cli"),
                 );
                 if ui.button("Browse…").clicked() {
-                    let mut dlg = rfd::FileDialog::new().set_title("Select vgmstream-cli.exe");
+                    let mut dlg = rfd::FileDialog::new().set_title("Select vgmstream-cli");
                     if cfg!(windows) {
                         dlg = dlg.add_filter("executable", &["exe"]);
                     }

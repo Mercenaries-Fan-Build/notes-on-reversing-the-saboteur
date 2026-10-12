@@ -960,6 +960,7 @@ fn usage() -> ! {
 mod audio;
 mod editnodes;
 mod gametext;
+mod megapack_layout;
 mod texbind;
 
 fn main() {
@@ -979,6 +980,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "audio" {
         audio::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "megapack-layout" {
+        megapack_layout::run(&args[2..]);
         return;
     }
     if args.len() < 4 {

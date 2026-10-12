@@ -77,9 +77,7 @@ mod tests {
     use crate::sources::prototype2008_anim::{Anim2008Catalog, Clip2008, ClipCodec};
 
     fn test_bin360() -> Option<std::path::PathBuf> {
-        let root = std::path::PathBuf::from(
-            "c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360",
-        );
+        let root = crate::testenv::prototype2008_bin360()?;
         if root.join("Animations.pack").is_file() { Some(root) } else { None }
     }
 

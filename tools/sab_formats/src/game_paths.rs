@@ -1,20 +1,15 @@
-//! Finding the game's files — the one implementation every crate shares.
+//! Locating the game's files.
 //!
-//! Two things live here because they are facts about the game's on-disk layout, not policy of any one
-//! tool:
+//! * [`retail_root`] — whether a folder is a retail PC install (`Global/Dynamic0.megapack` +
+//!   `Saboteur.exe`).
+//! * [`proto2008_bin360`] — the June 2008 Xbox 360 prototype's `Bin360` content directory, recognised by
+//!   its contents, not its folder name.
+//! * [`LOCAL_CONFIG`] — the machine-local `.sab-local.toml` naming where the installs are.
 //!
-//! * **What a folder is.** [`retail_root`] (a retail PC install: `Global/Dynamic0.megapack` +
-//!   `Saboteur.exe`) and [`proto2008_bin360`] (the June 2008 Xbox 360 prototype's `Bin360` content
-//!   directory, recognised by its contents, not its folder name). Detection, loaders and tests all call
-//!   these, so they cannot disagree about a folder.
-//! * **Where this machine keeps them.** [`LOCAL_CONFIG`], a git-ignored `.sab-local.toml` at the
-//!   repository root, modelled on the Mercenaries 2 repo's `.mercs2-local.toml`.
-//!
-//! The rule is: **no hardcoded machine paths**. Every path comes from the environment or from
-//! [`LOCAL_CONFIG`]. Game-gated tests (the `retail` feature) read [`LOCAL_CONFIG`] only, through the
-//! `local_config_*` functions, and panic with the error they return — which names the missing file, key
-//! or path. Tools read the environment first ([`RETAIL_DIR_VAR`], [`PROTO2008_DIR_VAR`]) and fall back to
-//! the config ([`retail_dir`], [`proto2008_bin360_dir`]).
+//! Game-gated tests (the `retail` feature) read [`LOCAL_CONFIG`] through the `local_config_*` functions
+//! and panic with the error they return, which names the missing file, key or path. Tools read the
+//! environment first ([`RETAIL_DIR_VAR`], [`PROTO2008_DIR_VAR`]) and fall back to the config
+//! ([`retail_dir`], [`proto2008_bin360_dir`]).
 
 use std::path::{Path, PathBuf};
 
@@ -25,8 +20,6 @@ use std::path::{Path, PathBuf};
 /// * `retail_dir` — a retail PC install root (GOG or Steam), see [`retail_root`].
 /// * `proto2008_dir` — the June 2008 Xbox 360 prototype: its extract folder or its `Bin360` contents
 ///   under any name, see [`proto2008_bin360`].
-///
-/// Keys are added here as code starts reading them; a key nothing reads does not belong in the list.
 pub const LOCAL_CONFIG: &str = ".sab-local.toml";
 
 /// The `retail_dir` key of [`LOCAL_CONFIG`].

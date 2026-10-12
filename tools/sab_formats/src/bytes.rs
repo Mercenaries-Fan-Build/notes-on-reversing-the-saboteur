@@ -1,8 +1,7 @@
-//! Bounds-checked scalar reads over `&[u8]` — the one reader set every format module uses.
+//! Bounds-checked scalar reads over `&[u8]`, little- and big-endian.
 //!
-//! Every read names the field it is reading, so a malformed file fails with *what* was being read and
-//! *where*, never with an index panic or a silently-defaulted value. Little- and big-endian (the 2008
-//! Xbox 360 prototype is big-endian). Zero-copy: these borrow the caller's bytes.
+//! Every read takes the name of the field being read; an out-of-bounds read returns an error naming
+//! the field, the offset and the buffer length. The readers borrow the caller's bytes.
 
 /// The `len` bytes at `off`, or an error naming `field`, the offset and the buffer length.
 pub fn slice<'a>(b: &'a [u8], off: usize, len: usize, field: &str) -> Result<&'a [u8], String> {

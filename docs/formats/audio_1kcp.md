@@ -31,6 +31,30 @@ holds `28` (= `0x1C`), and `+0x18` holds `0x1C + bankCount*12` on every pack.
   decode this; **vgmstream** can (it rebuilds the Wwise codebooks). wem IDs are unique within a pack.
 - Banks additionally contain embedded `.wem` (SFX) inside their `DATA` section, indexed by `DIDX`.
 
+## The `.wem` codec, and decoding it in Rust (2026-10-12)
+
+**Every retail `.wem` is the same variant — PROVEN.** A census of the 24,268 `.wem` carved from the
+Steam install (English VO + `Saboteur.pck` streams and bank media; stage-2 goldens): all are RIFF/WAVE,
+`fmt` tag `0xFFFF`, a **0x28-byte `fmt` chunk plus a separate `vorb` chunk** (the 2008-era Wwise
+layout), mono or stereo, 8–44.1 kHz (32 kHz for 24,198). Each stream carries a **full Vorbis setup
+header with inline codebooks** and 6-byte packet headers — not IDs into a packed codebook library.
+
+**Rust decode path — PROVEN on retail data:** the `ww2ogg` crate (0.1.0, BSD-3-Clause, a port of hcs's
+ww2ogg) converts Wwise Vorbis to standard Ogg Vorbis, and `lewton` (MIT/Apache-2.0, pure Rust) decodes
+that to PCM. Use the builder with **`full_setup(true)` and `inline_codebooks(true)`**:
+
+* 24,268 / 24,268 convert and decode (3.59 G interleaved samples). The packed-codebook modes fail on all
+  of them (`invalid codebook id 0x342`).
+* The crate's `validate()` rejects 49 SFX — its only check is "more than 10% of a packet's samples at
+  ±32767", and these sounds genuinely clip. Do not gate on it.
+* **Oracle:** on 80 files (the 49 + 31 spread over the rest) the Rust port's Ogg output is
+  **byte-identical** to the original C++ `ww2ogg` 0.24 (SabTool's `tools/ww2ogg/ww2ogg.exe`, run under
+  Wine), and `lewton` decodes **exactly** the sample count each `.wem` header declares.
+* Not cross-checked: `lewton`'s PCM against libvorbis/vgmstream sample-for-sample — the
+  `tools/vgmstream/` copy lacks its DLLs (`libvorbis.dll`, ffmpeg, …) and cannot start.
+
+Method: scratch probe `wem_decode_test` (to move into `tools/sab_probe`).
+
 ## Pack inventory (retail install)
 
 | Pack | Streamed lines | Banks | Notes |

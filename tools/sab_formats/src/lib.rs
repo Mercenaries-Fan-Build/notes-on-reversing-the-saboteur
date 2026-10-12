@@ -5,11 +5,14 @@
 //! crate for the pieces that are provably identical between the two games, and implement
 //! everything Saboteur-specific here.
 //!
+//! ## Shared primitives (one copy each; every module and tool uses these)
+//! * [`hash`] — the resource-name hash, `Saboteur.exe FUN_00dc1e20` reproduced exactly; re-exported
+//!   as [`pandemic_hash`]. Not `mercs2_formats::hash::pandemic_hash_m2`: the engine sign-extends
+//!   each byte (`movsx` at `0x00dc1e33`), so names with bytes `>= 0x80` hash differently.
+//! * [`bytes`] — bounds-checked LE/BE scalar reads that name the field on failure.
+//! * [`zlib`] — inflate to an exact declared length; deflate.
+//!
 //! ## Reused from `mercs2_formats` (proven identical)
-//! * **Resource-name hash** — Saboteur's `pandemic_hash` (`Saboteur.exe FUN_00dc1e20`:
-//!   FNV-1a/32, basis `0x811C9DC5`, prime `0x01000193`, per-byte `|0x20` case-fold,
-//!   finalizer `^0x2A` then `*prime`) is byte-for-byte `mercs2_formats::hash::pandemic_hash_m2`.
-//!   Re-exported below as [`pandemic_hash`]. Sanity: `pandemic_hash("ANY") == 0xED057225`.
 //! * **SGES block codec** — `docs/formats/archive_and_models.md` records SGES as "same as
 //!   Mercs 2, byte-identical"; reuse [`mercs2_formats::sges::decompress_sges`].
 //! * **Bounds-checked cursor** — `mercs2_formats::safe_slice::SafeSlice` models engine pointer
@@ -24,21 +27,23 @@
 //! Each module exposes a pure parser over `&[u8]` plus the structural facts a validator needs.
 
 pub mod ap0l;
+pub mod bytes;
 pub mod spline_edit;
 pub mod dtex;
 pub mod editnodes;
 pub mod game_paths;
 pub mod gametemplates;
 pub mod gametext;
+pub mod hash;
 pub mod loosefiles;
 pub mod megapack;
 pub mod mesh;
 pub mod sbla;
 pub mod wwise;
+pub mod zlib;
 
-/// Saboteur resource-name hash. Identical to `mercs2_formats::hash::pandemic_hash_m2`
-/// (`Saboteur.exe FUN_00dc1e20`). Empty string hashes to 0.
-pub use mercs2_formats::hash::pandemic_hash_m2 as pandemic_hash;
+/// Saboteur resource-name hash (`Saboteur.exe FUN_00dc1e20`); see [`hash`].
+pub use hash::{pandemic_hash, pandemic_hash_bytes};
 
 /// SGES segmented-deflate block decompressor. The Saboteur's SGES framing is byte-identical
 /// to Mercenaries 2 (see `docs/formats/archive_and_models.md`).
@@ -48,22 +53,13 @@ pub use mercs2_formats::sges::decompress_sges;
 /// [`AccessViolation`] rather than panicking.
 pub use mercs2_formats::safe_slice::{AccessViolation, SafeSlice};
 
-/// Little-endian scalar readers reused from `mercs2_formats` (panic on OOB; use [`SafeSlice`]
-/// when you need the fallible, engine-faithful variant).
+/// Panicking little-endian readers from `mercs2_formats`, kept only for `ap0l` until the Havok code
+/// is unified in stage 5 of `docs/tools/format_consolidation.md`; new code uses [`bytes`].
 pub use mercs2_formats::ffcs::{read_f32_le, read_u16_le, read_u32_le};
 
 #[cfg(test)]
 mod foundation_tests {
     use super::*;
-
-    /// The load-bearing reuse claim: `mercs2_formats`'s M2 hash reproduces Saboteur ground
-    /// truth. `hash("ANY") == 0xED057225` is the sanity value pinned in
-    /// `docs/formats/megapack_key_derivation.md`.
-    #[test]
-    fn pandemic_hash_matches_saboteur_ground_truth() {
-        assert_eq!(pandemic_hash("ANY"), 0xED05_7225);
-        assert_eq!(pandemic_hash(""), 0);
-    }
 
     /// A real `Global\Dynamic0.megapack` key pair (resource "Act1_IntKey"): the engine's
     /// `path_crc = pandemic_hash("global\\<name>.dynpack")` and `name_crc = pandemic_hash(name)`.

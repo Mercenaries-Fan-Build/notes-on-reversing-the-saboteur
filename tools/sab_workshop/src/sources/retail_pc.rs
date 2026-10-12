@@ -93,7 +93,7 @@ impl GameSource for RetailPcSource {
             .enumerate()
             .map(|(i, e)| AssetHandle {
                 key: i as u64,
-                hash: Some(crate::pack::pandemic_hash(&e.name)),
+                hash: Some(sab_formats::pandemic_hash(&e.name)),
                 name: e.name.clone(),
                 kind: AssetKind::Mesh,
             })

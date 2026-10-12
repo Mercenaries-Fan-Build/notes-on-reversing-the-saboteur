@@ -261,7 +261,7 @@ presentation for a leaf's bytes:
 | otherwise | opaque bytes |
 
 LuaParam type markers (little-endian bytes): float `a9 bd 93 2b`, bool `31 4f 44 1b` or `0f 00 00 00`,
-string-list `f9 9d 05 b9`, string `c2 99 b7 f5`.
+CRC list `f9 9d 05 b9`, string `c2 99 b7 f5`.
 
 **The markers are hashed type names**, under the same convention as the tags — read the 4 marker
 bytes as a little-endian `u32` and it is `pandemic_hash` of a `Lua<Type>` name:
@@ -271,11 +271,29 @@ bytes as a little-endian `u32` and it is `pandemic_hash` of a `Lua<Type>` name:
 | `a9 bd 93 2b` | `0x2b93bda9` | `pandemic_hash("LuaFloat")` |
 | `31 4f 44 1b` | `0x1b444f31` | `pandemic_hash("LuaBool")` |
 | `c2 99 b7 f5` | `0xf5b799c2` | `pandemic_hash("LuaString")` |
-| `f9 9d 05 b9` | `0xb9059df9` | **unresolved** (not `LuaStringList`/`LuaTable`/`LuaArray`/…; ~29k candidates tried) |
+| `f9 9d 05 b9` | `0xb9059df9` | `pandemic_hash("LuaCrcList")` (resolved 2026-10-12, from a hint by Katalizator; the exe holds the string `"LUACRCLIST"`, and the hash folds case) |
 | `0f 00 00 00` | `0x0000000f` | not a hash — a small enum, alternate bool encoding |
 
-None of the five appear as literals anywhere in the decomp, which is consistent with them being
-hashes computed at runtime rather than compiled-in constants.
+The engine reads these in **`FUN_01634800`** @0x01634800 (and the near-copy `FUN_01634460`), for a
+field whose hash is `0xDB0F705C` = `pandemic_hash("LuaParam")`: a name string (≤ 128 bytes), a `u32`
+type hash, then by type (PROVEN, decomp lines 1762748–1762811):
+
+| type | `pandemic_hash` of | payload | dropped when |
+|---|---|---|---|
+| `0x3290ba65` | `LuaCrc` | `u32` hash | it is `0x4ff9f863` = `pandemic_hash("none")` |
+| `0x1b444f31` | `LuaBool` | 1 byte | it is 0 |
+| `0x2b93bda9` | `LuaFloat` | 4 bytes | — |
+| `0xf0676c78` | `LuaInt` | 4 bytes (same read as float) | — |
+| `0xf5b799c2` | `LuaString` | string ≤ 128 bytes | it is empty or `"none"` (case-insensitive) |
+| `0xb9059df9` | `LuaCrcList` | count, then count strings ≤ 128 bytes, stored as a Lua table indexed 1…count | — |
+
+`0x404d1343` = `pandemic_hash("LuaTable")` is checked as a *field* hash in the same function, not as a
+type. `FUN_0064bbc5` switches on the same type hashes when it writes parameters out, with the tag
+strings `"LUACRC"` and `"LUACRCLIST"`. Not established: whether the list's count is a `u32` or `i32`
+(read by `FUN_0045ef30`), and why bools sometimes carry `0x0000000f`.
+
+An earlier version of this section said none of these hashes appear as literals in the decomp. That
+was wrong: all of them are compared as constants in the three functions above.
 
 A mis-decode here is cosmetic: leaf `data` is kept verbatim either way, so it can change how a value
 is *shown* but never how the file is framed or rewritten.
@@ -544,7 +562,7 @@ keep falling through to base.
 | all 7 loose-file entries are pack-only (no on-disk fallback copy) | **CONFIRMED** (filesystem, all 7) |
 | therefore reordering/inserting makes those assets unloadable | **INFERRED, UNTESTED** — the failure path of the disk fallback was never traced and the game has never been run with a modified `loosefiles`. Resize-in-place is unaffected either way. |
 | `size == 0xFFFFFFFF` means "open the real file from disk" | **CONFIRMED** (`FUN_00dc1060`) |
-| LuaParam markers are `pandemic_hash("LuaFloat"/"LuaBool"/"LuaString")` | **CONFIRMED** (3/4 preimages reproduce exactly; the string-list marker is unresolved) |
+| LuaParam markers are `pandemic_hash("LuaFloat"/"LuaBool"/"LuaString"/"LuaCrcList")` | **CONFIRMED** (4/4 preimages reproduce exactly; reader `FUN_01634800`) |
 | entry root = EditNode `{u32 ver=0, u32 count, Nodes}` | **CONFIRMED** (767/767 embedded + 3/3 DLC roots are version 0) |
 | node = `{u32 tag, u32 n, data}`; `n` = byte-len (leaf) or child-count (container) | **CONFIRMED (framing)** — exact-consume proves the split is resolved correctly on all retail nodes |
 | `tag == pandemic_hash(paramName)` little-endian, for PARAMETER nodes | **CONFIRMED** (250/264 dictionary names hash-verify; the `NodeNN`/`FenceNN` families reproduce 113 pack tags from the exe's own `sprintf` templates) |

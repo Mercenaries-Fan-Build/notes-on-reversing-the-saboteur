@@ -431,8 +431,9 @@ pub fn run(mut cfg: Config) {
     let mut sel_tex: Option<usize> = None;
     let mut thumbs = Thumbs::default();
     let mut bone_depth: Vec<usize> = bone_depths(&skel);
-    // Every part of the clicked asset — a character is assembled, not shown one piece at a time.
-    let mut pending_model: Option<Vec<usize>> = None;
+    // Every part of the clicked asset — a character is assembled, not shown one piece at a time —
+    // with its level of detail, plus notes on any model reference the install cannot supply.
+    let mut pending_model: Option<crate::assets::Assembly> = None;
     let mut nav_search = String::new();
     // Outcome of the last click-to-load, surfaced in the status bar: (message, is_error).
     let mut load_status: Option<(String, bool)> = None;
@@ -442,7 +443,9 @@ pub fn run(mut cfg: Config) {
     // opens on — the one you are looking at before you touch anything — counted as "nothing loaded"
     // and could not be exported until you clicked something else. The boot parts come from the same
     // `cfg.megapack` the exporter reopens, so their offsets are valid there.
-    let mut current_parts: Vec<meshload::MeshEntry> = boot_parts.clone();
+    let mut current_parts: Vec<meshload::PartPick> = boot_parts.clone();
+    // The current assembly's notes (model references the install does not have) — into the bundle.
+    let mut current_lod_notes: Vec<String> = Vec::new();
     // In-flight background bundle export, polled once per frame.
     let mut exporter: Option<Exporter> = None;
     // Is a texture resolve still in flight for the current model? An export started before it lands
@@ -912,6 +915,7 @@ pub fn run(mut cfg: Config) {
                                 megapack: cfg.megapack.clone(),
                                 label: model_name.clone(),
                                 parts: current_parts.clone(),
+                                lod_notes: current_lod_notes.clone(),
                                 submeshes: submeshes.clone(),
                                 assets: assets.clone(),
                                 submesh_tex: submesh_tex.clone(),
@@ -950,13 +954,22 @@ pub fn run(mut cfg: Config) {
                     // Don't consume the click until the megapack has streamed in (staged load), else a
                     // click made while the model list is up but the pack isn't yet would be dropped.
                     if megapack.is_some() {
-                    if let Some(mis) = pending_model.take() {
-                        let picked: Vec<meshload::MeshEntry> =
-                            mis.iter().filter_map(|i| mesh_list.get(*i).cloned()).collect();
+                    if let Some(asm) = pending_model.take() {
+                        let picked: Vec<meshload::PartPick> = asm
+                            .picks
+                            .iter()
+                            .filter_map(|&(i, lod)| {
+                                mesh_list.get(i).cloned().map(|entry| meshload::PartPick { entry, lod })
+                            })
+                            .collect();
                         if let (Some(mp), false) = (&megapack, picked.is_empty()) {
                             match meshload::assemble(mp.raw(), &picked) {
                                 Ok(lm) => {
                                     current_parts = picked.clone(); // for glTF export
+                                    current_lod_notes = asm.notes.clone();
+                                    for n in &asm.notes {
+                                        eprintln!("[sab_workshop] {n}");
+                                    }
                                     let nbones = lm.bones.len();
                                     renderer.set_mesh(&lm.mesh, nbones);
                                     skel = lm.bones;
@@ -997,14 +1010,27 @@ pub fn run(mut cfg: Config) {
                                     // came from the pack, so its sidecar is its own, never the
                                     // startup mesh's (which is what it used to overwrite).
                                     tex_profile = resolve::profile_path(&model_name);
+                                    // Per level: the triangle total spans every level, so say which.
+                                    let mut per_lod: std::collections::BTreeMap<u8, (usize, u32)> =
+                                        Default::default();
+                                    for (_, _, n, lod) in &lm.part_ranges {
+                                        let e = per_lod.entry(*lod).or_default();
+                                        e.0 += 1;
+                                        e.1 += n / 3;
+                                    }
+                                    let levels = per_lod
+                                        .iter()
+                                        .map(|(l, (parts, tris))| format!("LOD{l} {parts} parts / {tris} tris"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    let missing = if asm.notes.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" — {} model reference(s) not in this install", asm.notes.len())
+                                    };
                                     load_status = Some((
-                                        format!(
-                                            "{}: {} tris, {nbones} bones, {} textures",
-                                            lm.name,
-                                            mesh_stats.1,
-                                            assets.len()
-                                        ),
-                                        false,
+                                        format!("{}: {levels}, {nbones} bones{missing}", lm.name),
+                                        !asm.notes.is_empty(),
                                     ));
                                     println!(
                                         "[sab_workshop] loaded {}: {} verts, {} tris, {nbones} bones, {} submeshes, {} textures",
@@ -1255,17 +1281,17 @@ enum BgMsg {
 /// way, so they must be textured by the same rules (the engine's material table).
 fn spawn_tex_resolve(
     cfg: &Config,
-    parts: &[meshload::MeshEntry],
-    part_ranges: &[(String, u32, u32)],
+    parts: &[meshload::PartPick],
+    part_ranges: &[(String, u32, u32, u8)],
     submeshes: &[SubMesh],
     req: u64,
     tx: std::sync::mpsc::Sender<(u64, Result<ModelTex, String>)>,
 ) {
-    // Every part, with the slice of the index buffer it owns.
+    // Every part (every level), with the slice of the index buffer it owns.
     let pinfo: Vec<(String, usize, u32, u32)> = part_ranges
         .iter()
-        .map(|(n, i0, ilen)| {
-            let off = parts.iter().find(|e| &e.name == n).map(|e| e.file_off).unwrap_or(0);
+        .map(|(n, i0, ilen, _)| {
+            let off = parts.iter().find(|p| &p.entry.name == n).map(|p| p.entry.file_off).unwrap_or(0);
             (n.clone(), off, *i0, *ilen)
         })
         .collect();
@@ -1638,9 +1664,12 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
         if !filt.is_empty() && !a.name.to_ascii_lowercase().contains(&filt) {
             continue;
         }
-        let idxs = a.assembly();
-        let picked: Vec<meshload::MeshEntry> =
-            idxs.iter().filter_map(|i| mesh_list.get(*i).cloned()).collect();
+        let picked: Vec<meshload::PartPick> = a
+            .assembly()
+            .picks
+            .iter()
+            .filter_map(|&(i, lod)| mesh_list.get(i).cloned().map(|entry| meshload::PartPick { entry, lod }))
+            .collect();
         if picked.is_empty() {
             continue;
         }
@@ -1653,8 +1682,8 @@ pub fn texcheck(cfg: Config, filter: &str) -> i32 {
         let pinfo: Vec<(String, usize, u32, u32)> = lm
             .part_ranges
             .iter()
-            .map(|(nm, i0, ilen)| {
-                let off = picked.iter().find(|e| &e.name == nm).map(|e| e.file_off).unwrap_or(0);
+            .map(|(nm, i0, ilen, _)| {
+                let off = picked.iter().find(|p| &p.entry.name == nm).map(|p| p.entry.file_off).unwrap_or(0);
                 (nm.clone(), off, *i0, *ilen)
             })
             .collect();
@@ -2638,7 +2667,7 @@ struct NavCtx<'a> {
     /// The selected asset (whose parts the inspector shows).
     sel_asset: &'a mut Option<usize>,
     assets: &'a [resolve::TexAsset],
-    pending_model: &'a mut Option<Vec<usize>>,
+    pending_model: &'a mut Option<crate::assets::Assembly>,
     /// Loaded model's name, so the browser can mark the active row.
     current_model: &'a str,
     /// The rig, for the Rig page's tree.
@@ -3163,7 +3192,8 @@ fn build_ui(
                 // The label says the verb; the tooltip says what lands on disk. Spelling the whole
                 // bundle out on the button made it the widest thing in the app.
                 r.on_hover_text(
-                    "Export bundle — writes model.glb (skinned, one primitive per submesh), \
+                    "Export bundle — writes model.glb (skinned, one object per level of detail, \
+                     one primitive per submesh), \
                      textures/*.png, the verbatim raw/ source records, and manifest.json (the \
                      reassembly map).",
                 );
@@ -3912,7 +3942,11 @@ fn build_ui(
                                         .size(10.5),
                                 );
                                 if r.clicked() {
-                                    *nav.pending_model = Some(vec![p.mesh_index]);
+                                    // One part on its own: its geometry is shown as-is (level 0).
+                                    *nav.pending_model = Some(crate::assets::Assembly {
+                                        picks: vec![(p.mesh_index, 0)],
+                                        notes: Vec::new(),
+                                    });
                                 }
                             }
                         });

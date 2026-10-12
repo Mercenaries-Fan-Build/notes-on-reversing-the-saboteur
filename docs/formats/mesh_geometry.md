@@ -78,9 +78,16 @@ u32 primitiveIndex
 u32 material   (StringHash → external .materials / WSAO, not resolved in v1)
 u32 0
 u16 parentBone
-u16 unk
+u16 lodFlags   (low 3 bits = in-mesh LOD level; bit 3 is set at load, never on disk)
 ```
 Sean: 5 drawcalls, all `parentBone == 0`, materials 0xF26EC2DF / 0x512C225F / 0xB8B7E65A / 0x12B41B52 / 0x9030FA82.
+
+`lodFlags`: the MESH loader `FUN_00650470` builds the OdinMesh in place over this table and counts
+`count[(dc+0xe) & 7]++` per drawcall (OR-ing in bit 3 when the material's `+0x28 & 0x10` is set);
+`FUN_00e0d160` (SetupLodSegmentCount) keeps those counts and `FUN_00e0ce80` draws one level's run.
+Retail `Dynamic0.megapack`: levels 0–2 occur; every drawcall above level 0 (6716/6716) is in an
+UNSKINNED mesh (vehicles, weapons, some props). Characters do not use in-mesh levels — their LOD is a
+separate mesh named by the part template's `LowDetailModel` ([gametemplates.md](gametemplates.md)).
 
 ## Vertex format bitfield (`format` @ Stream+40)
 
@@ -137,4 +144,5 @@ mesh geometry.
 | Skin remap `boneIds[boneRemaps[i].boneId]` → global bone | **CONFIRMED** | toolset skin loop; resolved globals all < 191, spatially co-located |
 | BoneRemap.ibm bytes ignored (IBM recomputed as inverse(bindWorld)) | **CONFIRMED** | toolset uses `skeleton.ibms.at(boneId)`; our IBM composes to bind (dev 6e-7) |
 | Material hashes → external WSAO `.materials` | INFERRED (not needed v1) | toolset comment; not resolved here (untextured) |
-| `Stream.unk0 @136`, `Primitive.numFaces`, `DrawCall.unk` semantics | INFERRED | present & read, exact meaning unused |
+| `DrawCall.lodFlags & 7` = in-mesh LOD level | **CONFIRMED** | decomp `FUN_00650470` / `FUN_00e0d160` / `FUN_00e0ce80` (GOG exe); levels 0–2 in retail data |
+| `Stream.unk0 @136`, `Primitive.numFaces` semantics | INFERRED | present & read, exact meaning unused |

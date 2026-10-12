@@ -78,13 +78,13 @@ pub fn consume_megapack(buf: &[u8], name: &str, report: &mut Report, limit: Opti
         }
 
         match megapack::entry_slice(buf, e) {
-            Some(sub) => consume_sbla(sub, &loc, report),
-            None => report.push(Issue {
+            Ok(sub) => consume_sbla(sub, &loc, report),
+            Err(err) => report.push(Issue {
                 severity: Severity::Fatal,
                 code: "megapack.entry-unreadable",
                 format: "megapack",
                 location: loc,
-                message: "entry byte range is not within the archive".into(),
+                message: err,
                 engine_ref: Some("FUN_00e428c0 @0x00e428c0"),
             }),
         }

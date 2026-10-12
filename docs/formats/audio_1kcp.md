@@ -43,8 +43,9 @@ header with inline codebooks** and 6-byte packet headers — not IDs into a pack
 ww2ogg) converts Wwise Vorbis to standard Ogg Vorbis, and `lewton` (MIT/Apache-2.0, pure Rust) decodes
 that to PCM. Use the builder with **`full_setup(true)` and `inline_codebooks(true)`**:
 
-* 24,268 / 24,268 convert and decode (3.59 G interleaved samples). The packed-codebook modes fail on all
-  of them (`invalid codebook id 0x342`).
+* 24,268 / 24,268 convert and decode: 24,219 in the full corpus run (3.59 G interleaved samples), and
+  the other 49 in the 80-file comparison below. The packed-codebook modes fail on all of them
+  (`invalid codebook id 0x342`).
 * The crate's `validate()` rejects 49 SFX — its only check is "more than 10% of a packet's samples at
   ±32767", and these sounds genuinely clip. Do not gate on it.
 * **Oracle:** on 80 files (the 49 + 31 spread over the rest) the Rust port's Ogg output is

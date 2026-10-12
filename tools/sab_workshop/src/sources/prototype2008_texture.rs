@@ -623,7 +623,7 @@ fn hex4(t: &[u8; 4]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pack::pandemic_hash;
+    use sab_formats::pandemic_hash;
     use crate::sources::prototype2008_subpack::SubPack;
     use std::path::PathBuf;
 

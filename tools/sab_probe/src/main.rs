@@ -957,6 +957,7 @@ fn usage() -> ! {
     std::process::exit(2)
 }
 
+mod albs_keys;
 mod albs_survey;
 mod audio;
 mod editnodes;
@@ -985,6 +986,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "albs-survey" {
         albs_survey::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "albs-keys" {
+        albs_keys::run(&args[2..]);
         return;
     }
     if args.len() > 1 && args[1] == "megapack-layout" {

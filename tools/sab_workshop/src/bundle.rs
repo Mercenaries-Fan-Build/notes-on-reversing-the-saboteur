@@ -797,7 +797,8 @@ mod tests {
         let mut found: HashMap<u32, TexAsset> = HashMap::new();
         crate::resolve::take_hashes_from_slices(&[&own], &mut needed, &mut found);
         let after_own = needed.len();
-        crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found);
+        crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found)
+            .expect("whole-pack texture sweep");
         let after_sweep = needed.len();
 
         // Now report: how many submeshes had a normal-slot hash requested, and how many got resolved.
@@ -909,7 +910,8 @@ mod tests {
         let own_ref: Vec<&[u8]> = own.iter().map(|v| v.as_slice()).collect();
         crate::resolve::take_hashes_from_slices(&own_ref, &mut needed, &mut found);
         if !needed.is_empty() {
-            crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found);
+            crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found)
+                .expect("whole-pack texture sweep");
         }
         let mut assets: Vec<TexAsset> = Vec::new();
         let mut idx: HashMap<u32, usize> = HashMap::new();

@@ -21,13 +21,7 @@ fn u64at(b: &[u8], o: usize) -> u64 {
     u64::from_le_bytes([b[o], b[o+1], b[o+2], b[o+3], b[o+4], b[o+5], b[o+6], b[o+7]])
 }
 
-pub fn pandemic_hash(s: &str) -> u32 {
-    let mut h: u32 = 0x811C9DC5;
-    for c in s.bytes() {
-        h = (h ^ ((c | 0x20) as u32)).wrapping_mul(0x0100_0193);
-    }
-    (h ^ 0x2A).wrapping_mul(0x0100_0193)
-}
+use sab_formats::pandemic_hash;
 
 // --------------------------------------------------------------------------- megapack
 #[derive(Clone, Copy)]

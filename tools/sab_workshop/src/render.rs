@@ -629,7 +629,12 @@ impl Renderer {
                 pass.set_index_buffer(self.ibo.slice(..), wgpu::IndexFormat::Uint32);
                 // One draw per submesh, each with its own diffuse (or the white fallback). When
                 // textures are toggled off, everything binds white → the original flat-lit look.
+                // Level 0 only: a character's LOD1 parts share the space LOD0 occupies, and drawing
+                // both stacks two bodies (they are exported as separate objects instead).
                 for (i, sm) in self.submeshes.iter().enumerate() {
+                    if sm.lod != 0 {
+                        continue;
+                    }
                     let bg = if self.show_textures { &self.submesh_bg[i] } else { &self.fallback_bg };
                     pass.set_bind_group(1, bg, &[]);
                     let end = sm.index_start + sm.index_count;

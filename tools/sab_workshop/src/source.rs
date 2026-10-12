@@ -168,26 +168,12 @@ pub trait GameSource: Send + Sync {
 ///
 /// Detection is by **fingerprint**, not by user assertion — a mis-typed path can't crash a loader
 /// meant for a different version. Each version's fingerprint is layered from cheapest first to
-/// most specific: file existence → filename patterns → magic-byte reads only if needed.
-/// The 2008 prototype's `Bin360` content directory for `root`, by contents — not by folder name.
-///
-/// Either `root` contains a `Bin360/` subdir (the extract's outer folder), or `root` itself holds
-/// `Saboteur.xex` (the `Bin360` contents, under whatever name the user gave the folder). This is the
-/// ONE rule: detection, the loader and the tests all call it, so they cannot disagree about a folder.
-pub fn prototype2008_bin360(root: &Path) -> Option<std::path::PathBuf> {
-    if root.join("Bin360").is_dir() {
-        Some(root.join("Bin360"))
-    } else if root.join("Saboteur.xex").is_file() {
-        Some(root.to_path_buf())
-    } else {
-        None
-    }
-}
-
+/// most specific: file existence → filename patterns → magic-byte reads only if needed. Which folders
+/// qualify is decided by `sab_formats::game_paths` (`proto2008_bin360`, `retail_root`).
 pub fn detect_version(root: &Path) -> Option<(GameVersion, SourceFingerprint)> {
     // 2008 Xbox 360 prototype: inside its Bin360 content dir, `Saboteur.xex` (XEX2 magic) plus 1399
-    // `.packlog` files pin it down. See `prototype2008_bin360` for which folders qualify.
-    if let Some(dir) = prototype2008_bin360(root) {
+    // `.packlog` files pin it down. See `game_paths::proto2008_bin360` for which folders qualify.
+    if let Some(dir) = sab_formats::game_paths::proto2008_bin360(root) {
         let mut fp = SourceFingerprint::default();
         fp.matched(format!("Bin360 root: {}", dir.display()));
         if dir.join("Saboteur.xex").is_file() {
@@ -205,9 +191,7 @@ pub fn detect_version(root: &Path) -> Option<(GameVersion, SourceFingerprint)> {
     // Retail PC (GOG or Steam SecuROM twin): `Global/Dynamic0.megapack` + `Saboteur.exe` at root.
     // Steam adds `steam_api.dll` but the assets/formats are identical to GOG (see the
     // `steam-build-is-securom-twin-of-gog` memory).
-    let megapack = root.join("Global").join("Dynamic0.megapack");
-    let exe = root.join("Saboteur.exe");
-    if megapack.is_file() && exe.is_file() {
+    if sab_formats::game_paths::retail_root(root) {
         let mut fp = SourceFingerprint::default();
         fp.matched("Global/Dynamic0.megapack");
         fp.matched("Saboteur.exe");
@@ -265,21 +249,6 @@ mod tests {
         let (v, fp) = detect_version(root).expect("prototype detected");
         assert_eq!(v, GameVersion::Prototype2008Xbox360);
         assert!(fp.matched.iter().any(|m| m.contains("Bin360")));
-    }
-
-    /// A renamed `Bin360` (the contents, under any folder name) must be recognised by the same rule
-    /// detection and the loader share — the loader used to accept only the literal name `Bin360`.
-    #[test]
-    fn prototype2008_bin360_is_found_by_contents_not_folder_name() {
-        let base = std::env::temp_dir().join(format!("sab_bin360_rule_{}", std::process::id()));
-        let renamed = base.join("The Saboteur Jun 2008 Prototype");
-        std::fs::create_dir_all(&renamed).expect("mkdir");
-        std::fs::write(renamed.join("Saboteur.xex"), b"XEX2").expect("write");
-        assert_eq!(prototype2008_bin360(&renamed).as_deref(), Some(renamed.as_path()));
-        assert!(prototype2008_bin360(&base).is_none(), "a parent without Bin360/ is not the build");
-        std::fs::create_dir_all(base.join("Bin360")).expect("mkdir Bin360");
-        assert_eq!(prototype2008_bin360(&base), Some(base.join("Bin360")));
-        std::fs::remove_dir_all(&base).expect("cleanup");
     }
 
     #[test]

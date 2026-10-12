@@ -180,6 +180,17 @@ always 0. A few `LowDetailModel`s name a `_LOD` mesh that is not shipped (e.g.
 
 ---
 
+## Damage groups (props, vehicles, weapons, …)
+
+856 templates (Prop 677, CAR 53, …) carry a damage stream in the same flattened-list style: a
+`List 0x1AAC9531` marker naming `DamageGroups`, one `DamageGroups 0x49D5C2AE` entry per group
+(`GroupName 0xC8D0F617`, …), then a `PartList`, one part per `BoneName 0x207FBA52` with
+`DamageGroup 0xDD2AA7AB`, `Pristine 0x86DE6639`, health and effect keys. Parts name bones in the
+template's `Model` mesh; the group's state (0/1) shows the pristine or the damaged parts' drawcalls.
+Full key table, engine path and data counts: [damage_and_destruction.md](../damage_and_destruction.md).
+
+---
+
 ## Texture / icon references (RE-2 — how a template names a texture)
 
 A pair whose 4-byte `data` is a `pandemic_hash` can reference a **texture**: the value is

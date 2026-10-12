@@ -123,13 +123,31 @@ record still holds things we have not reversed. So the bundle keeps both halves.
 
 ```
 workshop_export/CH_AL_SeanDevlin_01_FX/
-  model.glb        skinned bind pose, ONE PRIMITIVE PER SUBMESH, each bound to its material
+  model.glb        skinned bind pose, ONE MESH OBJECT PER LEVEL OF DETAIL (<name>_LOD0,
+                   <name>_LOD1) on one shared skin, ONE PRIMITIVE PER SUBMESH, each bound to its
+                   material
   textures/*.png   every bound slot (diffuse / normal / spec / mask) BC-decoded and editable
   raw/*.msha       every source part's original on-disk record, byte-exact (the guarantee)
-  manifest.json    the reassembly map: submesh → material hashes → per-slot texture → how we
-                   knew, the bone table with name hashes, the source parts, and the FULL
-                   texture pool the character offered (exported or not)
+  manifest.json    the reassembly map: submesh → level + material hashes → per-slot texture → how
+                   we knew, the bone table with name hashes, the source parts with their level,
+                   `lods` (object name, triangles, parts per level), `lod_notes` (model
+                   references this install does not ship), and the FULL texture pool the
+                   character offered (exported or not)
 ```
+
+**Levels of detail.** A character clicked in the browser is assembled from its `GameTemplates`
+setup ([gametemplates.md](../../docs/formats/gametemplates.md#characters-body-setups-slots-and-lod)):
+one variation per setup slot — the first the setup lists — and, for each, the part template's
+`HighDetailModel` at LOD0 and its `LowDetailModel` at LOD1. In Blender the two arrive as sibling
+objects under one armature; hide one to see the other. Where a template names the same mesh for both
+(Sean's parts), LOD1 is a copy of LOD0 — that is what the game draws. Later variations stay listed in
+the parts panel as `· alt N`. The viewport draws LOD0 only. Bundle version 2 (`bundle_version`) adds
+`lod` to `source.parts` and `submeshes`, plus `lods` and `lod_notes`.
+
+Blender's importer reports fewer triangles than `lods[].triangles` for some characters: the game
+ships double-sided triangles as a back face that reuses the front face's three vertices, and a
+Blender mesh cannot hold two faces on the same vertices, so it keeps one (Francine LOD0: 142 of
+9,176). The `.glb` carries every triangle.
 
 - Textures are referenced by relative `uri`, not embedded — repainting a skin is editing a PNG in
   place, not a re-export round trip.
@@ -189,7 +207,9 @@ If a material has no `_NM` (some props don't), the slot is `null` — nothing is
 1. **Assemble** the startup character from `Dynamic0.megapack`: pick its parts (one per body slot,
    no LODs, head variants collapsed), inflate each `MSHA` → MESH, merge the geometry and build ONE
    union rig keyed by bone name-hash, with the bind pose corrected from the parts' own inverse-bind
-   matrices. Same code path a click in the model browser takes — [`boot.rs`](src/boot.rs).
+   matrices. Same code path a click in the model browser takes — [`boot.rs`](src/boot.rs). (Boot
+   groups parts by name before `GameTemplates` is loaded, so the startup character is LOD0 only;
+   a click assembles from the templates, both levels included.)
 2. **Cover** the index buffer with a non-overlapping per-material draw list. `sab_mesh` emits one
    prim per *drawcall*, so ranges overlap (a coarse "whole" primitive plus its split children, and
    several materials/passes on one range). `formats::submesh_cover` keeps only **leaf** ranges and

@@ -15,11 +15,8 @@
 //!           imul  eax, eax, 0x01000193
 //! ```
 //!
-//! FNV-1a with a `|0x20` case fold and an `^0x2A` / `*prime` finaliser. Because the byte is
-//! sign-extended, a byte `>= 0x80` contributes `0xFFFFFFxx`, not `0x000000xx`: names with such bytes
-//! hash differently from `mercs2_formats::hash::pandemic_hash_m2`, which zero-extends. (No retail
-//! template or mesh name contains one — checked over 10,761 templates and ~45,000 mesh names — but an
-//! authored name can.) Hash the bytes the engine sees: [`pandemic_hash_bytes`] for raw game bytes;
+//! FNV-1a with a `|0x20` case fold and an `^0x2A` / `*prime` finaliser. Each byte is sign-extended, so
+//! a byte `>= 0x80` contributes `0xFFFFFFxx`. [`pandemic_hash_bytes`] hashes raw game bytes;
 //! [`pandemic_hash`] hashes a `&str`'s UTF-8 bytes, which equal the game's bytes only for ASCII.
 
 const BASIS: u32 = 0x811C_9DC5;
@@ -57,8 +54,8 @@ mod tests {
         assert_eq!(pandemic_hash("P_Keys_KeyRing_A"), 0xF4B7_8198);
     }
 
-    /// A byte >= 0x80 is sign-extended (`movsx` at 0x00dc1e33), so it differs from a zero-extending
-    /// FNV-1a — worked by hand for the single byte 0xE9 ('é' in CP1252).
+    /// A byte >= 0x80 is sign-extended (`movsx` at 0x00dc1e33): the single byte 0xE9, expected value
+    /// computed by hand.
     #[test]
     fn high_bytes_are_sign_extended() {
         let signed = ((0xFFFF_FFE9u32 | 0x20) ^ BASIS).wrapping_mul(PRIME);

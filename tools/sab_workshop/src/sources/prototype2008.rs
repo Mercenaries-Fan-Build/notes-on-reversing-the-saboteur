@@ -163,19 +163,15 @@ impl Prototype2008Source {
     }
 
     pub fn open(root: &Path) -> Result<Self, String> {
-        // The caller might have handed us `game-files/` (which contains Bin360/) or Bin360/
-        // itself. Normalize.
-        let bin360 = if root.file_name().map(|n| n == "Bin360").unwrap_or(false) {
-            root.to_path_buf()
-        } else if root.join("Bin360").is_dir() {
-            root.join("Bin360")
-        } else {
-            return Err(format!(
-                "expected a `Bin360/` directory under {} — found nothing that fingerprints as \
-                 the 2008 build",
+        // The caller might have handed us the extract's outer folder (which contains Bin360/) or the
+        // Bin360 contents themselves under any name. Same rule as `detect_version`.
+        let bin360 = crate::source::prototype2008_bin360(root).ok_or_else(|| {
+            format!(
+                "{} is not the 2008 build: it neither contains a `Bin360/` directory nor holds \
+                 `Saboteur.xex` itself",
                 root.display()
-            ));
-        };
+            )
+        })?;
 
         let mut fingerprint = SourceFingerprint::default();
         fingerprint.matched(format!("Bin360 root: {}", bin360.display()));
@@ -557,10 +553,19 @@ fn parse_texslot(slot: &[u8]) -> Vec<ParsedSlotTex> {
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let ro = 4 + i * 24;
+        // An all-zero record is an unused directory entry, not a texture: the slot's `count` can
+        // include one (FBP_CF_GR_Doriss_Lace_LB.Pack declares 2 with rec[1] zeroed). Read as a
+        // record it aimed at offset 0, took the count field as a name length, and indexed two
+        // bytes of rec[0]'s hash as a texture named "\x06-" (hash C5FD0C82) that could never load.
+        if slot[ro..ro + 24].iter().all(|&b| b == 0) {
+            continue;
+        }
         let data_off = u32::from_be_bytes([slot[ro + 4], slot[ro + 5], slot[ro + 6], slot[ro + 7]]);
         let data_size = u32::from_be_bytes([slot[ro + 8], slot[ro + 9], slot[ro + 10], slot[ro + 11]]);
         let d = data_off as usize;
-        if d + 4 > slot.len() {
+        // A payload starts after the directory (rec[0] of that slot sits at 0x34 = 4 + 2*24) and
+        // must hold at least its own name-length field, inside the slot.
+        if d < dir_end || data_size < 4 || d + data_size as usize > slot.len() {
             continue;
         }
         let name_len = u32::from_be_bytes([slot[d], slot[d + 1], slot[d + 2], slot[d + 3]]) as usize;
@@ -913,6 +918,92 @@ mod tests {
                 && s.height >= 16
         });
         assert!(ok, "no slot sub-texture with plausible name + power-of-two dims");
+    }
+
+    /// A slot whose `count` includes an all-zero record must not invent a texture out of it.
+    /// Built from the real case (FBP_CF_GR_Doriss_Lace_LB.Pack): count = 2, rec[1] zeroed. Before
+    /// the fix rec[1] was read at offset 0 and indexed as a texture named "\x06-" (C5FD0C82).
+    #[test]
+    fn parse_texslot_ignores_an_all_zero_record() {
+        let name = b"lace_d";
+        let mut slot = Vec::new();
+        slot.extend_from_slice(&2u32.to_be_bytes()); // count
+        let payload_off = 4 + 2 * 24;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        payload.extend_from_slice(name);
+        payload.extend_from_slice(&[0x1A, 0x20, 0x01, 0x52, 0, 0, 0, 0, 0, 64, 0, 64]);
+        // rec[0]: hash, data_off, data_size, f3, f4, f5
+        for v in [0x062D_4C9Bu32, payload_off as u32, payload.len() as u32, 0x8000, 1, 0] {
+            slot.extend_from_slice(&v.to_be_bytes());
+        }
+        slot.extend_from_slice(&[0u8; 24]); // rec[1]: unused
+        slot.extend_from_slice(&payload);
+        let got = parse_texslot(&slot);
+        assert_eq!(got.len(), 1, "only rec[0] is a texture");
+        assert_eq!(got[0].name, "lace_d");
+        assert_eq!((got[0].width, got[0].height), (64, 64));
+    }
+
+    /// Over every `.textures` slot the prototype has, the ONLY directory records `parse_texslot`
+    /// drops are all-zero (unused) ones. Any other rejection would be a texture silently missing
+    /// from the index — this test is what makes that `continue` safe rather than a blind spot.
+    #[test]
+    fn every_dropped_texslot_record_is_an_unused_all_zero_entry() {
+        let Some(root) = test_root() else {
+            eprintln!("skip: SAB_2008_DIR not set to a 2008 prototype");
+            return;
+        };
+        let src = Prototype2008Source::open(&root).expect("open");
+        let mut seen = std::collections::HashSet::new();
+        let (mut slots, mut records, mut zero, mut kept) = (0usize, 0usize, 0usize, 0usize);
+        let mut bad: Vec<String> = Vec::new();
+        let mut missing = 0usize;
+        for e in &src.tex_index {
+            if !seen.insert(e.pack_file.clone()) {
+                continue;
+            }
+            // Packlogs name some packs this extract does not ship; only NotFound is expected.
+            let buf = match std::fs::read(&e.pack_file) {
+                Ok(b) => b,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    missing += 1;
+                    continue;
+                }
+                Err(err) => panic!("read {}: {err}", e.pack_file.display()),
+            };
+            let Ok(sbl) = SubPack::parse(&buf) else { continue };
+            let Some(rec) = sbl.find("textures") else { continue };
+            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
+            if slot.len() < 4 {
+                continue;
+            }
+            let count = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]) as usize;
+            let dir_end = 4 + count * 24;
+            if count == 0 || count > 256 || dir_end > slot.len() {
+                continue;
+            }
+            slots += 1;
+            records += count;
+            kept += parse_texslot(slot).len();
+            for i in 0..count {
+                let r = &slot[4 + i * 24..4 + i * 24 + 24];
+                if r.iter().all(|&b| b == 0) {
+                    zero += 1;
+                }
+            }
+            let dropped = count - parse_texslot(slot).len();
+            let zero_here = (0..count).filter(|i| slot[4 + i * 24..4 + i * 24 + 24].iter().all(|&b| b == 0)).count();
+            if dropped != zero_here {
+                bad.push(format!("{} (count {count}, dropped {dropped}, all-zero {zero_here})", e.pack_file.display()));
+            }
+        }
+        eprintln!(
+            "{slots} slots, {records} records: {kept} textures indexed, {zero} unused all-zero \
+             entries; {missing} packlog-listed packs not present in this extract"
+        );
+        assert!(slots > 100, "expected the prototype's texture slots, walked {slots}");
+        assert!(bad.is_empty(), "records dropped that are not all-zero:\n{}", bad.join("\n"));
     }
 
     /// Keep the raw probe as a manually-run diagnostic — `cargo test -- --nocapture

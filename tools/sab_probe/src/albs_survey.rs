@@ -1,17 +1,16 @@
 //! `albs-survey <retail_dir>` — parse every ALBS sub-pack in the install with `sab_formats::sbla`,
-//! taking each object pack's type counts from its map record (`global.map`, `France.map`, and the DLC
-//! maps; the record hash is the megapack entry's `index`, or `pandemic_hash(file stem)` for a DLC loose
-//! pack), and tally parse failures and how each record's stored `offset` compares with
-//! `sbla::expected_offsets`.
+//! taking each object pack's type counts from its map object (`map6::pack_counts` by the megapack
+//! entry's `crc`; `map6::object_counts` by a kiloPack entry's `index` or a DLC loose pack's
+//! `pandemic_hash(file stem)`), and tally parse failures, blob heads, MSHA record sizes, and how each
+//! record's stored `offset` compares with `sbla::expected_offsets`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use sab_formats::{loosefiles, map6, megapack, pandemic_hash, sbla};
 
-/// hash -> counts from every object record and extended tile in the given maps, and the main
-/// France.map tiles' counts by tile ordinal (`None` for a tile without a tail).
-fn map_counts(retail: &Path) -> (BTreeMap<u32, [u32; 9]>, Vec<Option<[u32; 9]>>) {
+/// (counts by pack-path hash, counts by object hash).
+fn map_counts(retail: &Path) -> (BTreeMap<u32, [u32; 9]>, BTreeMap<u32, [u32; 9]>) {
     let lf = std::fs::read(retail.join("France").join("loosefiles_BinPC.pack")).expect("loosefiles_BinPC.pack");
     let es = loosefiles::entries(&lf).expect("loosefiles walk");
     let get = |n: &str| lf[loosefiles::find(&es, n).unwrap_or_else(|| panic!("{n}")).data.clone()].to_vec();
@@ -21,10 +20,10 @@ fn map_counts(retail: &Path) -> (BTreeMap<u32, [u32; 9]>, Vec<Option<[u32; 9]>>)
         .expect("DLC Global.map");
     let df = map6::parse_region_dlc(&std::fs::read(retail.join("DLC/01/FRANCE.map")).expect("DLC FRANCE.map"))
         .expect("DLC FRANCE.map");
-    let m = map6::object_counts(&[&g, &dg], &[&f, &df]).expect("object counts");
-    println!("map objects with counts: {}", m.len());
-    let by_ordinal = f.tiles.iter().map(|t| t.tail.as_ref().map(|tl| tl.counts)).collect();
-    (m, by_ordinal)
+    let by_path = map6::pack_counts(&[&g, &dg], &[&f, &df]).expect("pack counts");
+    let by_hash = map6::object_counts(&[&g, &dg], &[&f, &df]).expect("object counts");
+    println!("map objects with counts: {} by pack path, {} by hash", by_path.len(), by_hash.len());
+    (by_path, by_hash)
 }
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -42,24 +41,28 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 struct Tally {
     packs: usize,
     ok: usize,
-    no_counts: usize,
-    /// X=0 packs with no map record by hash: (label, index, result with the tile at ordinal `index`).
-    unmatched: Vec<(String, u32, String)>,
+    no_counts: Vec<String>,
     errors: BTreeMap<String, usize>,
     error_examples: Vec<String>,
     /// (type 8?, comp == 0?) -> (records, stored offset == expected)
     offsets: BTreeMap<(bool, bool), (usize, usize)>,
     offset_examples: Vec<String>,
+    /// (type, first four bytes as text, comp == uncomp) -> blobs
+    heads: BTreeMap<(usize, String, bool), usize>,
+    /// type-0 blobs that start with AHSM: (exactly 276 + c0 + c1 bytes, not)
+    msha_fit: (usize, usize),
+    msha_examples: Vec<String>,
 }
 
-fn survey(
-    label: &str,
-    buf: &[u8],
-    key: u32,
-    maps: &BTreeMap<u32, [u32; 9]>,
-    tiles: &[Option<[u32; 9]>],
-    t: &mut Tally,
-) {
+fn head(b: &[u8]) -> String {
+    match b.get(0..4) {
+        Some(h) if h.iter().all(|c| c.is_ascii_alphanumeric()) => String::from_utf8_lossy(h).into_owned(),
+        Some(h) => format!("{h:02X?}"),
+        None => format!("<{} bytes>", b.len()),
+    }
+}
+
+fn survey(label: &str, buf: &[u8], counts: Option<[u32; 9]>, t: &mut Tally) {
     t.packs += 1;
     let x = match sbla::descriptor_len(buf) {
         Ok(x) => x,
@@ -68,29 +71,32 @@ fn survey(
             return;
         }
     };
-    let counts = maps.get(&key).copied();
     if x == 0 && counts.is_none() {
-        t.no_counts += 1;
-        let attempt = |c: [u32; 9]| match sbla::parse(buf, Some(c)) {
-            Ok(sp) => format!("parse exactly ({} records)", sp.records.len()),
-            Err(e) => format!("fail: {e}"),
-        };
-        let by_tile = match tiles.get(key as usize) {
-            None => "no tile at that ordinal".to_string(),
-            Some(None) => "tile has no tail".to_string(),
-            Some(Some(c)) => format!("tile counts {}", attempt(*c)),
-        };
-        let by_text = match maps.get(&pandemic_hash(&key.to_string())) {
-            Some(c) => format!("hash(\"{key}\") counts {}", attempt(*c)),
-            None => format!("no record hash(\"{key}\")"),
-        };
-        let by_tile = format!("{by_tile}; {by_text}");
-        t.unmatched.push((label.to_string(), key, by_tile));
+        t.no_counts.push(label.to_string());
         return;
     }
     match sbla::parse(buf, if x == 0 { counts } else { None }) {
         Ok(sp) => {
             t.ok += 1;
+            for (r, b) in sp.records.iter().zip(&sp.blobs) {
+                *t.heads.entry((r.kind, head(b), r.comp == r.uncomp)).or_default() += 1;
+                if r.kind == 0 && b.get(0..4) == Some(b"AHSM") && b.len() >= 20 {
+                    let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+                    if b.len() == 276 + u(12) + u(16) {
+                        t.msha_fit.0 += 1;
+                    } else {
+                        t.msha_fit.1 += 1;
+                        if t.msha_examples.len() < 10 {
+                            t.msha_examples.push(format!(
+                                "{label}: blob {} bytes, 276 + c0 {} + c1 {}",
+                                b.len(),
+                                u(12),
+                                u(16)
+                            ));
+                        }
+                    }
+                }
+            }
             let want = sbla::expected_offsets(&sp.records);
             for (r, w) in sp.records.iter().zip(want) {
                 let e = t.offsets.entry((r.kind == sbla::TYPE_STREAMED, r.comp == 0)).or_default();
@@ -120,7 +126,7 @@ pub fn run(args: &[String]) {
         eprintln!("usage: sab_probe albs-survey <retail_dir>");
         std::process::exit(2);
     };
-    let (maps, tiles) = map_counts(&retail);
+    let (by_path, by_hash) = map_counts(&retail);
     let mut all = Vec::new();
     files(&retail, &mut all);
     all.sort();
@@ -141,20 +147,28 @@ pub fn run(args: &[String]) {
                 if sub.get(0..4) != Some(sbla::MAGIC) {
                     continue;
                 }
-                survey(&format!("{}#{i}", p.display()), sub, e.index, &maps, &tiles, &mut t);
+                let counts = if ext == "kiloPack" { by_hash.get(&e.index) } else { by_path.get(&e.crc) };
+                survey(&format!("{}#{i}", p.display()), sub, counts.copied(), &mut t);
             }
         } else if buf.get(0..4) == Some(sbla::MAGIC) {
             let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            survey(&p.display().to_string(), &buf, pandemic_hash(stem), &maps, &tiles, &mut t);
+            survey(&p.display().to_string(), &buf, by_hash.get(&pandemic_hash(stem)).copied(), &mut t);
         }
     }
-    println!("ALBS sub-packs: {}  parsed: {}  X=0 without a map record: {}", t.packs, t.ok, t.no_counts);
-    println!("X=0 packs with no map record by hash ({}):", t.unmatched.len());
-    for (label, key, r) in &t.unmatched {
-        println!("  {label}  index 0x{key:X} ({key}): {r}");
+    println!("ALBS sub-packs: {}  parsed: {}  X=0 without map counts: {}", t.packs, t.ok, t.no_counts.len());
+    for label in &t.no_counts {
+        println!("  {label}");
     }
     println!("parse errors: {:?}", t.errors);
     for e in &t.error_examples {
+        println!("  {e}");
+    }
+    println!("blob heads by (type, first 4 bytes, comp == uncomp) -> blobs:");
+    for (k, v) in &t.heads {
+        println!("  {k:?} -> {v}");
+    }
+    println!("type-0 AHSM blobs exactly 276 + c0 + c1 bytes: {} (others: {})", t.msha_fit.0, t.msha_fit.1);
+    for e in &t.msha_examples {
         println!("  {e}");
     }
     println!("offset field vs expected_offsets, by (type 8, comp 0) -> (records, equal):");

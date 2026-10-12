@@ -1,13 +1,11 @@
-//! zlib (RFC 1950) streams — the one inflate/deflate pair every format module uses.
+//! zlib (RFC 1950) streams.
 //!
-//! The Saboteur's MSHA blobs, DTEX mip streams and ALBS blobs are standard zlib (`78 01` headers). The
-//! formats always declare the inflated size, so [`inflate_exact`] checks it: a stream that inflates to
-//! a different length, or that leaves bytes after its end, is an error — never a truncated or padded
-//! buffer handed on as if it were the asset.
+//! The Saboteur's MSHA blobs, DTEX mip streams and ALBS blobs are standard zlib (`78 01` headers), each
+//! with a declared inflated size. [`inflate_exact`] returns an error when a stream inflates to a
+//! different length or leaves bytes after its end.
 //!
-//! Deflate output is NOT byte-identical to the 2009 encoder (the match finder differs by zlib
-//! version — see `docs/formats/dtex_texture.md`); re-encoded data is valid for the engine, which only
-//! inflates.
+//! [`deflate`] output is valid zlib but not byte-identical to the 2009 encoder's
+//! (`docs/formats/dtex_texture.md`).
 
 use std::io::{Read, Write};
 

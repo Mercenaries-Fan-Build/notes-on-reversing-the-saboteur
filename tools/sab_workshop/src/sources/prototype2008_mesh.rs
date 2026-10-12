@@ -1559,16 +1559,9 @@ mod tests {
         assert!(parse_msh4(truncated).is_err(), "truncated body must Err, not panic");
     }
 
-    /// Pandemic FNV-1a hash — copied verbatim from `tools/sab_skeleton`. The 2008 build
-    /// keys bones by the same `pandemic_hash(name)` as retail, so we can hash a known
-    /// bone name and check it appears in the parsed rig.
-    fn pandemic_hash(s: &str) -> u32 {
-        let mut h: u32 = 0x811C_9DC5;
-        for c in s.bytes() {
-            h = (h ^ ((c | 0x20) as u32)).wrapping_mul(0x0100_0193);
-        }
-        (h ^ 0x2A).wrapping_mul(0x0100_0193)
-    }
+    // The 2008 build keys bones by the same `pandemic_hash(name)` as retail, so we can hash a
+    // known bone name and check it appears in the parsed rig.
+    use sab_formats::pandemic_hash;
 
     /// Sean's HD part must yield a bone table with >30 bones, exactly one root, every
     /// non-root parent pointing to a valid earlier bone, and unit-length quaternions —

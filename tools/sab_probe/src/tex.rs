@@ -57,10 +57,18 @@ impl Pack {
         Ok(Pack { path: path.to_string(), file: f, ents })
     }
     pub fn read(&self, e: &Ent, buf: &mut Vec<u8>) -> usize {
-        use std::os::windows::fs::FileExt;
         let n = e.size as usize;
         if buf.len() < n { buf.resize(n, 0); }
-        self.file.seek_read(&mut buf[..n], e.offset).unwrap_or(0)
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileExt;
+            self.file.seek_read(&mut buf[..n], e.offset).unwrap_or(0)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            self.file.read_at(&mut buf[..n], e.offset).unwrap_or(0)
+        }
     }
 }
 

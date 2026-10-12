@@ -97,7 +97,10 @@ Lua 5.1's `package.loaders` at position 2.
   Lua's source marker).
 - Top-level trees: `Experimental/`, `Includes/`, `Managers/`, `Missions/`, `Modules/`,
   `ScriptControllers/`.
-- 28,022 unique strings harvested from the bytecode → the seed for the name→hash dictionary.
+- 28,022 unique strings harvested from the bytecode → the seed for the name→hash dictionary. The
+  dictionary now exists: [`data/hash_names.tsv`](../../data/hash_names.tsv)
+  ([hash_names.md](../hash_names.md)); the scripts' strings name 1,622 EditNodes objects there (9 of
+  them named by no other source).
 
 ## Why start here
 

@@ -2,15 +2,12 @@
 name = "sab_formats"
 version = "0.1.0"
 edition = "2021"
-description = "The Saboteur (2009) asset-format parsing library: megapack / SBLA / DTEX / MESH / WSAO. Reuses the shared Pandemic-engine primitives (pandemic_hash, SGES, SafeSlice) from mercs2_formats and implements the Saboteur-specific containers on top."
+description = "The Saboteur (2009) asset-format library: readers and writers for the game's containers and assets."
 license = "MIT"
 
 [dependencies]
-# Shared Pandemic-engine primitives. The Saboteur is a Pandemic title, so its resource-name
-# hash IS mercs2_formats::hash::pandemic_hash_m2 (basis 0x811C9DC5, prime 0x01000193, |0x20
-# case-fold, ^0x2A finalizer == Saboteur.exe FUN_00dc1e20), and its block codec SGES is
-# byte-identical to Mercs 2 (docs/formats/archive_and_models.md). We reuse those rather than
-# re-derive them. Everything Saboteur-specific (megapack/SBLA/DTEX/MESH/WSAO) is implemented here.
+# SGES block decompression and SafeSlice (SGES is byte-identical between the two games,
+# docs/formats/archive_and_models.md).
 mercs2_formats = "3.0"
 # zlib streams inside SBLA sub-packs (DTEX mip payloads, MSHA blobs: raw 78 01 zlib).
 flate2 = "1"
@@ -25,4 +22,8 @@ retail = []
 
 [[test]]
 name = "local_config_retail"
+required-features = ["retail"]
+
+[[test]]
+name = "archive_retail"
 required-features = ["retail"]

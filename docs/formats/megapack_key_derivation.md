@@ -111,4 +111,4 @@ struct field just happens to be named "index" in earlier notes.
 | `name_crc = pandemic_hash(name)` | **CONFIRMED — 759/759** |
 | `pandemic_hash == FUN_00dc1e20` (FNV-1a/32 + case-fold + finalizer) | **CONFIRMED** (bytes + `"ANY"` vector) |
 | On-disk entry = `{path_crc,name_crc,size,offset}` 20 bytes, key=path_crc | **CONFIRMED** (loader `FUN_00e428c0`, comparator `FUN_00e42740`) |
-| World/startup packs (`France\Mega*/Start0/BelleStart0`) key form | **UNKNOWN** — `name_crc=pandemic_hash(name)` still holds, but `path_crc` is NOT `<folder>\name.dynpack`; those use a different (streamblock/WSD) path string not yet recovered. Out of scope for dynamic assets. |
+| World packs (`France\Mega*`) key form | **CONFIRMED (2026-10-12)** — `path_crc = pandemic_hash` of the streamblock path or `France\<name>.pack`; the Palettes0 `resourceName` is the `global.map` list-2 name plus `1`. See [world_megapack_key.md](world_megapack_key.md). The kiloPacks (`Start0`, `Start_German0`, `BelleStart0`) are still **UNKNOWN**. |

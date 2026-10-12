@@ -203,16 +203,9 @@ pub enum PropType {
     Bytes,
 }
 
-/// The property name for a key, if one has been recovered.
-///
-/// 835 of the 2,723 keys present in retail are named, covering 41.3% of all property uses — up
-/// from the 15 hand-listed names this replaced. Every row satisfies
-/// `pandemic_hash(name) == key` little-endian; see [`props`] and the test below.
+/// The property name for a key, if one is known ([`crate::names`]).
 pub fn known_property_name(hash: u32) -> Option<&'static str> {
-    props::NAMES
-        .binary_search_by_key(&hash, |&(k, _)| k)
-        .ok()
-        .map(|i| props::NAMES[i].1)
+    crate::names::name(hash)
 }
 
 /// The derived value type for a key. `None` for a key that does not occur in the retail table.
@@ -228,29 +221,10 @@ mod prop_table_tests {
     use super::*;
     use crate::pandemic_hash;
 
-    /// The whole safety story for the generated table. `pandemic_hash` is a perfect oracle here: a
-    /// name either reproduces its key or it does not, so nothing in the table can be a guess. This
-    /// is deliberately stricter than the EditNodes tag dictionary, which inherited 14 invented
-    /// labels — we generate our own preimages, so we can demand all of them.
-    #[test]
-    fn every_property_name_is_a_preimage() {
-        for &(key, name) in props::NAMES {
-            assert_eq!(
-                pandemic_hash(name),
-                key,
-                "{name:?} does not hash to 0x{key:08X} — the table must carry no guesses"
-            );
-        }
-        assert!(props::NAMES.len() > 800, "expected the derived table, got {}", props::NAMES.len());
-    }
-
-    /// Both tables are binary-searched, so sortedness is load-bearing, and a duplicate key would
+    /// The type table is binary-searched, so sortedness is load-bearing, and a duplicate key would
     /// make the lookup pick an arbitrary one of them.
     #[test]
-    fn the_tables_are_sorted_and_unique() {
-        for w in props::NAMES.windows(2) {
-            assert!(w[0].0 < w[1].0, "NAMES not sorted/unique at 0x{:08X}", w[0].0);
-        }
+    fn the_type_table_is_sorted_and_unique() {
         for w in props::TYPES.windows(2) {
             assert!(w[0].0 < w[1].0, "TYPES not sorted/unique at 0x{:08X}", w[0].0);
         }

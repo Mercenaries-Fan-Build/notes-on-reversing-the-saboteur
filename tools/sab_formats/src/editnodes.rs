@@ -14,15 +14,13 @@
 //! ```
 //!
 //! **Tag = `pandemic_hash(paramName)` stored little-endian** (same convention as GameText's
-//! `asset_id`), so reading a tag as an LE `u32` yields the hash directly. 250 of the 264 names in
-//! [`TAG_NAMES`] hash-verify against their tag; the remaining 14 are community placeholders
-//! (`Unknown_*`, `WTFPortal*`, `Root`) whose real names were never recovered. See the test
-//! `tag_names_sorted_and_mostly_preimages`.
+//! `asset_id`), so reading a tag as an LE `u32` yields the hash directly; [`tag_name`] looks it up in
+//! [`crate::names`].
 //!
 //! The `NodeNN` / `FenceNodeNN` / `FenceWallFlagNN` families are **not** guesses: `Saboteur.exe`
 //! builds them with `sprintf("Node%.2d")`, `"FenceNode%.2d"`, `"FenceNodeFlag%.2d"` and
 //! `"FenceWallFlag%.2d"` (string block at `0x00c4e0b8`, owned by `WSStreamingManager.cpp`), and the
-//! expansions reproduce 113 tags in the retail pack exactly.
+//! expansions name 102 distinct param tags across the retail packs (`sab_probe hash-names`).
 //!
 //! ## Object nodes carry an instance ID, not a name hash
 //! A node whose children include a `ClassName` is an **object**. Its own tag is a per-instance
@@ -85,10 +83,103 @@ pub enum Value {
     Raw64([u8; 8]),
     Str(String),
     Vec3([f32; 3]),
-    /// A `name\0` + 4-byte type marker + payload ("LuaParam"); we surface the name.
-    Named(String),
+    /// A leaf tagged [`tags::LUA_PARAM`].
+    Lua(LuaParam),
+    /// A leaf tagged [`tags::LUA_PARAM`] that [`lua_param`] rejects; the reason.
+    BadLua(String),
     /// A leaf we did not decode further; the length.
     Bytes(usize),
+}
+
+/// One Lua parameter: the payload of a leaf tagged [`tags::LUA_PARAM`], read by `FUN_01634800`
+/// @0x01634800 as `name\0`, a `u32` type hash ([`lua_type`]), then the value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LuaParam {
+    pub name: String,
+    pub value: LuaValue,
+}
+
+/// A Lua parameter's value, by type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LuaValue {
+    /// A `u32` hash; the engine drops `pandemic_hash("none")`.
+    Crc(u32),
+    /// One byte; the engine drops 0.
+    Bool(u8),
+    Float(f32),
+    Int(i32),
+    /// The engine drops an empty string and `"none"` (case-insensitive).
+    Str(String),
+    /// Names the engine hashes on use; it stores them as a Lua table indexed from 1.
+    CrcList(Vec<String>),
+}
+
+/// The type hashes of [`LuaParam`] values: `pandemic_hash` of the type's name.
+pub mod lua_type {
+    /// `pandemic_hash("LuaCrc")`
+    pub const CRC: u32 = 0x3290_ba65;
+    /// `pandemic_hash("LuaBool")`
+    pub const BOOL: u32 = 0x1b44_4f31;
+    /// `pandemic_hash("LuaFloat")`
+    pub const FLOAT: u32 = 0x2b93_bda9;
+    /// `pandemic_hash("LuaInt")`
+    pub const INT: u32 = 0xf067_6c78;
+    /// `pandemic_hash("LuaString")`
+    pub const STRING: u32 = 0xf5b7_99c2;
+    /// `pandemic_hash("LuaCrcList")`
+    pub const CRC_LIST: u32 = 0xb905_9df9;
+}
+
+/// Decode a [`tags::LUA_PARAM`] leaf's bytes. The value must end exactly at the end of `d`.
+pub fn lua_param(d: &[u8]) -> Result<LuaParam, String> {
+    fn cstr(d: &[u8], p: &mut usize, what: &str) -> Result<String, String> {
+        let rest = d.get(*p..).ok_or_else(|| format!("LuaParam {what}: past the end"))?;
+        let n = rest.iter().position(|&b| b == 0).ok_or_else(|| format!("LuaParam {what}: no NUL"))?;
+        let s = String::from_utf8(rest[..n].to_vec()).map_err(|_| format!("LuaParam {what}: not UTF-8"))?;
+        *p += n + 1;
+        Ok(s)
+    }
+    let word = |p: usize, what: &str| -> Result<[u8; 4], String> {
+        d.get(p..p + 4).map(|b| [b[0], b[1], b[2], b[3]]).ok_or_else(|| format!("LuaParam {what}: past the end"))
+    };
+    let mut p = 0;
+    let name = cstr(d, &mut p, "name")?;
+    let ty = u32::from_le_bytes(word(p, "type")?);
+    p += 4;
+    let value = match ty {
+        lua_type::CRC => {
+            p += 4;
+            LuaValue::Crc(u32::from_le_bytes(word(p - 4, "LuaCrc")?))
+        }
+        lua_type::FLOAT => {
+            p += 4;
+            LuaValue::Float(f32::from_le_bytes(word(p - 4, "LuaFloat")?))
+        }
+        lua_type::INT => {
+            p += 4;
+            LuaValue::Int(i32::from_le_bytes(word(p - 4, "LuaInt")?))
+        }
+        lua_type::BOOL => {
+            let b = *d.get(p).ok_or("LuaParam LuaBool: past the end")?;
+            p += 1;
+            LuaValue::Bool(b)
+        }
+        lua_type::STRING => LuaValue::Str(cstr(d, &mut p, "LuaString")?),
+        lua_type::CRC_LIST => {
+            let count = i32::from_le_bytes(word(p, "LuaCrcList count")?);
+            p += 4;
+            if count < 0 {
+                return Err(format!("LuaParam '{name}': LuaCrcList count {count}"));
+            }
+            let items = (0..count).map(|_| cstr(d, &mut p, "LuaCrcList item")).collect::<Result<_, _>>()?;
+            LuaValue::CrcList(items)
+        }
+        other => return Err(format!("LuaParam '{name}': unknown type 0x{other:08x}")),
+    };
+    if p != d.len() {
+        return Err(format!("LuaParam '{name}': value ends at {p}, leaf is {} bytes", d.len()));
+    }
+    Ok(LuaParam { name, value })
 }
 
 // ------------------------------------------------------------------ reader
@@ -265,6 +356,12 @@ impl Node {
             Node::Leaf { tag, data } => (*tag, data.as_slice()),
             Node::Container { .. } => return None,
         };
+        if tag == tags::LUA_PARAM {
+            return Some(match lua_param(d) {
+                Ok(p) => Value::Lua(p),
+                Err(e) => Value::BadLua(e),
+            });
+        }
         Some(match d.len() {
             0 => Value::Empty,
             1 => Value::Bool(d[0] != 0),
@@ -273,8 +370,6 @@ impl Node {
             _ => {
                 if is_ascii_string_leaf(d) {
                     Value::Str(String::from_utf8_lossy(&d[..d.len() - 1]).into_owned())
-                } else if let Some(name) = named_name(d) {
-                    Value::Named(name)
                 } else if d.len() == 12 && (VECTOR_TAGS.contains(&tag) || looks_like_vec3(d)) {
                     Value::Vec3([f32_at(d, 0), f32_at(d, 4), f32_at(d, 8)])
                 } else {
@@ -297,6 +392,8 @@ pub mod tags {
     pub const X_AXIS: u32 = 0xfbb4_bda8;
     pub const Y_AXIS: u32 = 0xd0c2_6e7d;
     pub const Z_AXIS: u32 = 0x4fb7_6002;
+    /// `pandemic_hash("LuaParam")`: a leaf holding one [`super::LuaParam`].
+    pub const LUA_PARAM: u32 = 0xdb0f_705c;
 }
 
 fn vec3_bytes(v: [f32; 3]) -> Vec<u8> {
@@ -564,9 +661,9 @@ impl Node {
     }
 }
 
-/// The human name for a tag, if known ([`TAG_NAMES`], mostly `pandemic_hash` preimages).
+/// The name of a tag, if known ([`crate::names`]).
 pub fn tag_name(tag: u32) -> Option<&'static str> {
-    TAG_NAMES.binary_search_by_key(&tag, |&(t, _)| t).ok().map(|i| TAG_NAMES[i].1)
+    crate::names::name(tag)
 }
 
 // ------------------------------------------------------------------ classification heuristic
@@ -591,41 +688,6 @@ fn looks_like_vec3(d: &[u8]) -> bool {
         })
 }
 
-/// True if `d` is a `name\0` + 4-byte type marker + payload ("LuaParam") leaf.
-fn named_name(d: &[u8]) -> Option<String> {
-    if d.len() < 9 {
-        return None;
-    }
-    let name_end = d.iter().position(|&b| b == 0)?;
-    if name_end == 0 || !d[..name_end].iter().all(|&b| is_printable(b)) {
-        return None;
-    }
-    let marker_end = name_end + 1 + 4;
-    if marker_end > d.len() {
-        return None;
-    }
-    let marker = &d[name_end + 1..marker_end];
-    let rest = &d[marker_end..];
-    let float_m = [0xa9, 0xbd, 0x93, 0x2b];
-    let bool_m1 = [0x31, 0x4f, 0x44, 0x1b];
-    let bool_m2 = [0x0f, 0x00, 0x00, 0x00];
-    let list_m = [0xf9, 0x9d, 0x05, 0xb9];
-    let str_m = [0xc2, 0x99, 0xb7, 0xf5];
-    let ends_printable_str =
-        !rest.is_empty() && rest[rest.len() - 1] == 0 && rest[..rest.len() - 1].iter().all(|&b| is_printable(b));
-    let ok = (marker == float_m && rest.len() == 4)
-        || ((marker == bool_m1 || marker == bool_m2) && rest.len() == 1)
-        || (marker == list_m && rest.len() >= 4)
-        || (marker == str_m && ends_printable_str)
-        || ends_printable_str
-        || rest.len() == 4;
-    if ok {
-        Some(String::from_utf8_lossy(&d[..name_end]).into_owned())
-    } else {
-        None
-    }
-}
-
 // The inspector's `parseProperty` value test used to decide leaf-vs-container here. It is gone:
 // framing is positional (see `parse_object`/`parse_param`), so nothing about the file's structure
 // depends on what a payload looks like. The surviving value tests live in `Node::value` and only
@@ -636,14 +698,12 @@ mod tests {
     use super::*;
     use crate::pandemic_hash;
 
+    /// The `sprintf("Node%.2d")`-style families the exe builds name their tags.
     #[test]
-    fn tag_names_sorted_and_mostly_preimages() {
-        assert!(TAG_NAMES.windows(2).all(|w| w[0].0 < w[1].0), "TAG_NAMES must be sorted, unique");
-        let verified = TAG_NAMES.iter().filter(|&&(t, n)| pandemic_hash(n) == t).count();
-        // 250/264 hash-verify. The remaining 14 are community placeholders whose real names were
-        // never recovered (`Unknown_*`, `WTFPortal*`, `UnknownTag`, `Root`, `Raw64_*`); every
-        // engine-derived name now verifies. See `docs/formats/editnodes.md`.
-        assert_eq!(verified, 250, "expected 250 hash-verified tag names");
+    fn numbered_families_resolve() {
+        for n in ["Node05", "FenceNode08", "FenceNodeFlag21", "FenceWallFlag12"] {
+            assert_eq!(tag_name(pandemic_hash(n)), Some(n));
+        }
     }
 
     #[test]
@@ -745,6 +805,52 @@ mod tests {
         assert_eq!(tags::X_AXIS, pandemic_hash("XAxis"));
         assert_eq!(tags::Y_AXIS, pandemic_hash("YAxis"));
         assert_eq!(tags::Z_AXIS, pandemic_hash("ZAxis"));
+        assert_eq!(tags::LUA_PARAM, pandemic_hash("LuaParam"));
+    }
+
+    #[test]
+    fn lua_types_are_preimages() {
+        assert_eq!(lua_type::CRC, pandemic_hash("LuaCrc"));
+        assert_eq!(lua_type::BOOL, pandemic_hash("LuaBool"));
+        assert_eq!(lua_type::FLOAT, pandemic_hash("LuaFloat"));
+        assert_eq!(lua_type::INT, pandemic_hash("LuaInt"));
+        assert_eq!(lua_type::STRING, pandemic_hash("LuaString"));
+        assert_eq!(lua_type::CRC_LIST, pandemic_hash("LuaCrcList"));
+    }
+
+    fn lua_leaf(name: &str, ty: u32, payload: &[u8]) -> Vec<u8> {
+        let mut d = format!("{name}\0").into_bytes();
+        d.extend_from_slice(&ty.to_le_bytes());
+        d.extend_from_slice(payload);
+        d
+    }
+
+    #[test]
+    fn lua_params_decode_by_type() {
+        let list = [&2i32.to_le_bytes()[..], b"Missions\\a\\LOC_1\0", b"Explosion_Large\0"].concat();
+        let cases = [
+            (lua_leaf("lsLocators", lua_type::CRC_LIST, &list), LuaValue::CrcList(vec![r"Missions\a\LOC_1".into(), "Explosion_Large".into()])),
+            (lua_leaf("b", lua_type::BOOL, &[1]), LuaValue::Bool(1)),
+            (lua_leaf("f", lua_type::FLOAT, &1.5f32.to_le_bytes()), LuaValue::Float(1.5)),
+            (lua_leaf("i", lua_type::INT, &(-3i32).to_le_bytes()), LuaValue::Int(-3)),
+            (lua_leaf("c", lua_type::CRC, &0xdead_beefu32.to_le_bytes()), LuaValue::Crc(0xdead_beef)),
+            (lua_leaf("s", lua_type::STRING, b"none\0"), LuaValue::Str("none".into())),
+        ];
+        for (d, want) in cases {
+            assert_eq!(lua_param(&d).unwrap().value, want);
+            let leaf = Node::Leaf { tag: tags::LUA_PARAM, data: d };
+            assert!(matches!(leaf.value(), Some(Value::Lua(_))));
+        }
+    }
+
+    #[test]
+    fn a_lua_param_with_trailing_bytes_or_an_unknown_type_is_an_error() {
+        let mut d = lua_leaf("b", lua_type::BOOL, &[1]);
+        d.push(0);
+        assert!(lua_param(&d).unwrap_err().contains("leaf is"));
+        assert!(lua_param(&lua_leaf("b", 0x0f, &[1])).unwrap_err().contains("unknown type"));
+        let leaf = Node::Leaf { tag: tags::LUA_PARAM, data: d };
+        assert!(matches!(leaf.value(), Some(Value::BadLua(_))));
     }
 
     #[test]
@@ -896,277 +1002,6 @@ mod tests {
     }
 }
 
-
-// ------------------------------------------------------------------ generated tag tables
-// pandemic_hash(name); placeholder byte-order resolved against the real pack.
-// 265 names, 242 hash-verified. Do not edit by hand.
-
-pub(crate) static TAG_NAMES: &[(u32, &str)] = &[
-    (0x00000000, "Root"),
-    (0x0012bdc3, "BaseName"),
-    (0x03330f5c, "Node30"),
-    (0x03f4a784, "FenceWallFlag19"),
-    (0x05d7fc60, "Position"),
-    (0x05e0ed37, "FenceNodeFlag27"),
-    (0x0852d5ef, "SoundFake3DSettings"),
-    (0x08c714d2, "Node10"),
-    (0x08da9c8a, "Node18"),
-    (0x08e1d248, "FenceNode26"),
-    (0x0a6c5a61, "FenceNodeFlag36"),
-    (0x0a95de23, "FenceWallFlag27"),
-    (0x0f30c53e, "FenceNodeFlag17"),
-    (0x0f535780, "FenceNodeFlag19"),
-    (0x0fc275db, "WTFPortal_Float3"),
-    (0x117a9fd1, "FenceWallFlag03"),
-    (0x125d5c6f, "FenceNodeFlag38"),
-    (0x1270e427, "FenceNodeFlag30"),
-    (0x12dfa36f, "FenceNode25"),
-    (0x16944042, "Node03"),
-    (0x17786aac, "FenceWallFlag02"),
-    (0x189208a6, "CommonSeatSettings"),
-    (0x19421e1d, "FenceNodeFlag10"),
-    (0x1a61709c, "PassengerSettings"),
-    (0x1acf73a2, "DynamicFenceNodes"),
-    (0x1be34e70, "FenceNodeFlag24"),
-    (0x1df70f09, "FenceWallFlag18"),
-    (0x1e0a96c1, "FenceWallFlag10"),
-    (0x1e25164d, "AmbiancePriority"),
-    (0x1f317606, "SoundAreaSettings"),
-    (0x20cbb7c8, "Node12"),
-    (0x22b00b38, "FenceNodeFlag02"),
-    (0x23deddda, "FenceNodeFlag26"),
-    (0x2408619c, "FenceWallFlag11"),
-    (0x24a3426b, "FenceNodeFlag05"),
-    (0x28aaccae, "ID0"),
-    (0x28e10525, "Type"),
-    (0x2ac988ef, "Node11"),
-    (0x2add10a7, "Node19"),
-    (0x2c40a12b, "CheckVisibility"),
-    (0x2cc16417, "FenceNodeFlag09"),
-    (0x2f400228, "FenceNodeFlag11"),
-    (0x3133395b, "FenceNodeFlag16"),
-    (0x31dbbab1, "FenceNode12"),
-    (0x34e32c64, "WTFPortal_Float1"),
-    (0x361a4769, "Unknown_Container_69471a36"),
-    (0x377d1a3a, "FenceWallFlag04"),
-    (0x3955d835, "FenceNodeFlag18"),
-    (0x39e04477, "FenceNode14"),
-    (0x3ce51772, "Flags"),
-    (0x404d1343, "LuaTable"),
-    (0x42498680, "Script"),
-    (0x42a1330e, "FenceNodeFlag04"),
-    (0x43301c7e, "FenceNode06"),
-    (0x4352aec0, "FenceNode08"),
-    (0x43b9013b, "SpawnBlueprint"),
-    (0x442cf8ba, "Unknown_Container_baf82c44"),
-    (0x46678af8, "Unknown_Container_f88a6746"),
-    (0x49c5a031, "Node26"),
-    (0x4aa5bcd4, "FenceNodeFlag06"),
-    (0x4bb87d44, "AttachedID2"),
-    (0x4cb28bed, "FenceNodeFlag03"),
-    (0x4d41755d, "FenceNode01"),
-    (0x4ee116bb, "WTFPortal_Float2"),
-    (0x4fb76002, "ZAxis"),
-    (0x4fc0136e, "FenceNode19"),
-    (0x4fe2a5b0, "FenceNode17"),
-    (0x51b6a23f, "Node28"),
-    (0x51ca29f7, "Node20"),
-    (0x52645ce5, "PrevID2"),
-    (0x52856dba, "Volumes"),
-    (0x56340cf8, "FenceWallFlag37"),
-    (0x56388a26, "FenceWallFlag39"),
-    (0x566b3f52, "Group"),
-    (0x56af6278, "FenceNode35"),
-    (0x57de351a, "FenceNode15"),
-    (0x5827442b, "FenceWallFlag30"),
-    (0x58a299ab, "FenceNode32"),
-    (0x5b3c9440, "Node34"),
-    (0x5c131421, "Node40"),
-    (0x5d2923df, "GunnerSettings"),
-    (0x5d611e32, "NextID1"),
-    (0x5d78ede2, "ClassName"),
-    (0x5e58eac8, "Unknown_c8ea585e"),
-    (0x60f3b263, "SoundTriggerName"),
-    (0x633823aa, "Node36"),
-    (0x633f5968, "FenceNode00"),
-    (0x6350df48, "DriverSettings"),
-    (0x6486e117, "SearcherSettings"),
-    (0x6532909b, "FenceNode07"),
-    (0x65bae4c9, "AttachedID3"),
-    (0x65f01872, "AttractionPt"),
-    (0x66ac7e16, "SoundTimeSettings"),
-    (0x67cc8b30, "Node23"),
-    (0x67ed39c8, "UnknownTag"),
-    (0x6873aa20, "FenceNodeFlag33"),
-    (0x688e2358, "FenceWallFlag28"),
-    (0x68d35ede, "FenceNode20"),
-    (0x6a66e153, "FenceNodeFlag34"),
-    (0x6a9af271, "FenceWallFlag25"),
-    (0x6ae92853, "FenceNode29"),
-    (0x6b9391d0, "DynamicPathNodes"),
-    (0x6d0c6486, "MaxNumAlive"),
-    (0x6d552f75, "FenceNode09"),
-    (0x6e9947f8, "Node01"),
-    (0x6fc81a9a, "Node21"),
-    (0x70464ebf, "Volume"),
-    (0x7076575c, "Sound3DSettings"),
-    (0x708c7f2b, "Node06"),
-    (0x70d7e8a4, "FenceNode22"),
-    (0x729f7c37, "FenceWallFlag23"),
-    (0x72b61f7c, "WTFPortal_Next"),
-    (0x72e4b7bd, "FenceNode27"),
-    (0x762534ce, "FenceWallFlag31"),
-    (0x76a08a4e, "FenceNode33"),
-    (0x783afe43, "FenceWallFlag38"),
-    (0x78a10702, "CustomExportTag"),
-    (0x78af1e05, "Node08"),
-    (0x79450675, "Parent"),
-    (0x798a195e, "Persistent"),
-    (0x7b2dbc16, "Node32"),
-    (0x7bd4db06, "FenceNodeFlag22"),
-    (0x7c11e680, "FenceWallFlag15"),
-    (0x7c541819, "SoundDistSettings"),
-    (0x7dc81239, "FenceNodeFlag29"),
-    (0x7e1f64c8, "MinTimeBetweenSpawns"),
-    (0x7e29be94, "FenceWallFlag33"),
-    (0x7ea51414, "FenceNode31"),
-    (0x7ee2f763, "ScriptTriggered"),
-    (0x7f451191, "Position1"),
-    (0x7f46515c, "XSize"),
-    (0x7f63924f, "NextID0"),
-    (0x80368dad, "FenceWallFlag36"),
-    (0x80b1e32d, "FenceNode34"),
-    (0x80bd445e, "Node14"),
-    (0x83d964cc, "FenceNodeFlag20"),
-    (0x840d75ea, "FenceWallFlag17"),
-    (0x853a97c7, "Node37"),
-    (0x853f14f5, "Node35"),
-    (0x85e633e5, "FenceNodeFlag25"),
-    (0x8839711a, "SeatSpawnObject"),
-    (0x8864d1f6, "FenceNodeFlag35"),
-    (0x88a1dd70, "FenceWallFlag20"),
-    (0x88c1ce24, "Node16"),
-    (0x88e718f6, "FenceNode28"),
-    (0x8aada58b, "ID1"),
-    (0x8ab222b9, "ID3"),
-    (0x8ace9d3d, "Node13"),
-    (0x8ad5d2fb, "FenceNode21"),
-    (0x8ada5029, "FenceNode23"),
-    (0x8d2eedb7, "Honkable"),
-    (0x8e224ef6, "FenceNodeFlag40"),
-    (0x8e8a6fce, "Node07"),
-    (0x8ead0210, "Node09"),
-    (0x8f731766, "FenceWallFlag00"),
-    (0x90695bbc, "FenceNodeFlag37"),
-    (0x909d6cda, "FenceWallFlag22"),
-    (0x9161d16b, "FenceWallFlag09"),
-    (0x91f044cf, "CheckPoint"),
-    (0x92762ad5, "FenceNodeFlag32"),
-    (0x9290a40d, "FenceWallFlag29"),
-    (0x92d61cfd, "SoundAmbianceSettings"),
-    (0x968ef994, "Node05"),
-    (0x97361884, "FenceNodeFlag15"),
-    (0x973a95b2, "FenceNodeFlag13"),
-    (0x989bc8ad, "Node00"),
-    (0x99327d6f, "Width"),
-    (0x997ff317, "FenceWallFlag05"),
-    (0x99847045, "FenceWallFlag07"),
-    (0x9c030e56, "FenceWallFlag13"),
-    (0x9dd74f23, "FenceNodeFlag23"),
-    (0x9e8ad974, "FenceNode40"),
-    (0x9eb3ee85, "YSize"),
-    (0xa09a4dfd, "Reverse"),
-    (0xa2bfb87b, "Node15"),
-    (0xa2c435a9, "Node17"),
-    (0xa3c60f74, "FenceNodeFlag28"),
-    (0xa4a88919, "FenceNodeFlag07"),
-    (0xa50fa6af, "TargetObject"),
-    (0xa60fea07, "FenceWallFlag16"),
-    (0xa6146735, "FenceWallFlag14"),
-    (0xa90ecbbb, "MaxNumSpawns"),
-    (0xacad12df, "FenceNodeFlag01"),
-    (0xaf5fc20e, "FenceWallFlag08"),
-    (0xaf825450, "FenceWallFlag06"),
-    (0xafd43246, "FenceNode11"),
-    (0xb0b01ff4, "ID2"),
-    (0xb1388009, "FenceNodeFlag14"),
-    (0xb14f2f93, "RadiusOfEffect"),
-    (0xb1524043, "CollisionModule"),
-    (0xb1758b83, "FenceWallFlag01"),
-    (0xb1bd8bda, "SeatNameRef"),
-    (0xb1c2ec4b, "FenceNode18"),
-    (0xb2e588d7, "Raw64_d788e5b2"),
-    (0xb7d8bc0c, "FenceNode13"),
-    (0xb93d09cf, "FenceNodeFlag12"),
-    (0xb9e58b25, "FenceNode16"),
-    (0xc3b329fe, "AttachedID0"),
-    (0xc4197ff4, "LaneCount"),
-    (0xc7a270c0, "LowWTFMult"),
-    (0xc7be17c6, "Node25"),
-    (0xcaab0382, "FenceNodeFlag00"),
-    (0xcabe8b3a, "FenceNodeFlag08"),
-    (0xcabe9772, "FenceWallFlag40"),
-    (0xcb289cd9, "Tangent1"),
-    (0xcb356fc4, "FenceNode04"),
-    (0xcb39ecf2, "FenceNode02"),
-    (0xcbe8ed58, "Distance"),
-    (0xce5b1183, "Talkable"),
-    (0xcfc2a18c, "Node27"),
-    (0xd0c26e7d, "YAxis"),
-    (0xd0e81ab8, "InstanceData"),
-    (0xd1cf70a5, "Node22"),
-    (0xd1d6a663, "FenceNode10"),
-    (0xd25f1637, "PrevID0"),
-    (0xd3443e4a, "ZSize"),
-    (0xd80a2bcb, "WTFPortal"),
-    (0xd82c8ad9, "FenceWallFlag32"),
-    (0xd8a7e059, "FenceNode30"),
-    (0xd8bb6811, "FenceNode38"),
-    (0xdb0f705c, "LuaParam"),
-    (0xdbaa9984, "Traffic"),
-    (0xdc679240, "OuterRadius"),
-    (0xdd3094f3, "Node33"),
-    (0xdde4ef82, "CustomEnabledDefault"),
-    (0xdeb932ec, "FenceNode39"),
-    (0xdf68a69d, "NextID2"),
-    (0xe031149f, "FenceWallFlag34"),
-    (0xe0ac6a1f, "FenceNode36"),
-    (0xe1ae04b8, "Height"),
-    (0xe31f5544, "Node38"),
-    (0xe537d749, "FenceNode05"),
-    (0xe5b59e1b, "AttachedID1"),
-    (0xe6f43618, "SoundScriptSettings"),
-    (0xe728749b, "DistanceTriggered"),
-    (0xe85f4cfc, "DynamicFenceFlags"),
-    (0xe8617770, "PrevID3"),
-    (0xe8936a06, "FenceWallFlag26"),
-    (0xe9c08be3, "Node24"),
-    (0xed3c610f, "FenceNode03"),
-    (0xefb3c962, "Node29"),
-    (0xf05ae852, "FenceNodeFlag39"),
-    (0xf05d06da, "PrevID1"),
-    (0xf06e700a, "FenceNodeFlag31"),
-    (0xf091c5d9, "Node04"),
-    (0xf097f3cc, "FenceWallFlag24"),
-    (0xf0dd2f52, "FenceNode24"),
-    (0xf103cebd, "SoundArea"),
-    (0xf2a4c2e5, "FenceWallFlag21"),
-    (0xf33eac7d, "SoundTriggerSettings"),
-    (0xf5668aa8, "NextID3"),
-    (0xf7a1ff8c, "SoundWTFSettings"),
-    (0xf8964f9f, "Node02"),
-    (0xf930d873, "UnknownBool"),
-    (0xfa4e0765, "Node"),
-    (0xfb8065aa, "AttachedCount"),
-    (0xfbb4bda8, "XAxis"),
-    (0xfd21bcc9, "Node39"),
-    (0xfd354481, "Node31"),
-    (0xfd3d8926, "WTFPortal_Vector2"),
-    (0xfddc6371, "FenceNodeFlag21"),
-    (0xfe05e733, "FenceWallFlag12"),
-    (0xfe2f0542, "FenceWallFlag35"),
-    (0xfeaa5ac2, "FenceNode37"),
-];
 
 pub(crate) static RAW64_TAGS: &[u32] = &[0xb2e588d7];
 

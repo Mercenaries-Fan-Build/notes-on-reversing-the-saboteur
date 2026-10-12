@@ -37,6 +37,7 @@ pub mod loosefiles;
 pub mod map6;
 pub mod megapack;
 pub mod mesh;
+pub mod names;
 pub mod sbla;
 pub mod wwise;
 pub mod zlib;

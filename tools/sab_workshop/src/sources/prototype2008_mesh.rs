@@ -978,6 +978,8 @@ pub fn to_smsh(body: &Msh4Body) -> Smsh {
                 material_hash: material,
                 flags: 0,
                 parent_bone: 0,
+                // MSH4 prims carry no LOD field; a 2008 low-detail model is a separate `_LOD` record.
+                lod: 0,
             })
             .collect(),
     }

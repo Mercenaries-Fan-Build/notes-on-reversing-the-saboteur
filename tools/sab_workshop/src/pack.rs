@@ -31,6 +31,34 @@ pub fn pandemic_hash(name: &str) -> u32 {
     (h ^ 0x2A).wrapping_mul(0x0100_0193)
 }
 
+/// Fill `buf` from byte `off` of `f` without moving a shared cursor — the positioned read each OS
+/// provides. Unix has an exact variant; Windows' `seek_read` may return short, so it is looped.
+#[cfg(unix)]
+fn read_exact_at(f: &std::fs::File, buf: &mut [u8], off: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    f.read_exact_at(buf, off)
+}
+
+#[cfg(windows)]
+fn read_exact_at(f: &std::fs::File, mut buf: &mut [u8], mut off: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match f.seek_read(buf, off) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => {
+                buf = &mut buf[n..];
+                off += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("pack.rs needs a positioned file read for this target (only unix and windows are implemented)");
+
 #[derive(Clone, Copy)]
 pub struct Entry {
     pub crc: u32,
@@ -82,13 +110,13 @@ impl Megapack {
     /// slice actually read. `buf` is reused across calls, so a full scan holds only ONE sub-pack in
     /// memory (~tens of MB) instead of mapping the whole pack resident.
     pub fn read_into<'b>(&self, e: &Entry, buf: &'b mut Vec<u8>) -> &'b [u8] {
-        use std::os::windows::fs::FileExt;
         let n = e.size as usize;
         if buf.len() < n {
             buf.resize(n, 0);
         }
-        match self.file.seek_read(&mut buf[..n], e.offset) {
-            Ok(got) => &buf[..got],
+        // The whole entry or nothing: a short read used to come back as a truncated bundle.
+        match read_exact_at(&self.file, &mut buf[..n], e.offset) {
+            Ok(()) => &buf[..n],
             Err(_) => &[],
         }
     }

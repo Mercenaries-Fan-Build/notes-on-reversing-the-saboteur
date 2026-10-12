@@ -110,25 +110,32 @@ pub fn consume_sbla(buf: &[u8], parent: &str, report: &mut Report) {
     report.scanned("sbla");
     let loc = format!("{parent} / ALBS");
 
-    // Soft directory check: only when the mesh/texture *object* directory model cleanly applies do
-    // we assert its blob ranges. A parse refusal (empty/CFX/stub/other variant) is NOT an error —
-    // those are legitimate retail sub-pack kinds the directory model simply doesn't cover.
-    if let Ok(s) = sbla::parse(buf) {
-        for (r, (start, end)) in s.recs.iter().zip(sbla::blob_ranges(&s).iter()) {
-            if r.real() && *end > buf.len() {
+    // Layout: with a descriptor, its nine type counts fix the record table, and records + blobs must
+    // account for every byte. Without one, the counts are in global.map / France.map, which this run
+    // does not read.
+    match sbla::descriptor_len(buf) {
+        Ok(0) => report.unchecked("sbla.layout (type counts in map files)"),
+        Ok(_) => {
+            if let Err(e) = sbla::parse(buf, None) {
+                report.failed("sbla");
                 report.push(Issue {
                     severity: Severity::Fatal,
-                    code: "sbla.blob-out-of-range",
+                    code: "sbla.layout",
                     format: "sbla",
-                    location: format!("{loc} rec 0x{:08X}", r.hash),
-                    message: format!(
-                        "directory blob [0x{start:X}..0x{end:X}] exceeds sub-pack size 0x{:X} — the loader over-reads",
-                        buf.len()
-                    ),
+                    location: loc.clone(),
+                    message: format!("{e} — the loader reads the records and blobs at these positions"),
                     engine_ref: Some("FUN_00658870 @0x00658870"),
                 });
             }
         }
+        Err(e) => report.push(Issue {
+            severity: Severity::Fatal,
+            code: "sbla.header",
+            format: "sbla",
+            location: loc.clone(),
+            message: e,
+            engine_ref: Some("FUN_00658870 @0x00658870"),
+        }),
     }
 
     // Load-bearing validation: content-scan for the assets the engine actually consumes.

@@ -147,10 +147,8 @@ mod tests {
         };
         // Open the source, list animations, find a NOC0 handle, load through the trait.
         use crate::source::GameSource;
-        let src = crate::sources::prototype2008::Prototype2008Source::open(
-            root.parent().unwrap_or(&root),
-        )
-        .expect("open 2008 source");
+        let src = crate::sources::prototype2008::Prototype2008Source::open(&root)
+            .expect("open 2008 source");
         let anims = src.list_animations();
         // NOC0 static pose — `aurora_dead_idle_drvr` is one we know decodes end-to-end.
         let want = pandemic_hash("aurora_dead_idle_drvr");

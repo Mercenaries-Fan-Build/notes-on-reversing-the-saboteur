@@ -628,8 +628,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn bin360() -> Option<PathBuf> {
-        let p = PathBuf::from("c:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360");
-        if p.is_dir() { Some(p) } else { None }
+        crate::testenv::prototype2008_bin360()
     }
 
     /// Walk .Pack files under Bin360 and hand each texture record's payload to `visit`.

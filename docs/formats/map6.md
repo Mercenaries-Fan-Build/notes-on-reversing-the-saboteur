@@ -1,89 +1,116 @@
-# The Saboteur (2009) — `global.map` (MAP6) format
+# The Saboteur (2009) — `MAP6` world maps: `global.map` and `France.map`
 
-`global.map` is the boot-time asset/template registry loaded by
-`FUN_009f3370` @ **0x009f3370**. It is a `MAP6` container. `France.map` shares
-the magic and the record *prefix* but is a different, world-placement subformat
-loaded by `FUN_009f75f0` @ 0x009f75f0.
+Two `MAP6` files describe the world's objects: **`global.map`** (the boot-time registry of
+non-placed objects — abilities, disguises, UI, …) and **`France.map`** (the region: terrain tiles, paths
+and placed objects). Each object record carries the per-type blob counts its ALBS sub-pack needs
+([sbla_subpack.md](sbla_subpack.md)). Re-derived 2026-10-12 from the engine's loaders and checked by
+exact consumption of every retail file; supersedes an earlier version (see
+[Correction](#correction-2026-10-12)).
 
-All integers little-endian. Offsets below are into `DLC/01/Global.map` (356 B).
+All integers little-endian.
 
-## Header (16 bytes)
+## Where the files are and who loads them — PROVEN
 
-| off | type   | value        | meaning |
-|-----|--------|--------------|---------|
-| 0x00 | u32   | 0x4D415036   | magic `MAP6` (on disk: `36 50 41 4d` = "6PAM"). Checked at FUN_009f3370 line ~885179. |
-| 0x04 | u32   | 2            | `record_count`. Read by `FUN_0049ee70` (u32 stream read) and accumulated into `this+0xA0` (line 885185–186). |
-| 0x08 | u8[8] | 0            | reserved / zero padding. |
+| file | where | loader |
+|---|---|---|
+| `global.map` (284,388 B) | inside `France/loosefiles_BinPC.pack` | `FUN_009f2df0`, called at `0x43c664` with `"global.map"` (`0xf7caec`) |
+| `France.map` (2,817,849 B) | inside `France/loosefiles_BinPC.pack` | `FUN_009f4320`, called at `0x43c6a3` with `"%s.map"` (`0xf7caf8`) |
+| `DLC/01/Global.map` (356 B) | loose | `FUN_009f3370` (via `FUN_009906c0`, `%s\\global.map`) |
+| `DLC/01/FRANCE.map` (2,022 B) | loose | `FUN_009f75f0` (via `FUN_009906c0`, `%s\\%s.map`) |
 
-## Record (variable length)
+The DLC loaders *add* to the main registry (e.g. `numDynamics` is accumulated into `this+0xA0`).
 
-Read back-to-back, `record_count` times, starting at 0x10.
-
-| field | type | notes |
-|-------|------|-------|
-| `name_hash` | u32 | `pandemic_hash(name)`. **CONFIRMED**: 0x315C74B2==hash("MM_Belle_VIP"), 0xFB5E3070==hash("KnifeThrow"). |
-| `name_len` | u16 | length of `name` **including** the NUL. |
-| `name` | u8[name_len] | NUL-terminated ASCII asset/template name. |
-| `slot_a` | f32[3] | zero in global.map. Shared with France B/C records where the same slot is a bbox min corner. |
-| `slot_b` | f32[3] | zero in global.map. France: bbox max corner. |
-| `flag_a` | u16 | =1 in both records (INFERRED type/version). |
-| `flag_b` | u16 | =2 in both records. |
-| `entry_count` | u32 | number of referenced-asset entries. |
-| `entries` | Entry[entry_count] | see below. |
-| `trailer` | u8[56] | fixed 56-byte block, mostly zero (see below). |
-
-### Entry (8 bytes)
-
-| field | type | notes |
-|-------|------|-------|
-| `ref_hash` | u32 | `pandemic_hash` of a referenced asset/animation name (INFERRED; not reversed without a name dictionary). |
-| `flags`    | u32 | opaque. For `KnifeThrow` every entry's low byte is 0x18 (likely a category tag) plus scattered bits (0x10/0x40/0x04…). |
-
-### Trailer (56 bytes, fixed)
-
-Mostly zero. Non-zero slots observed:
-* `+0x04` u32: 28 (MM_Belle_VIP) / 388 (KnifeThrow) — a size-like value (INFERRED).
-* `+0x0C` u32: echoes `entry_count` (1 / 15).
-* `+0x24` u32: 1 for KnifeThrow only.
-
-## Worked example
+## The object record (shared by both files)
 
 ```
-rec1  @0x10  MM_Belle_VIP  entry_count=1   (a disguise/model registration)
-rec2  @0x83  KnifeThrow    entry_count=15  (an ability + its 15 animation refs)
+u32   hash          pandemic_hash(name)
+u16   nameLen       including the NUL
+u8    name[nameLen]
+f32   a[3]          (France: bbox min)
+f32   b[3]          (France: bbox max)
+u16   u0
+u16   u1
+-- FUN_00658aa0 --
+u32   n1;  n1 × { u32, u32 }      stored at +0x120; the 2nd word is summed into +0xF0
+u32   n2;  n2 × { u32, u32 }      stored at +0x128
+-- FUN_00659f20 / FUN_00659f50 --
+u32   ?
+u32   counts[9]                   one 0x24-byte read into +0x12C: the per-type ALBS blob counts
+u32   nA;  nA × u32
+u32   nB;  nB × u32               only the low 16 bits of nB are used
+u32   nC;  nC × { u32, u32 k, k × u32 }
 ```
-16 (header) + 115 (rec1) + 225 (rec2) = **356** = file size, 0 leftover.
 
-## Adding an entry (for modders)
+The tail is the same serialisation as an ALBS descriptor block. In retail, `nA = nB = nC = 0` in all 1,411
+`global.map` records (PROVEN).
 
-Append a record and bump `record_count` at 0x04:
-1. `name_hash` = `pandemic_hash(name)` (FNV-1a variant: basis 0x811C9DC5, per byte
-   `h=((c|0x20)^h)*0x01000193`, finalize `(h^0x2A)*0x01000193`; `hash("ANY")==0xED057225`).
-2. `name_len` (incl. NUL) + the name bytes.
-3. 24 zero bytes (`slot_a`/`slot_b`) unless placing in the world.
-4. `flag_a=1`, `flag_b=2`.
-5. `entry_count` + that many `{ref_hash, flags}` referencing existing asset hashes.
-6. A 56-byte trailer — copy an existing one and set `+0x0C` to `entry_count`.
+## `global.map` — PROVEN (`FUN_009f2df0`, decomp 884991–885091; `FUN_009f3370`, 885182–885357)
 
-## Confidence
+```
+u32   magic = 0x4D415036 ("6PAM" on disk)
+u32   numDynamics                       → this+0xA0
+u32   count1;  count1 × Record
+u32   count2;  count2 × Record
+      numDynamics × Record              read by FUN_009f2a00
+```
 
-| claim | status |
-|-------|--------|
-| magic 0x4D415036 at 0x00 | CONFIRMED (decomp 0x009f3370 + bytes) |
-| u32 record_count at 0x04 | CONFIRMED (decomp FUN_0049ee70 read + bytes: 2 named recs) |
-| record = hash+len+name prefix | CONFIRMED (both name hashes match pandemic_hash) |
-| 24-byte slot = 2×vec3 | INFERRED (zero here; matches France B/C bbox slot) |
-| flag_a/flag_b, entry layout | CONFIRMED count (exact consume); flag *meaning* INFERRED |
-| 56-byte fixed trailer | CONFIRMED size (exact consume); field meanings INFERRED |
-| whole-file exact consume | CONFIRMED (356/356, 0 leftover) |
+Retail: `numDynamics` 761, lists 325 + 325 — 1,411 records, consumed to the last byte. `DLC/01/Global.map`:
+`numDynamics` 2 (`MM_Belle_VIP`, `KnifeThrow`; hashes `0x315C74B2`, `0xFB5E3070` verified), both lists
+empty — 356 / 356 bytes.
 
-## France.map (cross-check, NOT byte-exact here)
+## `France.map` — PROVEN (`FUN_009f4320`, decomp 885928–885952+; DLC `FUN_009f75f0`, 887940–887959)
 
-`FUN_009f75f0`: magic → header (region name "FRANCE" + world bbox floats) → then
-**three sections**, each `u32 count` + that many records read by
-`FUN_009f3900` (0x009f3900, tile-visibility), `FUN_009f3bf0` (0x009f3bf0) and
-`FUN_009f3fa0` (0x009f3fa0) — the latter two identical placement readers that
-read `u32 hash, u16 name_len, name, vec3 min, vec3 max, u16, u16`. Named records
-verified: 0xD71075A6==hash("midnightshow"), 0x2369B026==hash("dance_a"), etc.
-The per-record variable trailers (nested counts) were not fully decoded; a
-byte-exact France reader is left open.
+Main file:
+
+```
+u32   magic
+char  regionName[]                      NUL-terminated ("France")
+u32   numTiles
+u32   ?                                 → +0xDA84
+u32   numPaths
+      if numPaths > 0: u32, then numPaths × Path
+      3 × (f32[3], f32[3])  and  3 × (u16, u16)
+List 1  u32 count; count × Tile         FUN_009f3900
+List 2  u32 count; count × Record       FUN_009f3bf0
+List 3  u32 count; count × Record       FUN_009f3fa0
+```
+
+`DLC/01/FRANCE.map`: magic, `"FRANCE"`, `u32 0` (read by `FUN_00427cb0`), then the three lists.
+
+**Tile** (`FUN_009f3900`): `u32`, `u16 nameLen`, optional name, 24 bytes, `u16`, `u16 selector`; when
+`selector ≥ 2` the tile carries the full record tail above (the "extended" tiles).
+
+**Path** — INFERRED: the decomp drops the arguments inside the path loop. SaboteurToolset's
+`france_extract` structure (three length-prefixed strings + 48 bytes) consumes all 1,733 paths exactly.
+
+Retail `France.map`: 1,733 paths, 29,572 tiles (21,669 extended), 13 + 61 records — consumed to the last
+byte. `DLC/01/FRANCE.map`: 20 tiles (9 extended), 1 + 4 records — exact.
+
+## Readers in this repo
+
+| reader | verdict |
+|---|---|
+| `tools/sab_poc/src/albs.rs` (global.map) | right for `global.map` (main and DLC); skips the `nA/nB/nC` lists as a fixed 52 bytes, which holds only because they are empty in retail, and panics instead of erroring past EOF |
+| SaboteurToolset `global_extract` / `france_extract` | exact on all four files |
+| `tools/sab_map6` | **wrong**: its global parser fits only `DLC/01/Global.map` (both lists empty) and fails on the main file at `0xACFF`; its region parser loses sync on both France files |
+
+## Correction (2026-10-12)
+
+This doc used to say `global.map` was loaded by `FUN_009f3370` and France by `FUN_009f75f0` — those are
+the **DLC** loaders. The "8 reserved bytes" after `record_count` are the two list counts (zero in the DLC
+file). The "fixed 56-byte trailer" is `n2` + `u32` + the nine counts + `nA/nB/nC`, which totals 56 only
+when every list is empty; its "`+0x0C` echoes `entry_count`" was a coincidence of `counts[1]` (texture
+count). `France.map` was left undecoded; it is now consumed exactly.
+
+## Adding a `global.map` record (for modders)
+
+Append a Record to the `numDynamics` list and bump `numDynamics`: `hash = pandemic_hash(name)`,
+`nameLen` (incl. NUL) + name, 24 zero bytes, `u0`/`u1` (copy an existing record of the same kind),
+`n1`/`n2` lists, then the tail with `counts[9]` equal to the blob counts of the object's ALBS sub-pack
+and empty `nA/nB/nC`.
+
+## Method
+
+`stage1_map/map_probe` (std-only Rust; to be moved into `tools/sab_probe`) parses each file with the
+engine-derived layout, the `sab_poc` layout and the `sab_map6` layout and reports whether each consumes
+the file exactly.

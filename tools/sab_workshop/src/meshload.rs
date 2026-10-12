@@ -79,12 +79,22 @@ pub struct LoadedMesh {
     /// (0,0,0), so the chain collapses that subtree onto one point and only these matrices know
     /// where the face really is. Pooled across parts during assembly (see `assemble`).
     pub stored_ibm: std::collections::HashMap<u32, [f32; 16]>,
-    /// `(part name, index_start, index_count)` per source part, in merge order.
+    /// `(part name, index_start, index_count, lod)` per source part, in merge order.
     ///
     /// Each part ships its OWN texture bundle, so a character cannot be textured from one pool —
     /// this is what lets the resolver seed each part's submeshes from that part's own textures
-    /// instead of smearing the first bundle it found across the whole body.
-    pub part_ranges: Vec<(String, u32, u32)>,
+    /// instead of smearing the first bundle it found across the whole body. `lod` is the level the
+    /// part was assembled at (see [`PartPick`]); a part can appear twice, once per level, when its
+    /// template's `LowDetailModel` is the same mesh as its `HighDetailModel`.
+    pub part_ranges: Vec<(String, u32, u32, u8)>,
+}
+
+/// One mesh picked into an assembly, at a level of detail: `0` for a part template's
+/// `HighDetailModel`, `1` for its `LowDetailModel` (`assets::Asset::assembly`).
+#[derive(Clone)]
+pub struct PartPick {
+    pub entry: MeshEntry,
+    pub lod: u8,
 }
 
 /// First offset of `needle` in `buf` at or after `from` (small linear scan — used only over a
@@ -225,7 +235,7 @@ pub fn load(buf: &[u8], e: &MeshEntry) -> Result<LoadedMesh, String> {
     let prim_parent_bone = tail.draws.iter().map(|d| d.parent_bone).collect();
     let bone_hashes = tail.bone_hashes.clone();
     let stored_ibm = tail.stored_ibm.clone();
-    let part_ranges = vec![(e.name.clone(), 0u32, mesh.indices.len() as u32)];
+    let part_ranges = vec![(e.name.clone(), 0u32, mesh.indices.len() as u32, 0u8)];
     Ok(LoadedMesh { name: e.name.clone(), mesh, bones: tail.bones, prim_parent_bone, bone_hashes, stored_ibm, part_ranges })
 }
 
@@ -239,7 +249,15 @@ struct Stream {
     num_indices: u32,
 }
 struct Primitive { stream_index: u32, index_offset: u32, num_indices: u32 }
-struct DrawCall { primitive_index: u32, material: u32, parent_bone: u16 }
+struct DrawCall {
+    primitive_index: u32,
+    material: u32,
+    parent_bone: u16,
+    /// `u16 @+0xe`. Low 3 bits = the drawcall's in-mesh level of detail: the engine's MESH loader
+    /// `FUN_00650470` counts `lod_count[(dc+0xe) & 7]++` and `FUN_00e0ce80` draws one level's run
+    /// (docs/formats/mesh_geometry.md). Bit 3 is set at load from a material flag, never on disk.
+    lod_flags: u16,
+}
 
 struct MeshTail {
     bones: Vec<Bone>,
@@ -443,6 +461,7 @@ fn parse_mesh(body: &[u8]) -> Result<MeshTail, String> {
             material: u32at(body, p + 4),
             // The rigid-attachment bone for UNSKINNED drawcall geometry (hats/props).
             parent_bone: u16at(body, p + 12),
+            lod_flags: u16at(body, p + 14),
         });
         p += 16;
     }
@@ -602,11 +621,22 @@ fn decode_geometry(tail: &MeshTail, dat: &[u8]) -> Result<Smsh, String> {
         }
     }
 
-    for d in &tail.draws {
+    for (i, d) in tail.draws.iter().enumerate() {
         let prim = tail
             .prims
             .get(d.primitive_index as usize)
             .ok_or_else(|| format!("drawcall references primitive {}", d.primitive_index))?;
+        // Every in-mesh LOD level above 0 in retail sits in an UNSKINNED stream (6716/6716 drawcalls),
+        // and this loader only takes skinned meshes — so a level above 0 here is new data. Refuse it:
+        // drawing it would stack a coarser copy of the mesh onto itself.
+        let lod = (d.lod_flags & 7) as u8;
+        if lod != 0 {
+            return Err(format!(
+                "drawcall {i} is at in-mesh LOD level {lod} (+0xe = 0x{:04X}); skinned meshes with \
+                 in-mesh LOD levels are not supported",
+                d.lod_flags
+            ));
+        }
         let ibase = stream_ibase.get(prim.stream_index as usize).copied().unwrap_or(0);
         m.prims.push(Prim {
             index_start: ibase + prim.index_offset,
@@ -614,6 +644,7 @@ fn decode_geometry(tail: &MeshTail, dat: &[u8]) -> Result<Smsh, String> {
             material_hash: d.material,
             flags: d.primitive_index,
             parent_bone: d.parent_bone,
+            lod,
         });
     }
     Ok(m)
@@ -916,18 +947,28 @@ mod hat_tests {
 ///    local translation of (0,0,0) and the chain collapses that whole subtree onto one point. Every
 ///    part ships correct matrices for the bones IT skins, so assembling — which loads every part —
 ///    is exactly when the union becomes available. We pool them and fix the canonical skeleton.
-pub fn assemble(buf: &[u8], parts: &[MeshEntry]) -> Result<LoadedMesh, String> {
+///
+/// Parts are merged **level by level** (a stable sort on `PartPick::lod`), so each level of detail
+/// is one contiguous span of the index buffer — what `formats::submesh_cover` builds its per-level
+/// draw lists from — and every prim and part range carries its pick's level.
+pub fn assemble(buf: &[u8], parts: &[PartPick]) -> Result<LoadedMesh, String> {
     if parts.is_empty() {
         return Err("no parts".into());
     }
+    let mut ordered: Vec<&PartPick> = parts.iter().collect();
+    ordered.sort_by_key(|p| p.lod);
     let mut loaded: Vec<LoadedMesh> = Vec::new();
+    let mut lods: Vec<u8> = Vec::new(); // parallel to `loaded`
     let mut errs: Vec<String> = Vec::new();
-    for e in parts {
-        match load(buf, e) {
-            Ok(l) => loaded.push(l),
+    for p in ordered {
+        match load(buf, &p.entry) {
+            Ok(l) => {
+                loaded.push(l);
+                lods.push(p.lod);
+            }
             // A part that fails is skipped, not fatal: a character with a missing hat is still worth
             // looking at, and the status line reports what was dropped.
-            Err(err) => errs.push(format!("{}: {err}", e.name)),
+            Err(err) => errs.push(format!("{} (LOD{}): {err}", p.entry.name, p.lod)),
         }
     }
     if loaded.is_empty() {
@@ -1074,8 +1115,8 @@ pub fn assemble(buf: &[u8], parts: &[MeshEntry]) -> Result<LoadedMesh, String> {
     let mut prim_parent_bone: Vec<u16> = Vec::new();
     let mut dropped = 0usize;
 
-    let mut part_ranges: Vec<(String, u32, u32)> = Vec::new();
-    for l in &loaded {
+    let mut part_ranges: Vec<(String, u32, u32, u8)> = Vec::new();
+    for (l, &lod) in loaded.iter().zip(&lods) {
         let base_v = out.positions.len() as u32;
         let base_i = out.indices.len() as u32;
         // this part's local bone index -> canonical index, by name hash
@@ -1111,10 +1152,13 @@ pub fn assemble(buf: &[u8], parts: &[MeshEntry]) -> Result<LoadedMesh, String> {
                 .get(pi)
                 .and_then(|b| map.get(*b as usize).copied().flatten())
                 .unwrap_or(0);
+            // The part's level of detail: its own geometry is in-mesh level 0 (`load` refuses any
+            // other), and the assembly says which level this whole part stands for.
+            q.lod = lod;
             prim_parent_bone.push(q.parent_bone);
             out.prims.push(q);
         }
-        part_ranges.push((l.name.clone(), base_i, out.indices.len() as u32 - base_i));
+        part_ranges.push((l.name.clone(), base_i, out.indices.len() as u32 - base_i, lod));
     }
 
     // The invariant that makes a bind pose correct: world · inv_bind == identity for every bone.
@@ -1162,7 +1206,8 @@ pub fn assemble(buf: &[u8], parts: &[MeshEntry]) -> Result<LoadedMesh, String> {
         }
     }
 
-    let name = parts[canon].name.clone();
+    // `canon` indexes `loaded` (sorted by level, failed parts skipped) — not `parts`.
+    let name = loaded[canon].name.clone();
     eprintln!(
         "[sab_workshop] assembled {} from {} part(s): {} verts, {} tris, {} bones \
          ({corrected} bind-corrected from the asset's own matrices{})",

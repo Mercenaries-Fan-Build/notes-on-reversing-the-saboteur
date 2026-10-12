@@ -23,7 +23,7 @@ The DLC loaders *add* to the main registry (e.g. `numDynamics` is accumulated in
 ## The object record (shared by both files)
 
 ```
-u32   hash          pandemic_hash(name)
+u32   hash          see below
 u16   nameLen       including the NUL
 u8    name[nameLen]
 f32   a[3]          (France: bbox min)
@@ -43,6 +43,16 @@ u32   nC;  nC × { u32, u32 k, k × u32 }
 
 The tail is the same serialisation as an ALBS descriptor block. In retail, `nA = nB = nC = 0` in all 1,411
 `global.map` records (PROVEN).
+
+**`hash`** (checked on every retail record, 2026-10-12, `sab_probe albs-keys`): `pandemic_hash(name)` for
+`global.map` dynamics and region-map list records; `pandemic_hash(name + "0")` / `(name + "1")` for
+`global.map` list 1 / list 2 (325/325 each; `FUN_009f2df0` builds the object's name with `"%s%d"`). A
+region tile's `hash` is none of these (0 of 21,678); not established.
+
+**Pack path.** Each object's loader also stores a path on it (`"%s\\%s"` via `FUN_006586c0`), and the
+megapack entry of the object's ALBS sub-pack is found by `pandemic_hash` of that path plus the pack
+type: [world_megapack_key.md](world_megapack_key.md). `sab_formats::map6::pack_counts` gives each
+object's counts keyed that way.
 
 ## `global.map` — PROVEN (`FUN_009f2df0`, decomp 884991–885091; `FUN_009f3370`, 885182–885357)
 

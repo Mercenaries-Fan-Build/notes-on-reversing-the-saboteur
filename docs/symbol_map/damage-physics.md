@@ -96,6 +96,7 @@ previously claimed *every* VA was anchored, which contradicted the doc's own lin
 - The **fall-vs-impact dispatcher** at ~`0x0058ace3`/`0x0058acef` lives in an un-emitted region between `FUN_0058a480` and `FUN_0058ad00` — no header was produced, so it could not be named.
 - `WSDamageable` / `WSDamageablePart` / `WSDamageSphere` / `WSDamageRegion` carry no inline strings; their methods aren't individually pinned. `FUN_00666b20` is the best-evidenced shared health-subtraction core but its exact method name is inferred.
 - `WSDestructable` is represented only by the `WSDynamicPart::DeleteSynched` stub; the destruction-trigger / mesh-swap logic is unpinned.
+  - ✅ **Resolved 2026-10-12:** there is no mesh swap for damage groups — the state shows/hides the drawcalls hanging off each part's bone inside one mesh (`FUN_006678e0` → deferred queue → `FUN_0066b840` → `FUN_00e14610`). Full write-up: [`../damage_and_destruction.md`](../damage_and_destruction.md).
 - `FUN_004f69f0` (`"WSHuman::Die"`) is a 54-byte **profiling/log marker only** (calls `FUN_009997a0` with a `(file,func,line)` tag), **not** the real death logic — use `DieImmediateDropAndRagdoll` / `DieImmediateNoDropOrRagdoll`.
 
 ---

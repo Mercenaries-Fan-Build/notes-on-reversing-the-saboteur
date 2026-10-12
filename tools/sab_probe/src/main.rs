@@ -61,15 +61,7 @@ fn u64(b: &[u8], o: usize) -> u64 {
 }
 fn f32a(b: &[u8], o: usize) -> f32 { f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) }
 
-/// pandemic_hash (FNV-1a variant, Pandemic Studios). Case-folded by `|0x20` on the raw byte.
-/// Verified `pandemic_hash("ANY") == 0xED057225`.
-fn pandemic_hash(s: &str) -> u32 {
-    let mut h: u32 = 0x811C9DC5;
-    for c in s.bytes() {
-        h = (h ^ ((c | 0x20) as u32)).wrapping_mul(0x0100_0193);
-    }
-    (h ^ 0x2A).wrapping_mul(0x0100_0193)
-}
+use sab_formats::pandemic_hash;
 
 // ---------------------------------------------------------------------------
 // 4x4 matrix math. Storage note: the on-disk `localTMS` is 16 f32 row-major with the

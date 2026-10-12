@@ -585,20 +585,27 @@ fn write_glb(
         }
         nodes.push(n);
     }
-    let mut scene_nodes: Vec<usize> = roots.clone();
+    // ---- scenes: one per level, each the skeleton + that level's mesh node ----
+    //
+    // The skeleton's root nodes are shared by every scene. Blender 5.2's importer turns each scene
+    // into a collection named after it (default), or — with "Scene as Collection" unticked — into its
+    // own Blender scene, the armature linked into each; scene 0 (LOD0) is the default.
+    let mut scenes: Vec<serde_json::Value> = Vec::new();
     for (m, &lod) in levels.iter().enumerate() {
         let mut mn = serde_json::json!({ "name": lod_object_name(label, lod), "mesh": m });
         if has_skin {
             mn["skin"] = serde_json::json!(0);
         }
+        let mut scene_nodes: Vec<usize> = roots.clone();
         scene_nodes.push(nodes.len());
         nodes.push(mn);
+        scenes.push(serde_json::json!({ "name": format!("LOD{lod}"), "nodes": scene_nodes }));
     }
 
     let mut root = serde_json::json!({
         "asset": { "version": "2.0", "generator": "sab_workshop" },
         "scene": 0,
-        "scenes": [{ "nodes": scene_nodes }],
+        "scenes": scenes,
         "nodes": nodes,
         "meshes": meshes,
         "accessors": accs,
@@ -859,14 +866,20 @@ mod tests {
             assert_eq!(json["accessors"][a]["byteOffset"].as_u64(), Some(want_off));
             assert_eq!(json["accessors"][a]["count"].as_u64(), Some(3));
         }
-        // Both mesh nodes are scene roots on skin 0.
+        // One scene per level: the skeleton root plus that level's mesh node and not the other's,
+        // both on skin 0; LOD0's scene is the default.
         let nodes = json["nodes"].as_array().unwrap();
-        let scene: Vec<u64> =
-            json["scenes"][0]["nodes"].as_array().unwrap().iter().map(|n| n.as_u64().unwrap()).collect();
-        for name in ["T_LOD0", "T_LOD1"] {
-            let i = nodes.iter().position(|n| n["name"].as_str() == Some(name)).unwrap();
-            assert!(scene.contains(&(i as u64)), "{name} not in the scene");
-            assert_eq!(nodes[i]["skin"].as_u64(), Some(0));
+        let scenes = json["scenes"].as_array().unwrap();
+        assert_eq!(scenes.len(), 2);
+        assert_eq!(json["scene"].as_u64(), Some(0));
+        let node_of = |name: &str| nodes.iter().position(|n| n["name"].as_str() == Some(name)).unwrap() as u64;
+        for (k, (own, other)) in [("T_LOD0", "T_LOD1"), ("T_LOD1", "T_LOD0")].into_iter().enumerate() {
+            let sc: Vec<u64> = scenes[k]["nodes"].as_array().unwrap().iter().map(|n| n.as_u64().unwrap()).collect();
+            assert_eq!(scenes[k]["name"].as_str(), Some(["LOD0", "LOD1"][k]));
+            assert!(sc.contains(&0), "scene {k} lacks the skeleton root");
+            assert!(sc.contains(&node_of(own)), "{own} not in scene {k}");
+            assert!(!sc.contains(&node_of(other)), "{other} leaked into scene {k}");
+            assert_eq!(nodes[node_of(own) as usize]["skin"].as_u64(), Some(0));
         }
     }
 

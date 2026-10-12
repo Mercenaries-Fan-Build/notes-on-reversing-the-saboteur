@@ -89,6 +89,13 @@ Retail `Dynamic0.megapack`: levels 0–2 occur; every drawcall above level 0 (67
 UNSKINNED mesh (vehicles, weapons, some props). Characters do not use in-mesh levels — their LOD is a
 separate mesh named by the part template's `LowDetailModel` ([gametemplates.md](gametemplates.md)).
 
+`lodFlags` bit 4 (0x10) marks a drawcall that belongs to a **damaged-state** part. Over every retail
+template with damage parts, drawcalls under a `Pristine` part never carry it (22,051) and drawcalls
+under a non-pristine part always do (17,551). No engine reader of the bit was found; the engine
+selects damage geometry by `parentBone` instead — see
+[damage_and_destruction.md](../damage_and_destruction.md). `parentBone` is therefore not only the
+rigid-attachment bone: on a destructible it is the bone whose part owns the drawcall.
+
 ## Vertex format bitfield (`format` @ Stream+40)
 
 `positionType:2 | skinType:2 | numColors:4 | numUVs:4 | normal:1 | tangent:1 | reserved | constTag:8`
@@ -145,4 +152,5 @@ mesh geometry.
 | BoneRemap.ibm bytes ignored (IBM recomputed as inverse(bindWorld)) | **CONFIRMED** | toolset uses `skeleton.ibms.at(boneId)`; our IBM composes to bind (dev 6e-7) |
 | Material hashes → external WSAO `.materials` | INFERRED (not needed v1) | toolset comment; not resolved here (untextured) |
 | `DrawCall.lodFlags & 7` = in-mesh LOD level | **CONFIRMED** | decomp `FUN_00650470` / `FUN_00e0d160` / `FUN_00e0ce80` (GOG exe); levels 0–2 in retail data |
+| `DrawCall.lodFlags & 0x10` = drawcall of a non-pristine damage part | **CONFIRMED (data)** | 22,051 / 17,551 drawcalls split with no exception against template `Pristine` flags; no code reader found |
 | `Stream.unk0 @136`, `Primitive.numFaces` semantics | INFERRED | present & read, exact meaning unused |

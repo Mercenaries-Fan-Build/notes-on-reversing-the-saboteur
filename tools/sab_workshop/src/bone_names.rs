@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use crate::pack::pandemic_hash;
+use sab_formats::pandemic_hash;
 
 /// The recovered dictionary. Names were confirmed by hashing candidates against the real rig
 /// (`sab_probe names`), not guessed; `Bone_LClav`/`Bone_RClav` are known misses (the rig calls them

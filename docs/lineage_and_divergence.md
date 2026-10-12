@@ -11,7 +11,7 @@ re-verified against the Saboteur binary/assets before you rely on it.
 
 | Thing | Evidence |
 |---|---|
-| **Hash algorithm** `pandemic_hash` (FNV-1a + `\|0x20` case-fold + `^0x2A`, `*prime` finalize) | ✅ **CONFIRMED against the binary**: `FUN_00dc1e20` @ `0x00dc1e20`. `hash("ANY")==0xED057225` reproduced; also reproduces `.luap` descriptor hashes 321/321. ⚠️ finalizer is `(h ^ 0x2A) * PRIME` — XOR **then** multiply; the reverse silently yields garbage. See [`formats/lua_scripts.md`](formats/lua_scripts.md) |
+| **Hash algorithm** `pandemic_hash` (FNV-1a + `\|0x20` case-fold + `^0x2A`, `*prime` finalize) | ✅ **CONFIRMED against the binary**: `FUN_00dc1e20` @ `0x00dc1e20`. `hash("ANY")==0xED057225` reproduced; also reproduces `.luap` descriptor hashes 321/321. ⚠️ finalizer is `(h ^ 0x2A) * PRIME` — XOR **then** multiply; the reverse silently yields garbage. See [`formats/lua_scripts.md`](formats/lua_scripts.md). ⚠️ **Identical for ASCII only:** the Saboteur engine sign-extends each byte (`movsx` at `0x00dc1e33`), `mercs2_formats::hash::pandemic_hash_m2` zero-extends — names with a byte `>= 0x80` hash differently. No retail Saboteur template/mesh name has one; `sab_formats::hash` reproduces the engine exactly |
 | **`sges` compression** (SEGS header, 8-byte chunk descriptors, raw deflate `-MAX_WBITS`, 64 KB sentinel) | Saboteur `compressed.hpp` == our `sges` decompressor |
 | **Lua bytecode = LuaQ 5.1** | `LuaScripts.luap` entries start `1B 4C 75 61 51`; same ChunkSpy/unluac path |
 | **f16 vertex positions** | MESH streams use half-float positions |

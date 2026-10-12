@@ -104,7 +104,7 @@ use std::path::{Path, PathBuf};
 
 use crate::clip::AnimClip;
 use crate::havok::QsTransform;
-use crate::pack::pandemic_hash;
+use sab_formats::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind};
 use crate::sources::prototype2008_mesh::Msh4Skeleton;
 

@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 # SGES block decompression and SafeSlice (SGES is byte-identical between the two games,
 # docs/formats/archive_and_models.md).
-mercs2_formats = "3.0"
+mercs2_formats = "4.0"
 # zlib streams inside SBLA sub-packs (DTEX mip payloads, MSHA blobs: raw 78 01 zlib).
 flate2 = "1"
 

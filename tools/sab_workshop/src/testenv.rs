@@ -17,8 +17,3 @@ pub fn prototype2008_root() -> Option<PathBuf> {
     let dir = sab_2008_dir()?;
     sab_formats::game_paths::proto2008_bin360(&dir).map(|_| dir)
 }
-
-/// The 2008 build's `Bin360` content directory, for tests that read files inside it directly.
-pub fn prototype2008_bin360() -> Option<PathBuf> {
-    sab_formats::game_paths::proto2008_bin360(&sab_2008_dir()?)
-}

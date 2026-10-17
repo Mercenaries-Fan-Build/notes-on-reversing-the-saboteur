@@ -220,9 +220,18 @@ an MSHR body
 ```
 
 `material` is a material UID of the same pack's `WSAO` slot (e.g. `0x45F35344` =
-`DefaultLib.LB_C2_pants:0` in `Global/BP_CV_RaceDrv_LB_Blue.Pack`), and the pairs repeat that
-material's texture references. PROVEN for the framing (all 215 records with a body parse). No engine
-in the drop reads `SBLX` packs; the pairs' meaning is the material format's (see the materials doc).
+`DefaultLib.LB_C2_pants:0` in `Global/BP_CV_RaceDrv_LB_Blue.Pack`). PROVEN for the framing (all 215
+records with a body parse). No engine in the drop reads `SBLX` packs. Against the materials
+(`docs/2008_materials_format.md`), over all 475 bindings (`sab_probe proto2008-materials`):
+
+* there is one pair per pass of the material, and each pair is that pass's
+  `(pixel_shader, vertex_shader)`, in the order passes 1.. then pass 0 — `Receive-Shadow, Cast-Shadow,
+  Color` (472), `Receive-Shadow, Color` (2), none for the one material without passes. PROVEN.
+* `key` is one value per material uid across the build (218 uids). It is not `pandemic_hash` of the
+  material's name; its preimage is UNKNOWN.
+
+(An earlier version of this page said the pairs repeat the material's texture references; they are
+its shader pairs.)
 
 ## Placement
 

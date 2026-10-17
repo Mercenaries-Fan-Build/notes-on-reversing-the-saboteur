@@ -1,8 +1,9 @@
 //! Game gate for `proto2008` and `xex` over the 2008 prototype named by `proto2008_dir` in the repo-root
 //! `.sab-local.toml`: every `.pack` is an MP00 archive whose entries tile it and are byte copies of the
 //! loose files they hash the paths of, an `SBL*` sub-pack, `AP04`, or empty; every `meshes` and
-//! `textures` slot directory reads; every `meshes` record parses; every `wsd` slot is a big-endian
-//! EditNodes entry; every `.xex` unwraps.
+//! `textures` slot directory reads; every `meshes` record parses; every `textures` record parses, is
+//! keyed by its name's hash, inflates to `unpacked` bytes that its mip layout spans exactly, and every
+//! level reads; every `wsd` slot is a big-endian EditNodes entry; every `.xex` unwraps.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -10,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use sab_formats::game_paths::local_config_proto2008_bin360;
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{mesh, mp00, slot_dir};
+use sab_formats::proto2008::{mesh, mp00, slot_dir, texture};
 use sab_formats::{editnodes, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
@@ -34,6 +35,7 @@ struct Counts {
     mesh_records: usize,
     variant_records: usize,
     wsd_slots: usize,
+    textures: usize,
 }
 
 fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
@@ -45,8 +47,27 @@ fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
     for (r, slot) in sp.records.iter().zip(&sp.slots) {
         match r.kind {
             SlotKind::Textures => {
-                if let Err(e) = slot_dir::parse(slot) {
-                    failures.push(format!("{at} textures: {e}"));
+                let recs = match slot_dir::parse(slot) {
+                    Ok(r) => r,
+                    Err(e) => return failures.push(format!("{at} textures: {e}")),
+                };
+                for (i, rec) in recs.iter().filter(|r| r.stored != 0).enumerate() {
+                    let d = &slot[rec.offset as usize..(rec.offset + rec.stored) as usize];
+                    let checked = texture::parse(d).and_then(|t| {
+                        if pandemic_hash(&t.name) != rec.hash {
+                            return Err(format!("record hash {:08X} is not pandemic_hash('{}')", rec.hash, t.name));
+                        }
+                        let memory = t.memory()?;
+                        let (levels, end) = texture::levels(&t)?;
+                        if end != memory.len() {
+                            return Err(format!("'{}': mip layout spans {end} bytes, image is {}", t.name, memory.len()));
+                        }
+                        levels.iter().try_for_each(|l| texture::level_bytes(&t, &memory, l).map(drop))
+                    });
+                    match checked {
+                        Ok(()) => c.textures += 1,
+                        Err(e) => failures.push(format!("{at} texture {i}: {e}")),
+                    }
                 }
             }
             SlotKind::Meshes => {
@@ -149,15 +170,16 @@ fn every_2008_pack_and_record_parses() {
         }
     }
     eprintln!(
-        "{} SBL sub-packs, {} mesh records + {} variant records, {} wsd slots; {entries} MP00 entries, {copies} \
-         byte copies of a loose SBL .pack keyed by its path; {unwrapped} .xex unwrapped",
-        c.sbl, c.mesh_records, c.variant_records, c.wsd_slots
+        "{} SBL sub-packs, {} mesh records + {} variant records, {} textures, {} wsd slots; {entries} MP00 \
+         entries, {copies} byte copies of a loose SBL .pack keyed by its path; {unwrapped} .xex unwrapped",
+        c.sbl, c.mesh_records, c.variant_records, c.textures, c.wsd_slots
     );
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
     assert_eq!((empty, ap04, megas.len()), (2, 1, 4));
     assert_eq!(c.sbl, 4389);
     assert_eq!(c.mesh_records + c.variant_records, 137_861);
     assert_eq!(c.variant_records, 215);
+    assert_eq!(c.textures, 47_313);
     assert_eq!(entries, 4960);
     assert_eq!(copies, 4385);
     assert_eq!(unwrapped, 6);

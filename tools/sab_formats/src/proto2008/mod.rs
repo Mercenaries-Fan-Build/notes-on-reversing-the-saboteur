@@ -11,7 +11,12 @@
 //! * [`material`] — a `materials` slot: `WSAO` / `MTLD` records, textures and render passes.
 //! * [`shaders`] — a `<world>.shaders` file: the compiled shaders materials name.
 //! * [`shader_mapping`] — a `<world>.ShaderMapping` file: per material and pass, replacement shaders.
+//! * [`anim_pack`] — `Animations.pack`: animation records with their clips, sequences, transitions
+//!   and banks.
+//! * [`anim`] — an `ANM0` clip, loose or in a pack record: header, tracks' bone CRCs, decoded poses.
 
+pub mod anim;
+pub mod anim_pack;
 mod cursor;
 pub mod material;
 pub mod mesh;

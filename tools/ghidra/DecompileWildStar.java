@@ -1,13 +1,14 @@
-// Full decomp export for WildStar_d.exe (2008 Xbox 360 PowerPC PE, WildStar engine debug build).
-// Adapted from DecompileSaboteur.java: same shape and output format, different OUT_DIR.
+// Full decomp export for a 2008 Xbox 360 PowerPC PE of the WildStar engine (WildStar_d.exe,
+// WildStar_p.exe). Adapted from DecompileSaboteur.java: same shape and output format.
 // Every non-thunk function in an executable block is emitted once, sorted by address, header:
 //   ==== <name> @0xADDR  size=N  callers=[...] ====
-// followed by the decompiled C. Writes:
-//   output/_ghidra_wildstar/wildstar_d_all_functions_decomp.txt
+// followed by the decompiled C. The script's one required argument is the output file
+// (conventionally <checkout>/output/_ghidra_wildstar/wildstar_d_all_functions_decomp.txt).
 //
 // @category Saboteur
 import ghidra.app.script.GhidraScript;
 import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileOptions;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
@@ -23,9 +24,6 @@ import java.util.Set;
 import java.util.TreeMap;
 
 public class DecompileWildStar extends GhidraScript {
-    private static final String OUT_DIR =
-        "C:\\Users\\Shadow\\Desktop\\notes-on-reversing-the-sabetour\\output\\_ghidra_wildstar\\";
-
     private PrintWriter fp;
     private DecompInterface decomp;
     private ConsoleTaskMonitor mon;
@@ -62,10 +60,28 @@ public class DecompileWildStar extends GhidraScript {
 
     @Override
     public void run() throws Exception {
-        String outPath = OUT_DIR + "wildstar_d_all_functions_decomp.txt";
-        new File(OUT_DIR).mkdirs();
-        fp = new PrintWriter(new File(outPath), "UTF-8");
+        String[] argv = getScriptArgs();
+        if (argv.length != 1) {
+            throw new IllegalArgumentException(
+                "DecompileWildStar.java needs exactly one script arg: the output file "
+                + "(e.g. <checkout>/output/_ghidra_wildstar/wildstar_d_all_functions_decomp.txt); got "
+                + argv.length);
+        }
+        File outFile = new File(argv[0]);
+        File outDir = outFile.getAbsoluteFile().getParentFile();
+        if (!outDir.isDirectory() && !outDir.mkdirs()) {
+            throw new IllegalStateException("cannot create output directory " + outDir);
+        }
+        String outPath = outFile.getPath();
+        fp = new PrintWriter(outFile, "UTF-8");
         decomp = new DecompInterface();
+        // Keep blocks the decompiler would prove unreachable: a value read through a virtual call
+        // into a stack local is otherwise folded to its initial value, deleting the branch that tests
+        // it (WSStreamBlock::LoadBlock's SBL magic check in WildStar_p.exe).
+        DecompileOptions options = new DecompileOptions();
+        options.grabFromProgram(currentProgram);
+        options.setEliminateUnreachable(false);
+        decomp.setOptions(options);
         decomp.openProgram(currentProgram);
         mon = new ConsoleTaskMonitor();
         FunctionManager fm = currentProgram.getFunctionManager();
@@ -83,7 +99,8 @@ public class DecompileWildStar extends GhidraScript {
             if (off >= lo && off <= hi && !f.isThunk()) work.put(off, f);
         }
 
-        fp.println(String.format("# WildStar_d ALL export: %d functions (PPC BE, ImageBase 0x82000000)", work.size()));
+        fp.println(String.format("# %s ALL export: %d functions (PPC BE, ImageBase 0x%08x)",
+            currentProgram.getName(), work.size(), currentProgram.getImageBase().getOffset()));
         int i = 0, total = work.size();
         for (Function f : work.values()) {
             dump(f);

@@ -69,6 +69,10 @@ fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
                 for (i, rec) in recs.iter().filter(|r| r.stored != 0).enumerate() {
                     let d = &slot[rec.offset as usize..(rec.offset + rec.stored) as usize];
                     let checked = texture::parse(d).and_then(|t| {
+                        let h = texture::parse_header(&d[..d.len().min(texture::MAX_HEADER)])?;
+                        if (h.name.as_str(), h.format, h.width, h.height, h.mips) != (t.name.as_str(), t.format, t.width, t.height, t.mips) {
+                            return Err(format!("'{}': the header read from a prefix differs from the record's", t.name));
+                        }
                         if pandemic_hash(&t.name) != rec.hash {
                             return Err(format!("record hash {:08X} is not pandemic_hash('{}')", rec.hash, t.name));
                         }
@@ -92,6 +96,15 @@ fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
                 };
                 for (i, rec) in recs.iter().filter(|r| r.stored != 0).enumerate() {
                     let d = &slot[rec.offset as usize..(rec.offset + rec.stored) as usize];
+                    let compressed = rec.stored < rec.unpacked;
+                    let prefix = if compressed { &d[..d.len().min(mesh::NAME_PREFIX)] } else { d };
+                    let early_name = match mesh::record_name(prefix, compressed) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            failures.push(format!("{at} mesh {i} name: {e}"));
+                            continue;
+                        }
+                    };
                     let body = if rec.stored < rec.unpacked {
                         match zlib::inflate_exact(d, rec.unpacked as usize, "mesh") {
                             Ok(b) => b,
@@ -110,6 +123,9 @@ fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
                             continue;
                         }
                     };
+                    if rec.mesh().name != early_name {
+                        failures.push(format!("{at} mesh {i}: record_name '{early_name}' != body name '{}'", rec.mesh().name));
+                    }
                     match &rec {
                         mesh::Record::Mesh(_) => c.mesh_records += 1,
                         mesh::Record::Variant { bindings, .. } => {

@@ -38,7 +38,8 @@ Variant
   43, `SultanOfSwing` 458 + 33. Every group is present. PROVEN.
 * **`SultanOfSwing.shaders`** has no `variant_count`: after `present` come the key and one variant.
   Neither `WildStar_d` nor `WildStar_p` reads that layout (both read a count before the key), and
-  there is no `SultanOfSwing.ShaderMapping` beside it. The reader tells the layouts apart by where the first group's code
+  there is no `SultanOfSwing.ShaderMapping` beside it. It belongs with the `SultanOfSwing/` packs:
+  their materials' 18 passes name its groups. The reader tells the layouts apart by where the first group's code
   magic sits after its `present` word: 12 bytes (count, key, size) or 8 (key, size). PROVEN.
 * **`key`** is what material passes name: every material shader hash that names a group names it
   by `key`; none names a `name` word (all 0). PROVEN.
@@ -78,9 +79,36 @@ SultanOfSwing's first it is 0.)
   `ZShadowTexture` s13, `SpotLightProjTexture` s14, `DiffuseEnvMapTexture` s15; the vertex shader's
   `QuantizedNormalsTexture` s2. PROVEN.
 * No shipped data names what a `g_Sampler<N>` is for (diffuse, normal, specular, mask): the constant
-  names are generic, the variant params are light counts, and `.ShaderMapping` (`WSTO`) records hold
-  hashes only. What the textures bound to them are is in `docs/2008_materials_format.md`
+  names are generic, the variant params are light counts, and `.ShaderMapping` records hold hashes
+  only. What the textures bound to them are is in `docs/2008_materials_format.md`
   ("Texture kinds per sampler").
+
+## `.ShaderMapping` — per-material shader overrides
+
+`France.ShaderMapping` (6,827 records) and `AnimationTest.ShaderMapping` (2,807). Reader:
+`sab_formats::proto2008::shader_mapping`.
+
+```text
+char  magic[4] = "WSTO"
+u32   count                   the file is exactly 8 + 16 * count bytes
+{ u32 material; u32 pass; u32 pixel_shader; u32 vertex_shader }[count]
+```
+
+* `ReadShaderMappingTable` (`WildStar_p` @0x8236b2f0; not in `WildStar_d`) reads `<world>.ShaderMapping`
+  and, per record, calls `OdinShaderManager::AddMapping` twice with the `PblCRC` of
+  `sprintf("%x_%x_P", …)` and `sprintf("%x_%x_V", …)` (format strings at 0x8205141C / 0x82051424).
+* `ReadMaterials` (`WildStar_p` @0x8236c440) builds the same strings from the record's `MTLD` uid
+  (read into `0x90(r31)` at 0x8236c678) and the pass's name (`0x8(XenonMaterial)`), and for each
+  pass calls `GetMapping` (vertex @0x8236db48, pixel @0x8236dbdc). A non-zero result replaces the
+  shader hash the material record holds; zero keeps it. PROVEN (disassembly).
+* So `material` is a material uid and `pass` a pass-name hash (`Color-Pass` 3,107 + 1,028 records,
+  `Receive-Shadow-Pass` 2,581 + 931, `Cast-Shadow-Pass` 1,028 + 843, `Z-Pass` 111 + 5, France +
+  AnimationTest). Every `vertex_shader` is a group key; `pixel_shader` is a group key or, on depth
+  passes, 0. PROVEN.
+* Effect on the build's materials, with `France.ShaderMapping` (the world `France/` packs belong
+  to): of `France/` passes, 17,589 are mapped to the shaders they already hold, 207 have a shader
+  replaced, 218,288 are not mapped. 48,440 `France/` passes still name a shader absent from the
+  three `.shaders` files, mapped or not. PROVEN.
 
 ## Method
 
@@ -91,8 +119,4 @@ sab_probe proto2008-shaders <Bin360>
 ## Unknowns
 
 * The `name` word (0 everywhere) and the code header words other than the magic and `+0x10`.
-* `.ShaderMapping` (`France.ShaderMapping`, `AnimationTest.ShaderMapping`; magic `WSTO`, read by
-  `ReadShaderMappingTable`, `WildStar_p` @0x8236b2f0): a count, then 16-byte records whose second
-  word is a pass-name hash (`Color-Pass`, `Receive-Shadow-Pass`) and whose last word is a vertex
-  shader key (`0x812A229A` in the first). Not read here.
 * What each shader computes from its samplers — that needs the Xenos microcode disassembled.

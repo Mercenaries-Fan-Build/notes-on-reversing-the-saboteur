@@ -3,15 +3,16 @@
 //! loose files they hash the paths of, an `SBL*` sub-pack, `AP04`, or empty; every `meshes` and
 //! `textures` slot directory reads; every `meshes` record parses; every `textures` record parses, is
 //! keyed by its name's hash, inflates to `unpacked` bytes that its mip layout spans exactly, and every
-//! level reads; every `wsd` slot is a big-endian EditNodes entry; every `.xex` unwraps.
+//! level reads; every `materials` slot parses and names every material its pack's mesh primitives and
+//! variant bindings use; every `wsd` slot is a big-endian EditNodes entry; every `.xex` unwraps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use sab_formats::game_paths::local_config_proto2008_bin360;
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{mesh, mp00, slot_dir, texture};
+use sab_formats::proto2008::{material, mesh, mp00, slot_dir, texture};
 use sab_formats::{editnodes, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
@@ -36,6 +37,8 @@ struct Counts {
     variant_records: usize,
     wsd_slots: usize,
     textures: usize,
+    material_slots: usize,
+    materials: usize,
 }
 
 fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
@@ -44,6 +47,17 @@ fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
         Err(e) => return failures.push(format!("{at}: {e}")),
     };
     c.sbl += 1;
+    let mut uids = HashSet::new();
+    if let Some(slot) = sp.slot(SlotKind::Materials) {
+        match material::parse(slot) {
+            Ok(ms) => {
+                c.material_slots += 1;
+                c.materials += ms.len();
+                uids.extend(ms.iter().map(|m| m.uid));
+            }
+            Err(e) => failures.push(format!("{at} materials: {e}")),
+        }
+    }
     for (r, slot) in sp.records.iter().zip(&sp.slots) {
         match r.kind {
             SlotKind::Textures => {
@@ -88,10 +102,26 @@ fn check_sbl(buf: &[u8], at: &str, c: &mut Counts, failures: &mut Vec<String>) {
                     } else {
                         d.to_vec()
                     };
-                    match mesh::parse_record(&body) {
-                        Ok(mesh::Record::Mesh(_)) => c.mesh_records += 1,
-                        Ok(mesh::Record::Variant { .. }) => c.variant_records += 1,
-                        Err(e) => failures.push(format!("{at} mesh {i}: {e}")),
+                    let rec = match mesh::parse_record(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            failures.push(format!("{at} mesh {i}: {e}"));
+                            continue;
+                        }
+                    };
+                    match &rec {
+                        mesh::Record::Mesh(_) => c.mesh_records += 1,
+                        mesh::Record::Variant { bindings, .. } => {
+                            c.variant_records += 1;
+                            if let Some(b) = bindings.iter().find(|b| !uids.contains(&b.material)) {
+                                failures.push(format!("{at} mesh {i}: variant binding material {:08X} is not in the pack", b.material));
+                            }
+                        }
+                    }
+                    for p in rec.mesh().streams.iter().flat_map(|s| &s.prims) {
+                        if !uids.contains(&p.material) {
+                            failures.push(format!("{at} mesh {i}: primitive material {:08X} is not in the pack", p.material));
+                        }
                     }
                 }
             }
@@ -170,9 +200,10 @@ fn every_2008_pack_and_record_parses() {
         }
     }
     eprintln!(
-        "{} SBL sub-packs, {} mesh records + {} variant records, {} textures, {} wsd slots; {entries} MP00 \
-         entries, {copies} byte copies of a loose SBL .pack keyed by its path; {unwrapped} .xex unwrapped",
-        c.sbl, c.mesh_records, c.variant_records, c.textures, c.wsd_slots
+        "{} SBL sub-packs, {} mesh records + {} variant records, {} textures, {} materials in {} slots, {} wsd \
+         slots; {entries} MP00 entries, {copies} byte copies of a loose SBL .pack keyed by its path; {unwrapped} \
+         .xex unwrapped",
+        c.sbl, c.mesh_records, c.variant_records, c.textures, c.materials, c.material_slots, c.wsd_slots
     );
     assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
     assert_eq!((empty, ap04, megas.len()), (2, 1, 4));
@@ -180,6 +211,7 @@ fn every_2008_pack_and_record_parses() {
     assert_eq!(c.mesh_records + c.variant_records, 137_861);
     assert_eq!(c.variant_records, 215);
     assert_eq!(c.textures, 47_313);
+    assert_eq!((c.material_slots, c.materials), (3_552, 97_597));
     assert_eq!(entries, 4960);
     assert_eq!(copies, 4385);
     assert_eq!(unwrapped, 6);

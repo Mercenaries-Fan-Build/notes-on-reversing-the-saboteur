@@ -5,15 +5,18 @@
 //! keyed by its name's hash, inflates to `unpacked` bytes that its mip layout spans exactly, and every
 //! level reads; every `materials` slot parses and names every material its pack's mesh primitives and
 //! variant bindings use; every `wsd` slot is a big-endian EditNodes entry; every `.shaders` file parses
-//! with a constant table in every variant; every `.xex` unwraps.
+//! with a constant table in every variant; every `.xex` unwraps. Every `ANM0` clip, loose and in
+//! `Animations.pack`, parses to its end and decodes, and samples wherever the engine's sampler accepts
+//! it; the pack reads to its end.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use sab_formats::game_paths::local_config_proto2008_bin360;
+use sab_formats::proto2008::anim::{self, Codec};
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{material, mesh, mp00, shaders, slot_dir, texture};
+use sab_formats::proto2008::{anim_pack, material, mesh, mp00, shaders, slot_dir, texture};
 use sab_formats::{editnodes, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
@@ -248,4 +251,119 @@ fn every_2008_pack_and_record_parses() {
     assert_eq!(copies, 4385);
     assert_eq!(unwrapped, 6);
     assert_eq!(shader_variants, 3_340 + 135);
+}
+
+#[derive(Default, Debug, PartialEq)]
+struct AnimCounts {
+    clips: usize,
+    decoded: usize,
+    sampled: usize,
+    /// The sampler's preconditions fail: `duration > FLT_EPSILON`, two poses to interpolate.
+    unsampleable: usize,
+    tracks_ne_bones: usize,
+}
+
+/// Decodes `clip`, reads every stored pose, and samples it at its start, middle, end and past its end.
+fn check_clip(clip: &anim::Clip, at: &str, c: &mut AnimCounts, failures: &mut Vec<String>) {
+    c.clips += 1;
+    c.tracks_ne_bones += (clip.tracks as usize != clip.bones.len()) as usize;
+    let a = match clip.decode() {
+        Ok(a) => a,
+        Err(e) => return failures.push(format!("{at}: decode: {e}")),
+    };
+    c.decoded += 1;
+    let finite = |p: &[anim::QsTransform]| p.iter().all(|x| x.translation.iter().chain(&x.rotation).chain(&x.scale).all(|v| v.is_finite()));
+    for f in 0..a.poses() {
+        match a.pose(f) {
+            Ok(p) if p.len() == a.tracks() && finite(&p) => {}
+            Ok(_) => return failures.push(format!("{at}: pose {f} is short or not finite")),
+            Err(e) => return failures.push(format!("{at}: pose {f}: {e}")),
+        }
+    }
+    if !(clip.duration > f32::EPSILON) || a.poses() < 2 {
+        c.unsampleable += 1;
+        return;
+    }
+    for t in [0.0, clip.duration * 0.5, clip.duration, clip.duration * 2.0] {
+        match a.sample(t) {
+            Ok(p) if p.len() == a.tracks() && finite(&p) => {}
+            Ok(_) => return failures.push(format!("{at}: sample {t} is short or not finite")),
+            Err(e) => return failures.push(format!("{at}: sample {t}: {e}")),
+        }
+    }
+    c.sampled += 1;
+}
+
+#[test]
+fn every_2008_animation_parses_and_decodes() {
+    let root = bin360();
+    let mut all = Vec::new();
+    files(&root, &mut all);
+    all.sort();
+    let mut failures = Vec::new();
+    let mut loose = AnimCounts::default();
+    let mut loose_rejected = 0usize;
+    let mut codecs: BTreeMap<(&str, Codec), usize> = BTreeMap::new();
+    let mut by_key: HashMap<u32, Vec<Vec<u8>>> = HashMap::new();
+    for p in &all {
+        let rel = p.strip_prefix(&root).expect("under root").display().to_string();
+        let mut head = [0u8; 4];
+        let mut f = std::fs::File::open(p).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        if f.read(&mut head).expect("read head") < 4 || &head != anim::MAGIC {
+            continue;
+        }
+        let buf = std::fs::read(p).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let clip = match anim::parse(&buf) {
+            Ok(c) => c,
+            Err(e) => {
+                failures.push(format!("{rel}: {e}"));
+                continue;
+            }
+        };
+        if clip.len != buf.len() {
+            failures.push(format!("{rel}: the clip ends at {} of {} bytes", clip.len, buf.len()));
+        }
+        *codecs.entry(("loose", clip.codec())).or_default() += 1;
+        let stem = p.file_stem().expect("stem").to_string_lossy();
+        by_key.entry(pandemic_hash(&stem)).or_default().push(buf.clone());
+        if clip.check_loose().is_err() {
+            loose_rejected += 1;
+            continue;
+        }
+        check_clip(&clip, &rel, &mut loose, &mut failures);
+    }
+
+    let pack_path = root.join("Animations.pack");
+    let buf = std::fs::read(&pack_path).unwrap_or_else(|e| panic!("{}: {e}", pack_path.display()));
+    let pack = anim_pack::parse(&buf).unwrap_or_else(|e| panic!("{}: {e}", pack_path.display()));
+    let mut packed = AnimCounts::default();
+    let mut twins = 0usize;
+    for r in &pack.records {
+        *codecs.entry(("pack", r.clip.codec())).or_default() += 1;
+        check_clip(&r.clip, &format!("Animations.pack key {:08X}", r.key), &mut packed, &mut failures);
+        let body = &buf[r.clip_at..r.clip_at + r.clip.len];
+        twins += by_key.get(&r.key).is_some_and(|v| v.iter().any(|b| b == body)) as usize;
+    }
+    let transitions: usize = pack.transitions.iter().map(|t| t.transitions.len()).sum();
+    eprintln!(
+        "loose {loose:?}, rejected by LoadAnimFile {loose_rejected}; pack {packed:?}; codecs {codecs:?}; {twins} pack clips \
+         byte-identical to a loose clip of the same key; {} intervals, {} sequences, {transitions} transitions, {} banks, \
+         {} additive pairs, ALPH {} + {}",
+        pack.intervals.len(),
+        pack.sequences.len(),
+        pack.banks.len(),
+        pack.additives.len(),
+        pack.list_88.len(),
+        pack.list_7c.len()
+    );
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    assert_eq!(pack.len, buf.len());
+    let all_of = |n| AnimCounts { clips: n, decoded: n, sampled: n, unsampleable: 0, tracks_ne_bones: 0 };
+    assert_eq!((loose, loose_rejected), (all_of(3590), 30));
+    assert_eq!(packed, all_of(1605));
+    let count = |from, codec| codecs.get(&(from, codec)).copied().unwrap_or(0);
+    assert_eq!([Codec::Wavelet, Codec::Delta, Codec::Uncompressed].map(|c| count("loose", c)), [3099, 286, 235]);
+    assert_eq!([Codec::Wavelet, Codec::Delta, Codec::Uncompressed].map(|c| count("pack", c)), [1501, 6, 98]);
+    assert_eq!(twins, 1601);
+    assert_eq!((pack.intervals.len(), pack.sequences.len(), transitions, pack.banks.len()), (3, 1944, 286, 24));
 }

@@ -54,7 +54,7 @@ pub struct Prim {
     /// Non-zero selects a triangle strip (`D3DPT 6`) over a list (`4`); 0 in every prim of the build.
     pub strip: u32,
     pub triangle_count: u32,
-    /// The material's hash (`pandemic_hash` of its `WSAO` name), looked up by `OdinMaterialManager`.
+    /// The `uid` of a material in the same pack's `materials` slot (`OdinMaterialManager::GetMaterial`).
     pub material: u32,
     /// The segment's LOD level (`OdinSegment::GetLodLevel` = flags & 7).
     pub lod: u32,
@@ -163,11 +163,9 @@ impl Record {
     }
 }
 
-/// Parse a record: a mesh body, or a variant record's table, padding and body.
-pub fn parse_record(b: &[u8]) -> Result<Record, String> {
-    if MAGICS.iter().any(|m| b.starts_with(&m[..])) {
-        return parse(b).map(Record::Mesh);
-    }
+/// A variant record's binding table and the offset of its body (the table, then zero bytes to the
+/// next [`VARIANT_ALIGN`] boundary).
+fn variant_table(b: &[u8]) -> Result<(Vec<Binding>, usize), String> {
     let mut c = Cursor { b, at: 0 };
     let count = c.u32("binding count")? as usize;
     let mut bindings = Vec::with_capacity(count.min(1 << 12));
@@ -186,26 +184,67 @@ pub fn parse_record(b: &[u8]) -> Result<Record, String> {
     if pad.iter().any(|&x| x != 0) {
         return Err(format!("variant record: non-zero byte between the table end 0x{:X} and 0x{body:X}", c.at));
     }
+    Ok((bindings, body))
+}
+
+/// Parse a record: a mesh body, or a variant record's table, padding and body.
+pub fn parse_record(b: &[u8]) -> Result<Record, String> {
+    if MAGICS.iter().any(|m| b.starts_with(&m[..])) {
+        return parse(b).map(Record::Mesh);
+    }
+    let (bindings, body) = variant_table(b)?;
     let mesh = parse(bytes::slice(b, body, b.len().saturating_sub(body), "variant mesh")?)?;
     Ok(Record::Variant { bindings, mesh })
 }
 
-/// Parse a whole body; every byte must be accounted for.
-pub fn parse(b: &[u8]) -> Result<Mesh, String> {
+/// `ReadMesh` asserts "Bad Mesh, name is huge" above this.
+pub const MAX_NAME: usize = 0x400;
+/// Bytes of a compressed record [`record_name`] is given: enough of the zlib stream to inflate the
+/// magic and the longest name. The game gate reads every compressed record's name from this many.
+pub const NAME_PREFIX: usize = 0x1000;
+
+/// A body's magic and name, and the offset after the name.
+fn body_head(b: &[u8]) -> Result<([u8; 4], String, usize), String> {
     let magic: [u8; 4] = bytes::slice(b, 0, 4, "mesh magic")?.try_into().expect("4 bytes");
     if !MAGICS.iter().any(|m| **m == magic) {
         return Err(format!("mesh: magic {magic:02X?} is not one of {MAGICS:?}"));
     }
     let name_len = bytes::u32_be(b, 4, "mesh name_len")? as usize;
-    if name_len > 0x400 {
-        return Err(format!("mesh: name_len {name_len} exceeds ReadMesh's 0x400"));
+    if name_len > MAX_NAME {
+        return Err(format!("mesh: name_len {name_len} exceeds ReadMesh's 0x{MAX_NAME:X}"));
     }
     let raw = bytes::slice(b, 8, name_len, "mesh name")?;
-    let name = match raw.split_last() {
-        Some((0, s)) if !s.contains(&0) => String::from_utf8_lossy(s).into_owned(),
-        _ => return Err(format!("mesh: name of {name_len} bytes is not NUL-terminated text")),
-    };
-    let mut c = Cursor { b, at: 8 + name_len };
+    match raw.split_last() {
+        Some((0, s)) if !s.contains(&0) => Ok((magic, String::from_utf8_lossy(s).into_owned(), 8 + name_len)),
+        _ => Err(format!("mesh: name of {name_len} bytes is not NUL-terminated text")),
+    }
+}
+
+/// The name of a `meshes` slot record without decoding the rest of it. A compressed record (its
+/// slot directory `stored` below `unpacked`) is inflated only up to the end of the name, so `stored`
+/// may be its first [`NAME_PREFIX`] bytes; a raw record must be whole.
+pub fn record_name(stored: &[u8], compressed: bool) -> Result<String, String> {
+    if !compressed {
+        let body = if MAGICS.iter().any(|m| stored.starts_with(&m[..])) { 0 } else { variant_table(stored)?.1 };
+        return body_head(bytes::slice(stored, body, stored.len().saturating_sub(body), "variant mesh")?).map(|h| h.1);
+    }
+    let mut dec = flate2::read::ZlibDecoder::new(stored);
+    let mut head = vec![0u8; 8];
+    std::io::Read::read_exact(&mut dec, &mut head).map_err(|e| format!("mesh record: inflating the magic and name length: {e}"))?;
+    let name_len = bytes::u32_be(&head, 4, "mesh name_len")? as usize;
+    if name_len > MAX_NAME {
+        return Err(format!("mesh: name_len {name_len} exceeds ReadMesh's 0x{MAX_NAME:X}"));
+    }
+    head.resize(8 + name_len, 0);
+    std::io::Read::read_exact(&mut dec, &mut head[8..])
+        .map_err(|e| format!("mesh record: inflating the {name_len}-byte name from {} stored bytes: {e}", stored.len()))?;
+    body_head(&head).map(|h| h.1)
+}
+
+/// Parse a whole body; every byte must be accounted for.
+pub fn parse(b: &[u8]) -> Result<Mesh, String> {
+    let (magic, name, at) = body_head(b)?;
+    let mut c = Cursor { b, at };
     let stream_count = c.u32("mesh stream_count")? as usize;
     let occluder_count = c.u32("mesh occluder_count")?;
     let shadow_count = c.u32("mesh shadow_count")?;
@@ -657,6 +696,21 @@ pub fn ushort2(v: &[u8], o: u32) -> [u16; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_name_reads_a_compressed_prefix_and_a_variant() {
+        let mut body = b"MSH4".to_vec();
+        body.extend_from_slice(&6u32.to_be_bytes());
+        body.extend_from_slice(b"Crate\0");
+        body.extend((0..4000u32).map(|i| (i * 7) as u8));
+        let z = crate::zlib::deflate(&body, 6);
+        assert_eq!(record_name(&z[..z.len().min(NAME_PREFIX)], true).unwrap(), "Crate");
+        assert!(record_name(&z[..4], true).is_err());
+        let mut variant = 0u32.to_be_bytes().to_vec();
+        variant.resize(VARIANT_ALIGN, 0);
+        variant.extend_from_slice(&body);
+        assert_eq!(record_name(&variant, false).unwrap(), "Crate");
+    }
 
     #[test]
     fn layouts_match_the_stored_strides() {

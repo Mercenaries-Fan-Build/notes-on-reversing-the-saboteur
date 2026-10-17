@@ -9,7 +9,18 @@ use std::path::{Path, PathBuf};
 
 use sab_formats::proto2008::material;
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::shaders;
+use sab_formats::proto2008::{shader_mapping, shaders};
+
+fn pass_label(h: u32) -> String {
+    match h {
+        material::PASS_COLOR => "Color-Pass".into(),
+        material::PASS_Z => "Z-Pass".into(),
+        material::PASS_CAST_SHADOW => "Cast-Shadow-Pass".into(),
+        material::PASS_RECEIVE_SHADOW => "Receive-Shadow-Pass".into(),
+        material::PASS_FOLIAGE => "Foliage-Pass".into(),
+        other => format!("{other:08X}"),
+    }
+}
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
@@ -104,16 +115,48 @@ pub fn run(args: &[String]) {
             }
         }
     }
+    let mut mappings: Vec<(String, shader_mapping::Mapping)> = Vec::new();
+    for p in all.iter().filter(|p| p.extension().and_then(|x| x.to_str()) == Some("ShaderMapping")) {
+        let rel = p.strip_prefix(&root).expect("under root").to_string_lossy().into_owned();
+        let world = rel.trim_end_matches(".ShaderMapping").to_string();
+        let m = shader_mapping::parse(&std::fs::read(p).expect("read mapping")).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        for r in &m.records {
+            let ps = if r.pixel_shader == 0 { "0" } else if by_key.contains_key(&r.pixel_shader) { "a group key" } else { "no group" };
+            let vs = if by_key.contains_key(&r.vertex_shader) { "a group key" } else { "no group" };
+            t.note(format!("{world}.ShaderMapping record: pass {}, pixel shader {ps}, vertex shader {vs}", pass_label(r.pass)), &format!("{:08X}", r.material));
+        }
+        println!("{rel}: {} records", m.records.len());
+        mappings.push((world, m));
+    }
     let mut pass_shaders: HashSet<(u32, &'static str)> = HashSet::new();
     for p in all.iter().filter(|p| p.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case("pack")) == Some(true)) {
         let buf = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         if !buf.starts_with(b"SBL") {
             continue;
         }
+        let folder = p.strip_prefix(&root).expect("under root").components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
         let sp = sbl::parse(&buf).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         let Some(slot) = sp.slot(SlotKind::Materials) else { continue };
         for m in material::parse(slot).unwrap_or_else(|e| panic!("{}: {e}", p.display())) {
             for pass in &m.passes {
+                for (world, map) in &mappings {
+                    let vs = map.get(m.uid, pass.name, shader_mapping::Stage::Vertex);
+                    let ps = map.get(m.uid, pass.name, shader_mapping::Stage::Pixel);
+                    let mapped = match (vs, ps) {
+                        (None, None) => "not mapped".to_string(),
+                        (Some(v), Some(q)) => format!(
+                            "mapped, vs {} ps {}",
+                            if v == pass.vertex_shader { "same" } else { "replaced" },
+                            if q == pass.pixel_shader { "same" } else { "replaced" }
+                        ),
+                        _ => "mapped for one stage only".into(),
+                    };
+                    t.note(format!("{folder}/ pass in {world}.ShaderMapping: {mapped}"), &format!("{} {} {:08X}", p.display(), m.name, m.uid));
+                    let rv = map.resolve(m.uid, pass.name, shader_mapping::Stage::Vertex, pass.vertex_shader);
+                    let rp = map.resolve(m.uid, pass.name, shader_mapping::Stage::Pixel, pass.pixel_shader);
+                    let found = by_key.contains_key(&rv) && (rp == 0 || by_key.contains_key(&rp));
+                    t.note(format!("{folder}/ pass shaders after {world}.ShaderMapping: {}", if found { "both in a .shaders file" } else { "missing" }), &format!("{} {} {:08X}", p.display(), m.name, m.uid));
+                }
                 pass_shaders.insert((pass.vertex_shader, "vertex"));
                 if pass.pixel_shader != 0 {
                     pass_shaders.insert((pass.pixel_shader, "pixel"));

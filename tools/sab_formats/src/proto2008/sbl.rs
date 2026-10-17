@@ -128,51 +128,72 @@ impl<'a> SubPack<'a> {
     }
 }
 
-/// Parse a whole sub-pack. Every record must have `size == size_dup` and `flag == 1`, the slots must
-/// tile `[8 + 24*count, buf.len())` in record order, and only a [repeating](SlotKind::repeats) slot
-/// type may occur twice.
-pub fn parse(buf: &[u8]) -> Result<SubPack<'_>, String> {
-    let magic: [u8; 4] = bytes::slice(buf, 0, 4, "SBL magic")?.try_into().expect("4 bytes");
-    if !MAGICS.iter().any(|m| **m == magic) {
+/// A sub-pack's directory, read without its slots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Directory {
+    pub magic: [u8; 4],
+    pub records: Vec<Record>,
+}
+
+/// The length of a sub-pack's header and directory, from its first 8 bytes.
+pub fn directory_len(head: &[u8]) -> Result<usize, String> {
+    let magic = bytes::slice(head, 0, 4, "SBL magic")?;
+    if !MAGICS.iter().any(|m| m[..] == *magic) {
         return Err(format!("SBL: magic {magic:02X?} is not one of {MAGICS:?}"));
     }
-    let count = bytes::u32_be(buf, 4, "SBL count")? as usize;
-    let dir_end = count
+    let count = bytes::u32_be(head, 4, "SBL count")? as usize;
+    count
         .checked_mul(RECORD_LEN)
         .and_then(|n| n.checked_add(8))
-        .ok_or_else(|| format!("SBL count {count} overflows"))?;
-    bytes::slice(buf, 8, dir_end - 8, &format!("SBL directory ({count} records)"))?;
+        .ok_or_else(|| format!("SBL count {count} overflows"))
+}
+
+/// Parse the header and directory (the first [`directory_len`] bytes) of a sub-pack of `total`
+/// bytes. Every record must have `size == size_dup` and `flag == 1`, the slots must tile
+/// `[8 + 24*count, total)` in record order, and only a [repeating](SlotKind::repeats) slot type may
+/// occur twice.
+pub fn parse_directory(dir: &[u8], total: u64) -> Result<Directory, String> {
+    let dir_end = directory_len(dir)?;
+    let count = (dir_end - 8) / RECORD_LEN;
+    bytes::slice(dir, 8, dir_end - 8, &format!("SBL directory ({count} records)"))?;
+    let magic: [u8; 4] = dir[..4].try_into().expect("4 bytes");
     let mut records = Vec::with_capacity(count);
-    let mut slots = Vec::with_capacity(count);
-    let mut cursor = dir_end;
+    let mut cursor = dir_end as u64;
     for i in 0..count {
         let p = 8 + i * RECORD_LEN;
-        let kind = SlotKind::from_hash(bytes::u32_be(buf, p, "SBL kind")?)?;
-        let offset = bytes::u32_be(buf, p + 4, "SBL offset")?;
-        let size = bytes::u32_be(buf, p + 8, "SBL size")?;
-        let size_dup = bytes::u32_be(buf, p + 12, "SBL size_dup")?;
-        let flag = bytes::u32_be(buf, p + 16, "SBL flag")?;
-        let id = bytes::u32_be(buf, p + 20, "SBL id")?;
+        let kind = SlotKind::from_hash(bytes::u32_be(dir, p, "SBL kind")?)?;
+        let offset = bytes::u32_be(dir, p + 4, "SBL offset")?;
+        let size = bytes::u32_be(dir, p + 8, "SBL size")?;
+        let size_dup = bytes::u32_be(dir, p + 12, "SBL size_dup")?;
+        let flag = bytes::u32_be(dir, p + 16, "SBL flag")?;
+        let id = bytes::u32_be(dir, p + 20, "SBL id")?;
         if size != size_dup {
             return Err(format!("SBL record {i}: size 0x{size:X} != size_dup 0x{size_dup:X}"));
         }
         if flag != FLAG {
             return Err(format!("SBL record {i}: flag {flag}, expected {FLAG}"));
         }
-        if offset as usize != cursor {
+        if offset as u64 != cursor {
             return Err(format!("SBL record {i}: offset 0x{offset:X}, expected 0x{cursor:X} (slots are contiguous)"));
         }
         if !kind.repeats() && records.iter().any(|r: &Record| r.kind == kind) {
             return Err(format!("SBL record {i}: a second {} slot", kind.name()));
         }
-        slots.push(bytes::slice(buf, cursor, size as usize, &format!("SBL {} slot", kind.name()))?);
         records.push(Record { kind, offset, size, id });
-        cursor += size as usize;
+        cursor += size as u64;
     }
-    if cursor != buf.len() {
-        return Err(format!("SBL: slots end at 0x{cursor:X}, the sub-pack is 0x{:X} bytes", buf.len()));
+    if cursor != total {
+        return Err(format!("SBL: slots end at 0x{cursor:X}, the sub-pack is 0x{total:X} bytes"));
     }
-    Ok(SubPack { magic, records, slots })
+    Ok(Directory { magic, records })
+}
+
+/// Parse a whole sub-pack: [`parse_directory`], then each record's slot bytes.
+pub fn parse(buf: &[u8]) -> Result<SubPack<'_>, String> {
+    let n = directory_len(buf)?;
+    let dir = parse_directory(bytes::slice(buf, 0, n, "SBL directory")?, buf.len() as u64)?;
+    let slots = dir.records.iter().map(|r| &buf[r.offset as usize..r.offset as usize + r.size as usize]).collect();
+    Ok(SubPack { magic: dir.magic, records: dir.records, slots })
 }
 
 #[cfg(test)]
@@ -250,5 +271,15 @@ mod tests {
 
         let twice = build(b"SBL4", &[(SlotKind::Meshes, b"a"), (SlotKind::Meshes, b"b")], 0);
         assert!(parse(&twice).unwrap_err().contains("second meshes"));
+    }
+
+    #[test]
+    fn the_directory_reads_from_a_prefix() {
+        let buf = build(b"SBL6", &[(SlotKind::Textures, b"tex"), (SlotKind::Materials, b"mat!")], 0);
+        let n = directory_len(&buf[..8]).unwrap();
+        assert_eq!(n, 8 + 2 * RECORD_LEN);
+        let d = parse_directory(&buf[..n], buf.len() as u64).unwrap();
+        assert_eq!(d.records, parse(&buf).unwrap().records);
+        assert!(parse_directory(&buf[..n], buf.len() as u64 + 1).unwrap_err().contains("slots end"));
     }
 }

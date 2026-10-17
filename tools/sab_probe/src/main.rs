@@ -964,6 +964,7 @@ mod editnodes;
 mod gametext;
 mod hash_names;
 mod megapack_layout;
+mod proto2008_anims;
 mod proto2008_binaries;
 mod proto2008_materials;
 mod proto2008_meshes;
@@ -1029,6 +1030,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "proto2008-packs" {
         proto2008_packs::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-anims" {
+        proto2008_anims::run(&args[2..]);
         return;
     }
     if args.len() < 4 {

@@ -127,23 +127,45 @@ Formats present (stride): `0F000002` (8), `0E000002` (12), `0F001102` (16), `0F0
 others — the full list with counts is printed by `proto2008-meshes`; `Layout::of` reproduces every
 stored stride.
 
-### Normalised positions
+### Coordinate spaces
 
-Every `FLOAT16_4` position stream **without a normal** (17,086: baked tiles and chunk detail streams)
-lies in [0,1]³; every stream that is not normalised has a normal (166,364). 898 streams with normals
-also lie in [0,1]³ (small props such as `P_Global_A_Crate_X1YHalfB_DAM`). INFERRED: the dequantisation
-happens in the vertex shader (no CPU code builds it; see Unknowns). The model-space position is
-`box_min + q · box_size` of the stream bone's `PclAABB` (`centre ∓ half`).
+Each bone's `PclAABB` is the model-space box of the geometry attached to it, written by the exporter;
+comparing every stream's decoded box with its stream bone's box fixes the space of every stream kind
+(`Mesh::stream_positions`, `Mesh::positions`; tally in `proto2008-meshes`):
+
+| stream | stored as | decoded box vs bone box |
+|---|---|---|
+| terrain `8F000001` | lattice + height (below) | **equal** in 28,188 / 28,188 |
+| `FLOAT16_4` without a normal (baked tiles, chunk detail) | `q` in [0,1]³; model = `box_min + q · box_size` | equal 10,794, inside 6,292 (bones shared by several streams) |
+| skinned (format bit 2) | model space | equal 997, inside 695, outside 22 |
+| any other (rigid) | **the stream bone's space**; model = the bone's bind transform chained to the root, `translation + rotation · (scale ⊙ p)` per bone | equal 113,531, inside 61,625, outside 121 |
+
+PROVEN. Every half4 stream without a normal lies in [0,1]³ (17,086) and every stream that is not
+normalised has a normal. Of the 121 rigid streams outside their bone's box, 3 fit it untransformed
+(e.g. `VH_OP_KS750sidecar` stream 18 — the LOD-1 copy of a part under a rotated bone, exported in
+model space while its LOD-0 copy is bone-local) and 118 fit neither way (glass-break pieces, foliage:
+the box does not cover the stream); the 22 skinned exceptions compare against bone 0's box, which is not
+a skinned stream's box. The vertex shader applies the normalisation and the terrain decode; no CPU code
+does (see Unknowns).
+
+### Skinning
+
+* Skin indices address the **remap palette**: in all 1,714 skinned streams the weights sum to 255 and
+  every weighted index is below the remap count (`CH_AL_SeanDevlin_01_GR`: 18 remaps, 104 bones).
+  `Mesh::stream_skin` maps them to bone indices. PROVEN.
+* A remap's matrix is the bone's inverse bind matrix in row-vector form (`p' = p · M`, translation in
+  `m[12..14]`): it inverts the bone's chained bind transform in 19,111 remaps. In 2,047 it does not
+  (e.g. `CH_AL_SeanDevlin_01_UB` bone 79) — the same split as retail, where the stored inverse bind and
+  not the bone chain is what the skinned vertices were bound with (`sab_probe parts`). PROVEN.
 
 ### Terrain chunks — `8F000001`
 
 `u32 = (u16 height << 16) | u16 lattice`; `Zq = lattice / 17`, `Xq = lattice % 17` (a 17×17 lattice).
 `x = origin.x + Xq · 2.34375`, `z = origin.z + Zq · 2.34375`, where `origin` is the stream bone's
-chained translation (= the box minimum in every chunk), and `y = box_min.y + height / 65535 · 2·half.y`.
-PROVEN by data: 466,644 shared lattice points between chunks of one pack, 970 disagree (all within one
-height quantum inside a block). The step 2.34375 = 37.5 / 16 (chunks sit on a 37.5 m grid): the
-constant is not in CPU code (`WildStar_p` decomp searched for 2.34375, 37.5 and their bit patterns) —
-the terrain vertex shader applies it.
+chained translation, and `y = box_min.y + height / 65535 · 2·half.y`. PROVEN: decoded this way every
+one of the 28,188 terrain streams spans exactly its bone's box (the 17×17 lattice covers 37.5 m, the
+chunk grid). The constant is not in CPU code (`WildStar_p` decomp searched for 2.34375, 37.5 and their
+bit patterns) — the terrain vertex shader applies it.
 
 ## Prim — one `OdinSegment`
 
@@ -216,8 +238,9 @@ The `wsd` slot's EditNodes objects place meshes by name (`ClassName`), with `Pos
   (local − bone0.translation)` reproduces the terrain lattice. PROVEN (data); whether the engine drops
   the root bone's translation or the instance position cannot be told apart from the data, since they
   are equal.
-* The baked tiles' little-endian tail matrix is the exporter's copy of the same transform (8,272 of
-  12,559 detail vertices within 0.5 m of the terrain, previous session).
+* The baked tiles' little-endian tail matrix is the exporter's copy of the same placement. INFERRED
+  (an earlier scratch comparison put 8,272 of 12,559 baked detail vertices within 0.5 m of the terrain;
+  the `wsd` axes are the engine's source).
 
 ## Directory keys
 

@@ -26,6 +26,10 @@ sab_probe albs-keys   <retail_dir>          which pack-path forms hash to each A
 sab_probe hash-names  <retail_dir> <Saboteur.exe> <proto2008_dir> <community_tools_dir> <community_research_dir>
                                            the hash→name table on stdout (data/hash_names.tsv), report on
                                            stderr; see docs/hash_names.md
+sab_probe proto2008-binaries <Bin360>      container/mesh magics each 2008 binary loads (.xex unwrapped)
+sab_probe proto2008-packs    <Bin360>      every .pack, MP00 entry and slot directory; docs/2008_subpack_format.md
+sab_probe proto2008-meshes   <Bin360>      every meshes record; formats, prims, bones, placement;
+                                           docs/2008_msh4_format.md
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

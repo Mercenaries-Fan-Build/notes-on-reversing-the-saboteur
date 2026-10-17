@@ -35,3 +35,7 @@ required-features = ["retail"]
 [[test]]
 name = "editnodes_retail"
 required-features = ["retail"]
+
+[[test]]
+name = "proto2008_retail"
+required-features = ["retail"]

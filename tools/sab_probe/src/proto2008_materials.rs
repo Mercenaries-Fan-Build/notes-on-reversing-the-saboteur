@@ -5,11 +5,11 @@
 //! texture hash names a `textures` record (same pack, any pack), and whether each mesh primitive's
 //! material names a material (same pack, any pack).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{material, mesh, slot_dir};
+use sab_formats::proto2008::{material, mesh, slot_dir, texture};
 use sab_formats::{names, pandemic_hash, zlib};
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -111,6 +111,31 @@ struct Pack {
     prim_materials: Vec<u32>,
 }
 
+/// What the engine knows about a texture record: format, the sRGB rule, the eviction flag.
+#[derive(Clone)]
+struct TexInfo {
+    name: String,
+    format: &'static str,
+    srgb: bool,
+    evictable: bool,
+}
+
+fn format_name(f: u32) -> &'static str {
+    match f {
+        texture::DXT1 => "DXT1",
+        texture::DXT5 => "DXT5",
+        texture::DXN => "DXN",
+        texture::R5G6B5 => "R5G6B5",
+        texture::X8R8G8B8 => "X8R8G8B8",
+        _ => "other",
+    }
+}
+
+/// The text after the last `_` of a texture name, upper-cased, for a human cross-check of roles.
+fn suffix(name: &str) -> String {
+    name.rsplit_once('_').map(|(_, s)| s.to_ascii_uppercase()).unwrap_or_else(|| "(none)".into())
+}
+
 pub fn run(args: &[String]) {
     let [bin360] = args else {
         eprintln!("usage: sab_probe proto2008-materials <Bin360 dir>");
@@ -122,6 +147,7 @@ pub fn run(args: &[String]) {
     all.sort();
     let mut t = Tally::default();
     let mut packs = Vec::new();
+    let mut tex_info: HashMap<u32, TexInfo> = HashMap::new();
     for p in &all {
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if !name.to_ascii_lowercase().ends_with(".pack") {
@@ -146,7 +172,11 @@ pub fn run(args: &[String]) {
         }
         if let Some(slot) = sp.slot(SlotKind::Textures) {
             let recs = slot_dir::parse(slot).unwrap_or_else(|e| panic!("{rel}: {e}"));
-            pack.textures.extend(recs.iter().filter(|r| r.stored != 0).map(|r| r.hash));
+            for r in recs.iter().filter(|r| r.stored != 0) {
+                pack.textures.insert(r.hash);
+                let tx = texture::parse(&slot[r.offset as usize..(r.offset + r.stored) as usize]).unwrap_or_else(|e| panic!("{rel}: {e}"));
+                tex_info.entry(r.hash).or_insert(TexInfo { name: tx.name.clone(), format: format_name(tx.format), srgb: tx.srgb(), evictable: r.f14 != 0 });
+            }
         }
         if let Some(slot) = sp.slot(SlotKind::Meshes) {
             let recs = slot_dir::parse(slot).unwrap_or_else(|e| panic!("{rel}: {e}"));
@@ -182,6 +212,22 @@ pub fn run(args: &[String]) {
             t.note(format!("material textures no pass binds: {}", unused.len().min(4)), &format!("{mat} {unused:?}"));
             let order: Vec<String> = m.passes.iter().map(|p| pass_label(p.name)).collect();
             t.note(format!("pass order {}", order.join(", ")), &mat);
+            if let Some(cp) = m.passes.iter().find(|p| p.name == material::PASS_COLOR) {
+                let n = cp.texture_refs.len();
+                for (i, tex) in cp.sampler_textures(m).enumerate() {
+                    let at = format!("{mat} sampler {i}");
+                    match tex_info.get(&tex) {
+                        Some(ti) => {
+                            let kind = format!("{} {} {}", ti.format, if ti.srgb { "sRGB" } else { "linear" }, if ti.evictable { "evictable" } else { "kept" });
+                            t.note(format!("color pass of {n} samplers, sampler {i}: {kind}"), &format!("{at} '{}'", ti.name));
+                            t.note(format!("color pass sampler {i}: {kind}"), &format!("{at} '{}'", ti.name));
+                            t.note(format!("color pass sampler {i}: name suffix _{}", suffix(&ti.name)), &format!("{at} '{}'", ti.name));
+                            t.note(format!("texture {kind}: name suffix _{}", suffix(&ti.name)), &format!("{at} '{}'", ti.name));
+                        }
+                        None => t.note(format!("color pass sampler {i}: texture in no pack"), &at),
+                    }
+                }
+            }
             for (pi, p) in m.passes.iter().enumerate() {
                 let pass = format!("{mat} pass {pi}");
                 t.note(format!("pass name {}", pass_label(p.name)), &pass);

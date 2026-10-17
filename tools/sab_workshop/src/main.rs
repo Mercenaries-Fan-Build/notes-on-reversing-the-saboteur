@@ -19,7 +19,6 @@ mod boot;
 mod bundle;
 mod camera;
 mod clip;
-mod dds;
 mod dtex;
 mod editor;
 mod formats;
@@ -157,8 +156,45 @@ fn main() {
         let dir = args.get(i + 1).cloned().unwrap_or(cfg.game_dir.clone());
         std::process::exit(source_info(&dir));
     }
+    // Headless 2008 bundle export: `--export-2008 <mesh name> <out dir>` (the 2008 build is `--game`).
+    if let Some(i) = args.iter().position(|a| a == "--export-2008") {
+        let (Some(name), Some(out)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("usage: sab_workshop --game <2008 build> --export-2008 <mesh name> <out dir>");
+            std::process::exit(2);
+        };
+        std::process::exit(export_2008(&cfg.game_dir, name, out));
+    }
 
     app::run(cfg);
+}
+
+/// Export every mesh record named `name` as a bundle, one directory per pack holding one.
+fn export_2008(game: &str, name: &str, out: &str) -> i32 {
+    use crate::source::GameSource;
+    let src = match sources::prototype2008::Prototype2008Source::open(std::path::Path::new(game)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("open {game}: {e}");
+            return 1;
+        }
+    };
+    let handles: Vec<_> = src.list_meshes().into_iter().filter(|h| h.name == name).collect();
+    if handles.is_empty() {
+        eprintln!("no mesh record named '{name}'");
+        return 1;
+    }
+    let mut code = 0;
+    for h in &handles {
+        let pack = src.mesh_pack(h).unwrap_or_default().replace(['/', '\\', '.'], "_");
+        match src.bundle_job(h, std::path::Path::new(out).join(pack)).and_then(|job| bundle::run_2008(&job)) {
+            Ok(dir) => println!("{dir}"),
+            Err(e) => {
+                eprintln!("{name}: {e}");
+                code = 1;
+            }
+        }
+    }
+    code
 }
 
 fn source_info(dir: &str) -> i32 {
@@ -224,6 +260,7 @@ fn print_help() {
          \x20 --index <path>   a generated anim_bone_map.json (default: read Animations.pack)\n\
          \x20 --pack  <path>   Animations.pack     (default: <game>/Animations.pack)\n\
          \x20 --source-info <dir>  fingerprint a folder as a game source and print what was recognized\n\
+         \x20 --export-2008 <mesh> <out>  bundle-export every 2008 mesh record named <mesh> (with --game <2008 build>)\n\
          \x20 --help           show this help\n\n\
          PATHS:\n\
          \x20 <game>   from settings.json (set it once in the app's Settings page); never guessed\n\n\

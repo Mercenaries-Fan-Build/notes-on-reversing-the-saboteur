@@ -83,31 +83,78 @@ impl Texture<'_> {
     }
 }
 
-/// Parse one record; every byte up to the end of the last stream is accounted for, and the bytes
-/// after it are returned in `trailing`.
-pub fn parse(b: &[u8]) -> Result<Texture<'_>, String> {
+/// `ReadTextureDeprecated` rejects a longer name.
+pub const MAX_NAME: usize = 0x400;
+/// The most bytes [`parse_header`] reads: `name_len`, the longest name, and the fixed fields.
+pub const MAX_HEADER: usize = 4 + MAX_NAME + 22;
+
+/// A record's header: everything before the streams.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub name: String,
+    pub format: u32,
+    pub flags: u32,
+    pub width: u16,
+    pub height: u16,
+    pub mips: u16,
+    pub unpacked: u32,
+    /// The stored count, with 0 read as 1 as the engine does.
+    pub stream_count: u32,
+    /// Bytes the header occupies; the first stream's length word follows.
+    pub len: usize,
+}
+
+impl Header {
+    /// See [`Texture::srgb`].
+    pub fn srgb(&self) -> bool {
+        self.flags & LINEAR_FLAGS == 0
+    }
+}
+
+/// Parse a record's header from at least its first `min(record length, MAX_HEADER)` bytes.
+pub fn parse_header(b: &[u8]) -> Result<Header, String> {
     let name_len = bytes::u32_be(b, 0, "texture name_len")? as usize;
-    if name_len > 0x400 {
-        return Err(format!("texture: name_len {name_len} exceeds the reader's 0x400"));
+    if name_len > MAX_NAME {
+        return Err(format!("texture: name_len {name_len} exceeds the reader's 0x{MAX_NAME:X}"));
     }
     let raw = bytes::slice(b, 4, name_len, "texture name")?;
     let name = String::from_utf8_lossy(raw.strip_suffix(&[0]).unwrap_or(raw)).into_owned();
     let h = 4 + name_len;
-    let format = bytes::u32_be(b, h, "texture format")?;
-    let flags = bytes::u32_be(b, h + 4, "texture flags")?;
-    let width = bytes::u16_be(b, h + 8, "texture width")?;
-    let height = bytes::u16_be(b, h + 10, "texture height")?;
-    let mips = bytes::u16_be(b, h + 12, "texture mips")?;
-    let unpacked = bytes::u32_be(b, h + 14, "texture unpacked")?;
-    let count = bytes::u32_be(b, h + 18, "texture stream_count")?.max(1) as usize;
-    let mut at = h + 22;
-    let mut streams = Vec::with_capacity(count.min(64));
-    for i in 0..count {
+    Ok(Header {
+        format: bytes::u32_be(b, h, "texture format")?,
+        flags: bytes::u32_be(b, h + 4, "texture flags")?,
+        width: bytes::u16_be(b, h + 8, "texture width")?,
+        height: bytes::u16_be(b, h + 10, "texture height")?,
+        mips: bytes::u16_be(b, h + 12, "texture mips")?,
+        unpacked: bytes::u32_be(b, h + 14, "texture unpacked")?,
+        stream_count: bytes::u32_be(b, h + 18, "texture stream_count")?.max(1),
+        len: h + 22,
+        name,
+    })
+}
+
+/// Parse one record; every byte up to the end of the last stream is accounted for, and the bytes
+/// after it are returned in `trailing`.
+pub fn parse(b: &[u8]) -> Result<Texture<'_>, String> {
+    let h = parse_header(b)?;
+    let mut at = h.len;
+    let mut streams = Vec::with_capacity((h.stream_count as usize).min(64));
+    for i in 0..h.stream_count {
         let packed = bytes::u32_be(b, at, "texture stream length")? as usize;
-        streams.push(bytes::slice(b, at + 4, packed, &format!("texture '{name}' stream {i}"))?);
+        streams.push(bytes::slice(b, at + 4, packed, &format!("texture '{}' stream {i}", h.name))?);
         at += 4 + packed;
     }
-    Ok(Texture { name, format, flags, width, height, mips, unpacked, streams, trailing: &b[at..] })
+    Ok(Texture {
+        name: h.name,
+        format: h.format,
+        flags: h.flags,
+        width: h.width,
+        height: h.height,
+        mips: h.mips,
+        unpacked: h.unpacked,
+        streams,
+        trailing: &b[at..],
+    })
 }
 
 /// A format's pixel decoder and its GPU element: bytes per element and whether an element is a 4×4

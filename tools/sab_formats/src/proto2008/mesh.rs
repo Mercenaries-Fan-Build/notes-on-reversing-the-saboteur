@@ -136,12 +136,15 @@ pub struct Mesh {
     pub tail: Tail,
 }
 
-/// One entry of a variant record's binding table.
+/// One entry of a variant record's binding table: a material and its passes' shaders.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     /// A material UID of the pack's `materials` slot.
     pub material: u32,
+    /// One value per material uid across the build.
     pub key: u32,
+    /// `(pixel_shader, vertex_shader)` of each of the material's passes, in the order passes 1.. then
+    /// pass 0.
     pub pairs: Vec<(u32, u32)>,
 }
 

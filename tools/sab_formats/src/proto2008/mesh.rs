@@ -34,6 +34,7 @@
 //! A variant record (every record that does not start with a mesh magic) is a material binding
 //! table, zero bytes to the next 0x800 boundary, then a mesh body ([`Record::Variant`]).
 
+use super::cursor::Cursor;
 use crate::bytes;
 
 /// The mesh magics, in on-disk byte order. `ReadMesh` in `WildStar_p.exe` loads only `MSH4` and
@@ -156,36 +157,6 @@ impl Record {
         match self {
             Record::Mesh(m) | Record::Variant { mesh: m, .. } => m,
         }
-    }
-}
-
-struct Cursor<'a> {
-    b: &'a [u8],
-    at: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn u32(&mut self, field: &str) -> Result<u32, String> {
-        let v = bytes::u32_be(self.b, self.at, field)?;
-        self.at += 4;
-        Ok(v)
-    }
-    fn f32(&mut self, field: &str) -> Result<f32, String> {
-        let v = bytes::f32_be(self.b, self.at, field)?;
-        self.at += 4;
-        Ok(v)
-    }
-    fn f32s<const N: usize>(&mut self, field: &str) -> Result<[f32; N], String> {
-        let mut out = [0.0; N];
-        for x in &mut out {
-            *x = self.f32(field)?;
-        }
-        Ok(out)
-    }
-    fn take(&mut self, n: usize, field: &str) -> Result<&'a [u8], String> {
-        let s = bytes::slice(self.b, self.at, n, field)?;
-        self.at += n;
-        Ok(s)
     }
 }
 

@@ -49,7 +49,7 @@ un-swizzle plus 16-bit word swap for BC1/3.
 ## `<hash>.textures` slots inside `.Pack` files
 
 **Solved end-to-end for the two DXT variants (about 53% of records by count).** Both the
-outer SBL-family sub-pack (see `docs/2008_subpack_variants.md`) and the inner per-texture
+outer SBL-family sub-pack (see `docs/2008_subpack_format.md`) and the inner per-texture
 directory (in `prototype2008.rs::parse_texslot`) were solved earlier. This section documents
 the innermost blob: the per-texture PAYLOAD that lives at each directory entry's `data_off /
 data_size` window.

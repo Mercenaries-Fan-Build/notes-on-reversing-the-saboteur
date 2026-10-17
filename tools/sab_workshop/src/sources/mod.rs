@@ -4,5 +4,4 @@
 
 pub mod prototype2008;
 pub mod prototype2008_anim;
-pub mod prototype2008_anim_havok46;
 pub mod retail_pc;

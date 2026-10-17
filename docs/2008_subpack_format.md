@@ -131,13 +131,17 @@ WSStreamTOC (read by WSStreamTOC::ReadMe, WildStar_p.exe @0x8219ffb0: six u32 in
 
 * `+0x08` is the stored length, `+0x0C` the unpacked length, `+0x10` is 1, `+0x14` is 0 (meshes) or
   0/1 (textures: 11,358 records 1). PROVEN over all 7,101 `meshes` and 6,156 `textures` slots.
+  In `textures` slots `+0x0C` is the memory image size or the stored length depending on the
+  sub-pack revision, and `+0x14 = 1` marks a texture `UnloadNormalMaps` may evict
+  (`docs/2008_texture_format.md`).
 * Records are contiguous from the end of the directory to the end of the slot; all-zero records occur
   only at the end of the list (17 `meshes`, 38 `textures` slots) and `ReadTOCGroup` drops them (size 0).
   PROVEN.
 * `meshes`: 275,288 records are zlib streams (`78 01`, `stored < unpacked`); the 430 others
   (`stored == unpacked`, all in `SBLX` packs) are stored raw — they are variant records
   (`docs/2008_msh4_format.md`). PROVEN.
-* `textures`: payloads are stored raw (their streams are zlib inside, `docs/2008_texture_format.md`).
+* `textures`: payloads are stored raw (their streams are zlib inside, `docs/2008_texture_format.md`);
+  the 1,181 records whose `+0x0C` equals `+0x08` are those of the `SBL8` and `SBLX` sub-packs.
 
 ## Method
 
@@ -150,4 +154,3 @@ sab_probe proto2008-packs    <Bin360>   # every .pack, MP00 entry and slot direc
 
 * The preimage of non-zero `id` words outside `wsd` slots.
 * The path one `Global/mega.pack` entry's hash names.
-* What the `textures` record word `+0x14 = 1` selects (the `ReadTexture` path is the place to read).

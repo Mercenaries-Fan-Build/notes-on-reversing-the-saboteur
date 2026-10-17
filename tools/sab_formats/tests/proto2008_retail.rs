@@ -4,7 +4,8 @@
 //! `textures` slot directory reads; every `meshes` record parses; every `textures` record parses, is
 //! keyed by its name's hash, inflates to `unpacked` bytes that its mip layout spans exactly, and every
 //! level reads; every `materials` slot parses and names every material its pack's mesh primitives and
-//! variant bindings use; every `wsd` slot is a big-endian EditNodes entry; every `.xex` unwraps.
+//! variant bindings use; every `wsd` slot is a big-endian EditNodes entry; every `.shaders` file parses
+//! with a constant table in every variant; every `.xex` unwraps.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use sab_formats::game_paths::local_config_proto2008_bin360;
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{material, mesh, mp00, slot_dir, texture};
+use sab_formats::proto2008::{material, mesh, mp00, shaders, slot_dir, texture};
 use sab_formats::{editnodes, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
@@ -190,6 +191,21 @@ fn every_2008_pack_and_record_parses() {
             }
         }
     }
+    let mut shader_variants = 0;
+    for p in all.iter().filter(|p| p.extension().and_then(|x| x.to_str()) == Some("shaders")) {
+        let buf = std::fs::read(p).expect("read shaders");
+        match shaders::parse(&buf) {
+            Ok(s) => {
+                for v in s.pixel.iter().chain(&s.vertex).flat_map(|g| &g.variants) {
+                    match shaders::constant_table(v.code) {
+                        Ok(_) => shader_variants += 1,
+                        Err(e) => failures.push(format!("{}: {e}", p.display())),
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("{}: {e}", p.display())),
+        }
+    }
     let mut unwrapped = 0;
     for p in all.iter().filter(|p| p.extension().and_then(|x| x.to_str()) == Some("xex")) {
         let buf = std::fs::read(p).expect("read xex");
@@ -215,4 +231,5 @@ fn every_2008_pack_and_record_parses() {
     assert_eq!(entries, 4960);
     assert_eq!(copies, 4385);
     assert_eq!(unwrapped, 6);
+    assert_eq!(shader_variants, 3_340 + 135);
 }

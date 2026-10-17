@@ -2,6 +2,28 @@
 
 *Generated 2026-09-13. Companion to [2008_wildstar_d_forensic.md](2008_wildstar_d_forensic.md) (the deep forensic dive on `WildStar_d.exe`) and [2008_build_inventory.md](2008_build_inventory.md). Covers **all three** major PPC binaries in the pre-release drop.*
 
+## Update 2026-10-17 (macOS regeneration)
+
+* **Which binary matches the data.** The binaries load different revisions of the asset containers:
+  `WildStar_d` reads `SBL6` packs and `MSH0` meshes; `WildStar_p.exe`, `WildStar_p-org.xex` and
+  `Saboteur.xex` read `SBL4` / `MSH4`, the revision most of `Bin360/` is written in
+  (`sab_probe proto2008-binaries`; [2008_subpack_format.md](2008_subpack_format.md)). Grep the
+  **`WildStar_p`** export for 2008 asset formats.
+* **`Saboteur.xex` is a `WildStar_p` build**: its original PE name is `WildStar_p.exe`, PE timestamp
+  2008-05-15 (`WildStar_p.exe` is 2008-05-20).
+* **XEX unwrap** is [`sab_formats::xex`](../tools/sab_formats/src/xex.rs) (AES-128 with the devkit key,
+  basic compression; all six `.xex` of the drop unwrap to an `MZ` image, and in the unwrapped
+  `WildStar_p.xex` the `.pdata`, `.data`, `BINKBSS`, `BINKDATA` and `.XBMOVIE` sections are byte-identical
+  to `WildStar_p.exe`'s; `.text`, `.rdata` and `.reloc` differ).
+* **Scripts.** One set serves every binary — `ApplyMapSymbolsWildStar.java <map>` and
+  `DecompileWildStar.java <out file>`; the `…P` / `…SaboteurXex` copies with hard-coded Windows paths are
+  gone. `DecompileWildStar.java` now keeps blocks the decompiler would prove unreachable: with the
+  default, every value read through `PblFile`'s virtual read folds away and `WildStar_p`'s `ReadMesh` and
+  `LoadBlock` lose their bodies. `ExportListing.java <out> <name|0xaddr>…` dumps disassembly for the
+  functions whose decompile is still unreadable. Recipe: [tools/ghidra/README.md](../tools/ghidra/README.md).
+* Regenerated here: `WildStar_d` 79,330 functions (137 unnamed, 1 decomp failure), `WildStar_p` 31,788
+  (103 unnamed, 0 failures).
+
 ## Headline
 
 Three Xbox 360 PowerPC binaries from `game-files/Bin360/` are fully decompiled to text, with names resolved from their paired PDBs / linker maps. Each is a self-contained cross-reference:
@@ -26,17 +48,17 @@ Every gap that stood between "raw exit code 0" and "actually named + fully-body'
 
 1. **Install [GhidraXenon](https://github.com/freeqaz/ghidra-xenon-extension) v12.1** into `<ghidra_install>/Ghidra/Extensions/GhidraXenon/`. **Not** `<install>/Extensions/Ghidra/` (bundled staging, ignored by classloader) and **not** `~/.ghidra/.ghidra_12.1_PUBLIC/Extensions/` (user-installed, needs GUI acceptance). Adds `PowerPC:BE:64:Xenon` language with 77 VMX128 opcodes + AltiVec. Without this, ~65% of `.text` decompilation truncates at the first VMX128 SIMD op.
 
-2. **Import with `-processor "PowerPC:BE:64:Xenon"`** and `-cspec "default"`. For XEX files, first unwrap with `python tools/xex_unpack.py <xex> --out <pe.bin> --devkit` (dev-signed binaries use the zero KEK). The 2008 prototypes are all dev-signed.
+2. **Import with `-processor "PowerPC:BE:64:Xenon"`** and `-cspec "default"`. For XEX files, first unwrap with `sab_formats::xex::unwrap` and the devkit key-encryption key (dev-signed binaries use the zero KEK). The 2008 prototypes are all dev-signed.
 
 3. **Pre-script [`tools/ghidra/PrepWildStarPreAnalysis.java`](../tools/ghidra/PrepWildStarPreAnalysis.java)** — disables the crashing `PdbUniversalAnalyzer` (Ghidra 12.1 bug: `DefaultPdbApplicator:299` throws on these Xbox 360 PDBs) and walks the `.pdata` section, calling `createFunction()` at every unwind anchor. **Xbox 360 `.pdata` stores full VA in big-endian**, not RVA — the pre-script reads it correctly.
 
 4. **Post-script for names** — one of two, matching the binary's name source:
-   - `.map` file available (WildStar_d, WildStar_p): [`ApplyMapSymbolsWildStar[P].java`](../tools/ghidra/ApplyMapSymbolsWildStar.java) — parses the linker map's "Publics by Value" and renames every `FUN_` at the matching VA.
+   - `.map` file available (WildStar_d, WildStar_p): [`ApplyMapSymbolsWildStar.java`](../tools/ghidra/ApplyMapSymbolsWildStar.java) `<map>` — parses the linker map's "Publics by Value" and renames every `FUN_` at the matching VA.
    - PDB only, no `.map` (Saboteur): [`ApplyDia2DumpSymbols.java`](../tools/ghidra/ApplyDia2DumpSymbols.java) — parses `output/pdb_dumps/*_p.txt` (from patched DIA2Dump, see step 5) and applies mangled names.
 
 5. **PDB access without admin: patched DIA2Dump** at `scratchpad/dia2dump/x64/Release/DIA2Dump.exe`. Original VS-BuildTools sample requires `regsvr32 msdia140.dll` (admin). Patched to `LoadLibraryW("msdia140.dll") + DllGetClassObject` (`NoRegCoCreate` equivalent), and the x64 msdia140.dll is copied alongside from `Common7/IDE/PrivateAssemblies/amd64/`. Runs against WildStar_d.pdb (101k publics), WildStar_p.pdb (86k publics), Saboteur.pdb (71k publics) in ~1 sec each.
 
-6. **Post-script `DecompileWildStar[P|Saboteur].java`** — full-corpus decomp of every non-thunk function in an executable block, sorted by VA, header line `==== <name> @0xADDR size=N callers=[…] ====` followed by decompiled C.
+6. **Post-script `DecompileWildStar.java <out file>`** — full-corpus decomp of every non-thunk function in an executable block, sorted by VA, header line `==== <name> @0xADDR size=N callers=[…] ====` followed by decompiled C.
 
 ## Machine-readable outputs
 

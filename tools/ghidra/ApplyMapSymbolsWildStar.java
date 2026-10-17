@@ -18,13 +18,18 @@ import ghidra.program.model.symbol.SymbolUtilities;
 public class ApplyMapSymbolsWildStar extends GhidraScript {
     @Override
     public void run() throws Exception {
-        // Map file path - adjust as needed
-        String mapPath = "C:/Users/Shadow/Desktop/notes-on-reversing-the-sabetour/game-files/Bin360/WildStar_d.map";
-
+        // The linker map is the script's one required argument:
+        //   -postScript ApplyMapSymbolsWildStar.java <2008 prototype dir>/WildStar_d.map (or WildStar_p.map)
+        String[] argv = getScriptArgs();
+        if (argv.length != 1) {
+            throw new IllegalArgumentException(
+                "ApplyMapSymbolsWildStar.java needs exactly one script arg: the linker .map path; got "
+                + argv.length);
+        }
+        String mapPath = argv[0];
         File mapFile = new File(mapPath);
-        if (!mapFile.exists()) {
-            printerr("Map file not found: " + mapPath);
-            return;
+        if (!mapFile.isFile()) {
+            throw new IllegalArgumentException("map file not found: " + mapPath);
         }
 
         println("Parsing map file: " + mapPath);

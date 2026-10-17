@@ -101,10 +101,8 @@ pub trait GameSource: Send + Sync {
     fn list_meshes(&self) -> Vec<AssetHandle>;
     /// Every texture the source can hand out by hash + friendly name (when known).
     fn list_textures(&self) -> Vec<AssetHandle> { Vec::new() }
-    /// Every material the source can enumerate. Retail's WSAO records are keyed by drawcall
-    /// hash and consumed on demand via `textures_for_material`; the default returns empty so
-    /// the trait stays additive. The 2008 impl has a real answer because its `.materials`
-    /// slots are pre-parsed at open time and every UID is known before any drawcall fires.
+    /// Every material the source can enumerate. The default returns empty so the trait stays
+    /// additive; the 2008 impl lists every `MTLD` record of every pack.
     fn list_materials(&self) -> Vec<AssetHandle> { Vec::new() }
     /// Every animation clip the source can enumerate. Retail's clips live in `Animations.pack`
     /// (`AP0L`/`ANIM` -> concatenated Havok `hkaSplineCompressedAnimation` blob) and are
@@ -116,17 +114,20 @@ pub trait GameSource: Send + Sync {
 
     // ── read / resolve ───────────────────────────────────────────────────────────────────────
 
-    /// The raw MSHA bytes for a mesh handle, ready for `meshload::assemble`. Byte-exact —
-    /// bundle export needs it that way.
-    fn read_mesh_bytes(&self, handle: &AssetHandle) -> Result<Vec<u8>, String>;
-
-    /// Given a material hash, return the per-slot texture hashes: `[diffuse, spec, normal, mask]`.
-    /// A slot the material does not declare comes back `None`. The material-hash namespace is
-    /// version-specific — retail uses pandemic_hash of a WSAO material name.
-    fn textures_for_material(&self, mat: u32) -> Option<[Option<u32>; 4]>;
-
     /// Fetch a texture by hash and decode to RGBA8. `None` if the hash isn't known here.
     fn load_texture(&self, hash: u32) -> Result<CpuTexture, String>;
+
+    /// Decode the texture a `list_textures` handle names. A source whose texture handles are not
+    /// all keyed by hash (the 2008 build's loose `.dds` files share names) overrides this.
+    fn load_texture_handle(&self, handle: &AssetHandle) -> Result<CpuTexture, String> {
+        let hash = handle.hash.ok_or_else(|| format!("texture handle '{}' has no hash", handle.name))?;
+        self.load_texture(hash)
+    }
+
+    /// What the source knows about one handle, as label/value rows for the detail panel.
+    fn describe(&self, _handle: &AssetHandle) -> Result<Vec<(String, String)>, String> {
+        Ok(Vec::new())
+    }
 
     /// Best-effort: what friendly name does this source have for a hash? Used to fill in the
     /// picker rows / manifest when the retail path only has a hash but the 2008 packlogs know
@@ -153,9 +154,9 @@ pub trait GameSource: Send + Sync {
 
     /// Escape hatch for version-specific state a consumer needs on top of the trait's shared
     /// vocabulary — e.g. the 2008 mesh loader downcasts through here to reach
-    /// `Prototype2008Source::read_mesh_smsh`, which returns retail's `Smsh` shape and belongs
-    /// on the concrete type rather than the trait (retail's mesh path is assembled from many
-    /// pack parts through a skeleton, so its return shape differs).
+    /// `Prototype2008Source::load_mesh`, which returns a mesh with its rig and per-pack materials
+    /// and belongs on the concrete type rather than the trait (retail's mesh path is assembled
+    /// from many pack parts through a skeleton, so its return shape differs).
     ///
     /// Default returns `None` so no impl is forced to opt in; sources that want to be
     /// downcast-friendly override with `Some(self)`.

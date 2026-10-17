@@ -205,6 +205,38 @@ pub fn run(args: &[String]) {
                 t.note(format!("FAIL level read ({f})"), &format!("{at}: {e}"));
                 continue;
             }
+            if r.f14 != 0 || tx.format == texture::DXN {
+                let px = texture::decode_level(&tx, &mem, &levels[0]).expect("level read checked above");
+                let n = (px.len() / 4) as f64;
+                let stats: Vec<String> = (0..4)
+                    .map(|c| {
+                        let vals = px.iter().skip(c).step_by(4).map(|&v| v as f64);
+                        let mean = vals.clone().sum::<f64>() / n;
+                        let var = vals.map(|v| (v - mean) * (v - mean)).sum::<f64>() / n;
+                        let band = |x: f64| if x < 16.0 { "~0" } else if x > 239.0 { "~255" } else if (112.0..=144.0).contains(&x) { "~128" } else { "mid" };
+                        format!("{}{} mean {} sd {}", ["R", "G", "B", "A"][c], "", band(mean), if var.sqrt() < 4.0 { "flat" } else { "varies" })
+                    })
+                    .collect();
+                t.note(format!("normal-kind {f} channels: {}", stats.join(" | ")), &format!("{at} {}", tx.name));
+                if tx.format != texture::DXN {
+                    // Unit length of (R, G, B) and of (A, G, B) read as signed components.
+                    let len = |a: u8, b: u8, c: u8| {
+                        let s = |v: u8| v as f64 / 127.5 - 1.0;
+                        (s(a) * s(a) + s(b) * s(b) + s(c) * s(c)).sqrt()
+                    };
+                    let mean_len = |sw: bool| px.chunks_exact(4).map(|p| if sw { len(p[3], p[1], p[2]) } else { len(p[0], p[1], p[2]) }).sum::<f64>() / n;
+                    t.note(
+                        format!("normal-kind {f}: mean |RGB| {:.1}, mean |AGB| {:.1}", mean_len(false), mean_len(true)),
+                        &format!("{at} {}", tx.name),
+                    );
+                } else {
+                    let over = px.chunks_exact(4).filter(|p| {
+                        let s = |v: u8| v as f64 / 127.5 - 1.0;
+                        s(p[0]) * s(p[0]) + s(p[1]) * s(p[1]) > 1.02
+                    });
+                    t.note(format!("normal-kind DXN: texels with x²+y² > 1.02: {}", if over.count() == 0 { "none" } else { "some" }), &format!("{at} {}", tx.name));
+                }
+            }
             if levels.len() > 1 {
                 let decoded: Vec<Vec<u8>> = levels.iter().map(|l| texture::decode_level(&tx, &mem, l).expect("level read checked above")).collect();
                 let base_linear = linear_level(&mem, sf, &levels[0]).expect("base storage inside the image");

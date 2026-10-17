@@ -10,12 +10,14 @@
 //! * [`texture`] — a `textures` record: header and the tiled GPU memory image.
 //! * [`material`] — a `materials` slot: `WSAO` / `MTLD` records, textures and render passes.
 //! * [`shaders`] — a `<world>.shaders` file: the compiled shaders materials name.
+//! * [`shader_mapping`] — a `<world>.ShaderMapping` file: per material and pass, replacement shaders.
 
 mod cursor;
 pub mod material;
 pub mod mesh;
 pub mod mp00;
 pub mod sbl;
+pub mod shader_mapping;
 pub mod shaders;
 pub mod slot_dir;
 pub mod texture;

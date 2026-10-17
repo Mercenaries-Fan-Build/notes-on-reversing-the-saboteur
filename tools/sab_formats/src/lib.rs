@@ -28,6 +28,7 @@
 
 pub mod ap0l;
 pub mod bytes;
+pub mod dds;
 pub mod spline_edit;
 pub mod dtex;
 pub mod editnodes;
@@ -40,6 +41,7 @@ pub mod map6;
 pub mod megapack;
 pub mod mesh;
 pub mod names;
+pub mod pixels;
 pub mod proto2008;
 pub mod sbla;
 pub mod wwise;

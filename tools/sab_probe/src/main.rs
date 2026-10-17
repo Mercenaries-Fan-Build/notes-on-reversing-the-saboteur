@@ -968,6 +968,7 @@ mod proto2008_binaries;
 mod proto2008_materials;
 mod proto2008_meshes;
 mod proto2008_packs;
+mod proto2008_shaders;
 mod proto2008_textures;
 mod texbind;
 
@@ -1016,6 +1017,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "proto2008-materials" {
         proto2008_materials::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-shaders" {
+        proto2008_shaders::run(&args[2..]);
         return;
     }
     if args.len() > 1 && args[1] == "proto2008-textures" {

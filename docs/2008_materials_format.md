@@ -114,12 +114,45 @@ ending at the slot's end: 97,597 materials, 257,093 passes.
   `ADDRESSU, ADDRESSV, MAGFILTER, MINFILTER, MIPFILTER` = all `CLAMP` (105,565) or all `WRAP`
   (61,195), with `LINEAR` filters. PROVEN.
 
+## Texture kinds per sampler
+
+A pass's texture ref `i` is its shaders' `g_Sampler<i>` (`docs/2008_shaders_format.md`). Nothing in
+the build names what a `g_Sampler<i>` is for, so a texture's role is read from what the engine
+knows about the texture itself (`docs/2008_texture_format.md`): its format, whether it is sampled
+as sRGB, and whether `UnloadNormalMaps` may evict it (slot record `+0x14`).
+
+`Color-Pass` texture refs, by sampler and kind (`sab_probe proto2008-materials`):
+
+| sampler | kinds (count) |
+|---|---|
+| 0 | DXT1 sRGB 89,579 · DXT5 sRGB 7,308 · DXT1 linear 320 · DXT5 linear 60 |
+| 1 | DXN 46,929 (11,389 evictable) · DXT1 linear 20,194 · DXT5 linear evictable 18,091 · DXT5 linear 2,932 · DXT1 sRGB 834 · DXT5 sRGB 9 |
+| 2 | R5G6B5 34,497 · DXN 24,360 (24,010 evictable) · DXT1 linear 16,258 · others 135 |
+| 3–9 | mostly terrain detail layers: sRGB DXT1/DXT5 colour (`DETAIL_*_AB`) and evictable X8R8G8B8 / DXN normal maps (`DETAIL_*_NM`) |
+
+The kinds agree with the authoring names (counted over all Color-Pass references):
+
+* **Normal maps** — every evictable texture and every DXN texture has a normal-map name: `_NM`
+  (51,247 DXN, 17,654 DXT5, 9,116 X8R8G8B8 references), `_NMdetail`, `_NM01`, `…_NM_AB`, `…_NM_GR`,
+  `…_NM_LOD`, terrain `_ImageNormal` (35,855, DXN, not evictable), `_N`, `_tempNM`. PROVEN (no
+  exception in the build).
+* **Colour** — sRGB textures: `_AB` (47,974 DXT5) and plain names (`T_City1_Wall1`, terrain
+  `_ImageLOD0`, character `_HD` / `_UB` / `_LB` / `_GR`). Sampler 0 is sRGB in 96,887 of 97,267
+  Color-Passes; the 380 linear ones are blanks and detail textures (`0_blankGray`, `DET_Cloth128`).
+  PROVEN.
+* **Other linear** — specular `_S` (36,136 DXT1), terrain blend masks `_Mask` (34,497 R5G6B5),
+  emissive `_EMS` / `_EM`, detail (`DET_Plaster`, `DET_Metalbrushed`). Which of these a shader treats
+  as specular, mask or emissive is not stored. PROVEN that the kind alone does not separate them.
+
+So for display the workshop takes a material's `Color-Pass` sampler 0 as its colour map and the
+first `Color-Pass` texture that is DXN or evictable as its normal map; any other texture is listed
+by sampler with its kind, not given a role.
+
 ## What this replaces
 
 The earlier version of this page read 12 of 863 packlog-addressed slots, stopped after the texture
 list and assumed a `[diffuse, specular, normal, wm]` slot order taken from retail. The record has no
-fixed slot order: a pass's `texture_refs` order is its shader's sampler order. Which sampler a
-shader samples as diffuse, normal or specular is the shaders' business (`*.shaders`, next).
+fixed slot order: a pass's `texture_refs` order is its shader's sampler order.
 
 ## Method
 
@@ -134,4 +167,5 @@ sab_probe proto2008-materials <Bin360>     # every number above
 * The preimage of `uid`.
 * `flags` bits other than 0 and 2.
 * The shader stage behind `register_vectors`.
-* Sampler roles per shader — from the `.shaders` files and their constant tables.
+* What each shader does with each `g_Sampler<i>` (specular vs mask vs emissive among the linear
+  textures) — only the Xenos microcode says.

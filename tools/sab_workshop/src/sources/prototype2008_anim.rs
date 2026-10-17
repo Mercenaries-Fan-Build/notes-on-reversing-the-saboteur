@@ -106,7 +106,6 @@ use crate::clip::AnimClip;
 use crate::havok::QsTransform;
 use sab_formats::pandemic_hash;
 use crate::source::{AssetHandle, AssetKind};
-use crate::sources::prototype2008_mesh::Msh4Skeleton;
 
 /// The three flavours of `ANM0*0` clip magic seen in this build. Names line up with the
 /// Havok-4.6 skeletal-animation compression modes (`hkaWaveletSkeletalAnimation`,
@@ -255,7 +254,7 @@ pub struct Clip2008 {
     /// whether the clip came from a loose file or the pack.
     pub bytes: Vec<u8>,
     /// The per-track bone name-hashes recovered from the clip's trailer — the same
-    /// pandemic_hash values a character's `Msh4Skeleton.bones[i].name_hash` carries.
+    /// pandemic_hash values a mesh's bones carry (`proto2008::mesh::Bone::hash`).
     /// One entry per transform track (length = `effective_tracks()`), in track order.
     /// All three codecs (`ANM0NOC0`, `ANM0WAV0`, `ANM0DEL0`) store this trailer at
     /// `file_len - eff_tracks * 4`; see `read_track_bone_hashes` for the read logic
@@ -263,8 +262,8 @@ pub struct Clip2008 {
     /// Empty when the trailer can't be read (a truncated clip); the resolver treats
     /// that as "every track unbound".
     pub bind_hashes: Vec<u32>,
-    /// Track index → skeleton bone index, resolved against a specific character's
-    /// `Msh4Skeleton` by [`Clip2008::bind_to_skeleton`]. `-1` marks a track whose
+    /// Track index → skeleton bone index, resolved against a specific rig's bone hashes by
+    /// [`Clip2008::bind_to_skeleton`]. `-1` marks a track whose
     /// bone hash is not in the target skeleton (a normal outcome: a body-part clip
     /// can drive bones not present in a lower-LOD or facial-only skeleton). Empty
     /// slice until `bind_to_skeleton` is called — `skinning::posed` treats empty as
@@ -590,18 +589,17 @@ impl Clip2008 {
         &self.bind_hashes
     }
 
-    /// Resolve every track to a bone index in `skeleton` by joining
-    /// `bind_hashes` against `Msh4Skeleton.bones[i].name_hash`. Populates
-    /// [`Clip2008::resolved_track_to_bone`] and returns the newly-computed slice.
-    /// Idempotent: calling it twice with the same skeleton is a no-op.
+    /// Resolve every track to a bone index by joining `bind_hashes` against a rig's bone hashes
+    /// (`bone_hashes[i]` is bone `i`'s). Populates [`Clip2008::resolved_track_to_bone`] and returns
+    /// the newly-computed slice.
     ///
     /// This is the 2008 analogue of `hkSkeletonUtils::bindByName` (WildStar_d
     /// @0x82d1d7d0) — retail Havok resolves track→bone by matching the animation's
     /// `hkAnnotationTrack::m_trackName` strings against `hkSkeleton::m_bones[i].m_name`.
     /// Pandemic replaced that string annotation table with a `pandemic_hash` u32
     /// trailer (per-clip, all codecs); we replay the same join, just against hashes.
-    pub fn bind_to_skeleton(&mut self, skeleton: &Msh4Skeleton) -> &[i32] {
-        self.resolved_track_to_bone = resolve_track_to_bone(&self.bind_hashes, skeleton);
+    pub fn bind_to_skeleton(&mut self, bone_hashes: &[u32]) -> &[i32] {
+        self.resolved_track_to_bone = resolve_track_to_bone(&self.bind_hashes, bone_hashes);
         &self.resolved_track_to_bone
     }
 
@@ -918,7 +916,7 @@ fn pack_synthetic_key(offset: u64) -> u32 {
 /// Every codec (`ANM0NOC0`, `ANM0WAV0`, `ANM0DEL0`) shares the same trailer shape: a
 /// `u32-BE` array of `effective_tracks` entries at `bytes.len() - eff_tracks * 4`. Each
 /// value is the `pandemic_hash` of the bone the track drives — the same key
-/// `Msh4Skeleton.bones[i].name_hash` carries.
+/// `proto2008::mesh::Bone::hash` carries.
 ///
 /// **Verification.** For NOC0 the trailer overlaps the frame-major transform array's
 /// end exactly (see `noc0_shape`), and its values match known biped bone names
@@ -951,9 +949,9 @@ pub fn read_track_bone_hashes(bytes: &[u8], eff_tracks: usize) -> Result<Vec<u32
         .collect())
 }
 
-/// Join per-track bone-hashes against a character's `Msh4Skeleton`. Returns a
-/// `track_to_bone` slice in the shape `skinning::posed` consumes: one `i32` per
-/// track, giving the index into `skeleton.bones[]`, or `-1` for an unbound track.
+/// Join per-track bone-hashes against a rig's bone hashes (`bone_hashes[i]` is bone `i`'s).
+/// Returns a `track_to_bone` slice in the shape `skinning::posed` consumes: one `i32` per
+/// track, giving the bone index, or `-1` for an unbound track.
 ///
 /// Structurally the same operation as retail's [`hkSkeletonUtils::bindByName`] —
 /// for each track's identifier, find the bone whose identifier matches. Pandemic's
@@ -964,18 +962,11 @@ pub fn read_track_bone_hashes(bytes: &[u8], eff_tracks: usize) -> Result<Vec<u32
 /// full-body clip driving 60 tracks against a face-only skeleton has legitimately
 /// unbound tracks, and the same clip on a full biped may find every one. The caller
 /// (`skinning::posed`) already handles `-1` by leaving that track's bone at bind pose.
-pub fn resolve_track_to_bone(bind_hashes: &[u32], skeleton: &Msh4Skeleton) -> Vec<i32> {
-    // Build the hash → index lookup once per bind call. On a 100-bone skeleton this
-    // is 100 hashmap inserts — trivially cheap; a repeated per-track linear scan
-    // would be O(n·m) which for a 60-track clip against 200 bones is 12k comparisons,
-    // still cheap but this way the loop below is a straight O(n) lookup chain.
-    let mut hash_to_index: HashMap<u32, i32> = HashMap::with_capacity(skeleton.bones.len());
-    for (i, b) in skeleton.bones.iter().enumerate() {
-        // First writer wins — if two bones ever share a name hash the first-authored
-        // (lower index) one is the one the game's own resolver would pick too (it
-        // scans bones[] in order and takes the first match; retail Havok does the
-        // same, though we haven't observed a collision on any real skeleton).
-        hash_to_index.entry(b.name_hash).or_insert(i as i32);
+pub fn resolve_track_to_bone(bind_hashes: &[u32], bone_hashes: &[u32]) -> Vec<i32> {
+    let mut hash_to_index: HashMap<u32, i32> = HashMap::with_capacity(bone_hashes.len());
+    for (i, &h) in bone_hashes.iter().enumerate() {
+        // First writer wins: the lowest-index bone with a hash is the one bound.
+        hash_to_index.entry(h).or_insert(i as i32);
     }
     bind_hashes
         .iter()
@@ -1701,21 +1692,19 @@ mod tests {
     // ── track→bone resolver tests ─────────────────────────────────────────────────────────
     //
     // These validate the "given a clip and a character skeleton, which bone does each track
-    // drive?" pipeline: the ANM0 trailer format, the hash-join against `Msh4Skeleton`, and
+    // drive?" pipeline: the ANM0 trailer format, the hash-join against the mesh's bone hashes, and
     // the pose-application round trip that proves a bound clip actually moves the rig
     // relative to bind pose.
 
-    /// Load Sean HD's `Msh4Skeleton` — used by the resolver tests to have a real target
-    /// rig with real `name_hash` values (~104 bones).
-    fn load_sean_hd_skeleton() -> Option<Msh4Skeleton> {
+    /// Sean HD's mesh (`CH_AL_SeanDevlin_01_HD` in `Global/BP_AL_Sean_HD.Pack`, 104 bones) — the
+    /// resolver tests' target rig.
+    fn load_sean_hd_skeleton() -> Option<sab_formats::proto2008::mesh::Mesh> {
         use crate::source::GameSource;
         use crate::sources::prototype2008::Prototype2008Source;
         let root = test_bin360()?;
-        // The prototype is present (test_bin360 said so); failing to open it is a real failure.
         let src = Prototype2008Source::open(&root).expect("open 2008 source");
-        let handle = src.list_meshes().into_iter().find(|h| h.name == "BP_AL_Sean_HD")?;
-        let body = src.read_mesh_body(&handle).ok()?;
-        body.skeleton
+        let handle = src.list_meshes().into_iter().find(|h| h.name == "CH_AL_SeanDevlin_01_HD").expect("Sean HD mesh");
+        Some(src.read_mesh_record(&handle).expect("Sean HD record").mesh().clone())
     }
 
     /// The end-to-end resolver on Sean HD + a Sean-referencing clip: every returned index
@@ -1748,7 +1737,8 @@ mod tests {
         let n_bones = skeleton.bones.len();
         assert!(n_bones > 30, "expected a rigged Sean HD skeleton, got {n_bones} bones");
 
-        clip.bind_to_skeleton(&skeleton);
+        let hashes: Vec<u32> = skeleton.bones.iter().map(|b| b.hash).collect();
+        clip.bind_to_skeleton(&hashes);
         let t2b = clip.track_to_bone();
         assert_eq!(t2b.len(), clip.effective_tracks());
 
@@ -1852,7 +1842,8 @@ mod tests {
         let (eff_tracks, frames) = clip.noc0_shape().expect("shape");
         assert!(frames > 1, "need a multi-frame clip for the motion test");
 
-        clip.bind_to_skeleton(&skeleton);
+        let hashes: Vec<u32> = skeleton.bones.iter().map(|b| b.hash).collect();
+        clip.bind_to_skeleton(&hashes);
         let t2b = clip.track_to_bone().to_vec();
         // At least one track must bind — otherwise the motion test is trivially vacuous.
         let bound_any = t2b.iter().any(|&i| i >= 0);
@@ -1861,30 +1852,7 @@ mod tests {
             return;
         }
 
-        // Convert the parsed skeleton into the workshop's `Bone` list — the same
-        // shape `skinning::posed` consumes downstream. Every parent index is a valid
-        // bone (checked by the mesh module's `parses_skeleton_from_sean_hd`), so we
-        // can safely pass it to the world-matrix composer.
-        use crate::formats::Bone;
-        use std::collections::HashMap;
-        let mut ibm: HashMap<u32, [f32; 16]> = HashMap::new();
-        for r in &skeleton.remaps {
-            ibm.insert(r.bone_index, r.matrix);
-        }
-        let skel: Vec<Bone> = skeleton
-            .bones
-            .iter()
-            .enumerate()
-            .map(|(i, b)| Bone {
-                parent: b.parent,
-                name: format!("bone_{:08X}", b.name_hash),
-                t: b.translation,
-                r: b.rotation,
-                s: b.scale,
-                inv_bind: ibm.get(&(i as u32)).copied(),
-                local_m: None,
-            })
-            .collect();
+        let (_, skel, _) = crate::sources::prototype2008::convert(&skeleton).expect("convert Sean HD");
         let bind = crate::skinning::bind_pose(&skel);
 
         let dur = clip.header.duration_s.max(0.1);
@@ -1967,52 +1935,14 @@ mod tests {
     /// misses — a synthetic-skeleton always-on test that doesn't need an install.
     #[test]
     fn resolve_track_to_bone_maps_hits_and_marks_misses() {
-        use crate::sources::prototype2008_mesh::Msh4Bone;
-        let bones = vec![
-            Msh4Bone {
-                name_hash: pandemic_hash("A"),
-                parent: -1,
-                translation: [0.0; 3],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0; 3],
-                aabb_min: [0.0; 3],
-                aabb_max: [0.0; 4],
-                flag: 0,
-            },
-            Msh4Bone {
-                name_hash: pandemic_hash("B"),
-                parent: 0,
-                translation: [0.0; 3],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0; 3],
-                aabb_min: [0.0; 3],
-                aabb_max: [0.0; 4],
-                flag: 0,
-            },
-            Msh4Bone {
-                name_hash: pandemic_hash("C"),
-                parent: 0,
-                translation: [0.0; 3],
-                rotation: [0.0, 0.0, 0.0, 1.0],
-                scale: [1.0; 3],
-                aabb_min: [0.0; 3],
-                aabb_max: [0.0; 4],
-                flag: 0,
-            },
-        ];
-        let skel = Msh4Skeleton {
-            bones,
-            remaps: Vec::new(),
-            model_pos: [0.0; 3],
-            model_sphere: [0.0; 4],
-        };
+        let bones = [pandemic_hash("A"), pandemic_hash("B"), pandemic_hash("C")];
         let hashes = vec![
             pandemic_hash("B"),
             0xDEAD_BEEF, // not in skeleton
             pandemic_hash("A"),
             pandemic_hash("C"),
         ];
-        let t2b = resolve_track_to_bone(&hashes, &skel);
+        let t2b = resolve_track_to_bone(&hashes, &bones);
         assert_eq!(t2b, vec![1, -1, 0, 2]);
     }
 }

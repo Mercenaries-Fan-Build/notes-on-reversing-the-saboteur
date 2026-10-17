@@ -21,6 +21,8 @@
 //! * [`megapack`] — outer `.megapack` archive (on-disk magic `00PM`; mounter `FUN_00e428c0`).
 //! * [`sbla`]     — `SBLA`/`ALBS` per-asset sub-pack directory (loader `FUN_00658870`).
 //! * [`dtex`]     — DTEX texture record (validated on 12,559 retail textures).
+//! * [`proto2008`] — the June 2008 Xbox 360 prototype's big-endian containers and assets.
+//! * [`xex`]      — the Xbox 360 `XEX2` executable wrapper (the prototype's `.xex` binaries).
 //!
 //! Each module exposes a pure parser over `&[u8]` plus the structural facts a validator needs.
 
@@ -38,8 +40,10 @@ pub mod map6;
 pub mod megapack;
 pub mod mesh;
 pub mod names;
+pub mod proto2008;
 pub mod sbla;
 pub mod wwise;
+pub mod xex;
 pub mod zlib;
 
 /// Saboteur resource-name hash (`Saboteur.exe FUN_00dc1e20`); see [`hash`].

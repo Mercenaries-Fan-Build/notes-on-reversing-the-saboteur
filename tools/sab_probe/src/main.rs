@@ -967,6 +967,7 @@ mod megapack_layout;
 mod proto2008_binaries;
 mod proto2008_meshes;
 mod proto2008_packs;
+mod proto2008_textures;
 mod texbind;
 
 fn main() {
@@ -1010,6 +1011,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "proto2008-meshes" {
         proto2008_meshes::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-textures" {
+        proto2008_textures::run(&args[2..]);
         return;
     }
     if args.len() > 1 && args[1] == "proto2008-packs" {

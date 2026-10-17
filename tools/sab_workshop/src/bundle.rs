@@ -218,6 +218,65 @@ pub fn run(job: &Job) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
+/// A 2008-prototype mesh record's export, decoded up front so the writer needs no source.
+pub struct Job2008 {
+    pub label: String,
+    /// The record as stored in its pack: a zlib stream, or a raw variant record.
+    pub raw: Vec<u8>,
+    pub raw_file: String,
+    pub mesh: LoadedMesh,
+    pub submeshes: Vec<SubMesh>,
+    /// Decoded textures with their names; `submesh_tex` slots index this.
+    pub textures: Vec<(String, crate::dtex::CpuTexture)>,
+    pub submesh_tex: Vec<SubmeshBinding>,
+    /// What the glTF cannot carry: the record, its pack, each submesh's materials and samplers,
+    /// texture failures.
+    pub manifest: serde_json::Value,
+    pub outroot: PathBuf,
+}
+
+/// Write a 2008 bundle: `raw/` (the stored record, byte-exact), `textures/`, `model.glb` (the same
+/// writer as retail's) and `manifest.json`.
+pub fn run_2008(job: &Job2008) -> Result<String, String> {
+    let dir = job.outroot.join(sanitize(&job.label));
+    std::fs::create_dir_all(dir.join("raw")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir.join("textures")).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("raw").join(&job.raw_file), &job.raw).map_err(|e| e.to_string())?;
+    let mut written = Vec::new();
+    let mut files = Vec::new();
+    for (i, (name, t)) in job.textures.iter().enumerate() {
+        let file = format!("{}.png", sanitize(name));
+        write_png(&dir.join("textures").join(&file), t.width, t.height, &t.rgba)?;
+        files.push(format!("textures/{file}"));
+        written.push(WrittenTex { asset: i, file });
+    }
+    let glb = write_glb(&job.mesh, &job.label, &job.submeshes, &job.submesh_tex, &written);
+    std::fs::write(dir.join("model.glb"), &glb).map_err(|e| e.to_string())?;
+    let mut manifest = serde_json::json!({
+        "generator": "sab_workshop",
+        "bundle_version": 2,
+        "label": job.label,
+        "raw": format!("raw/{}", job.raw_file),
+        "model": "model.glb",
+        "textures": files,
+        "counts": {
+            "vertices": job.mesh.mesh.positions.len(),
+            "triangles": job.mesh.mesh.indices.len() / 3,
+            "bones": job.mesh.bones.len(),
+            "submeshes": job.submeshes.len(),
+            "glb_bytes": glb.len(),
+        },
+    });
+    if let (Some(m), Some(extra)) = (manifest.as_object_mut(), job.manifest.as_object()) {
+        for (k, v) in extra {
+            m.insert(k.clone(), v.clone());
+        }
+    }
+    std::fs::write(dir.join("manifest.json"), serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// The reassembly map. Everything the glTF cannot say, said here.
 fn manifest(
     job: &Job,

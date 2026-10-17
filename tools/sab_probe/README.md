@@ -32,6 +32,8 @@ sab_probe proto2008-meshes   <Bin360>      every meshes record; formats, prims, 
                                            docs/2008_msh4_format.md
 sab_probe proto2008-materials <Bin360>     every materials slot; passes, shaders, constants, states, texture
                                            and primitive-material resolution; docs/2008_materials_format.md
+sab_probe proto2008-shaders <Bin360>       every .shaders file; layouts, variants, constant tables, sampler
+                                           registers vs material texture refs; docs/2008_shaders_format.md
 sab_probe proto2008-textures <Bin360>      every textures record and loose .dds; formats, sRGB, slot words,
                                            mip layout vs unpacked, mips vs base; docs/2008_texture_format.md
 

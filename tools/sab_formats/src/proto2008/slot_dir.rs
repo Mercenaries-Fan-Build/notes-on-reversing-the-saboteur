@@ -29,18 +29,25 @@ pub struct Record {
     pub f14: u32,
 }
 
-/// Read the directory. Each record's `[offset, offset + stored)` must lie inside the slot.
-pub fn parse(slot: &[u8]) -> Result<Vec<Record>, String> {
-    let count = bytes::u32_be(slot, 0, "slot directory count")? as usize;
-    let end = count
+/// The length of a directory (count word and records), from the slot's first 4 bytes.
+pub fn directory_len(head: &[u8]) -> Result<usize, String> {
+    let count = bytes::u32_be(head, 0, "slot directory count")? as usize;
+    count
         .checked_mul(RECORD_LEN)
         .and_then(|n| n.checked_add(4))
-        .ok_or_else(|| format!("slot directory count {count} overflows"))?;
-    bytes::slice(slot, 0, end, &format!("slot directory ({count} records)"))?;
+        .ok_or_else(|| format!("slot directory count {count} overflows"))
+}
+
+/// Read a directory from its bytes (the slot's first [`directory_len`] bytes) for a slot of
+/// `slot_len` bytes. Each record's `[offset, offset + stored)` must lie inside the slot.
+pub fn parse_directory(dir: &[u8], slot_len: usize) -> Result<Vec<Record>, String> {
+    let end = directory_len(dir)?;
+    let count = (end - 4) / RECORD_LEN;
+    bytes::slice(dir, 0, end, &format!("slot directory ({count} records)"))?;
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let p = 4 + i * RECORD_LEN;
-        let w = |k: usize, f: &str| bytes::u32_be(slot, p + 4 * k, f);
+        let w = |k: usize, f: &str| bytes::u32_be(dir, p + 4 * k, f);
         let r = Record {
             hash: w(0, "slot record hash")?,
             offset: w(1, "slot record offset")?,
@@ -49,8 +56,15 @@ pub fn parse(slot: &[u8]) -> Result<Vec<Record>, String> {
             f10: w(4, "slot record f10")?,
             f14: w(5, "slot record f14")?,
         };
-        bytes::slice(slot, r.offset as usize, r.stored as usize, &format!("slot record {i} data"))?;
+        if r.offset as usize + r.stored as usize > slot_len {
+            return Err(format!("slot record {i} data: 0x{:X}+0x{:X} past the 0x{slot_len:X}-byte slot", r.offset, r.stored));
+        }
         out.push(r);
     }
     Ok(out)
+}
+
+/// Read the directory of a whole slot.
+pub fn parse(slot: &[u8]) -> Result<Vec<Record>, String> {
+    parse_directory(slot, slot.len())
 }

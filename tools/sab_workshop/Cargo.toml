@@ -39,6 +39,10 @@ sab_formats = { path = "../sab_formats" }
 # headers / bundles actually touched fault into RAM — the index is the earmark. See src/pack.rs.
 memmap2 = "0.9"
 
+[features]
+# Game-gated tests: they read the install paths from the repo-root `.sab-local.toml`.
+retail = []
+
 [dev-dependencies]
 # Read the cmap of the fonts we ship, so `gui::theme::tests::glyphs_are_covered` can prove every UI
 # symbol is actually drawable. Not a new download: egui already pulls this in via ab_glyph.

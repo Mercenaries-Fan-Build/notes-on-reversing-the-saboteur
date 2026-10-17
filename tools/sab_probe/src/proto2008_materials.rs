@@ -109,6 +109,7 @@ struct Pack {
     materials: Vec<material::Material>,
     textures: HashSet<u32>,
     prim_materials: Vec<u32>,
+    bindings: Vec<mesh::Binding>,
 }
 
 /// What the engine knows about a texture record: format, the sRGB rule, the eviction flag.
@@ -160,7 +161,7 @@ pub fn run(args: &[String]) {
         }
         let sp = sbl::parse(&buf).unwrap_or_else(|e| panic!("{rel}: {e}"));
         let magic = String::from_utf8_lossy(&sp.magic).into_owned();
-        let mut pack = Pack { rel: rel.clone(), magic: magic.clone(), materials: Vec::new(), textures: HashSet::new(), prim_materials: Vec::new() };
+        let mut pack = Pack { rel: rel.clone(), magic: magic.clone(), materials: Vec::new(), textures: HashSet::new(), prim_materials: Vec::new(), bindings: Vec::new() };
         if let Some(slot) = sp.slot(SlotKind::Materials) {
             match material::parse(slot) {
                 Ok(ms) => {
@@ -189,6 +190,7 @@ pub fn run(args: &[String]) {
                 }
                 if let mesh::Record::Variant { bindings, .. } = &rec {
                     pack.prim_materials.extend(bindings.iter().map(|b| b.material));
+                    pack.bindings.extend(bindings.iter().cloned());
                 }
             }
         }
@@ -196,6 +198,7 @@ pub fn run(args: &[String]) {
     }
     let all_materials: HashSet<u32> = packs.iter().flat_map(|p| p.materials.iter().map(|m| m.uid)).collect();
     let all_textures: HashSet<u32> = packs.iter().flat_map(|p| p.textures.iter().copied()).collect();
+    let mut binding_keys: HashMap<u32, HashSet<u32>> = HashMap::new();
     for pack in &packs {
         let at = &pack.rel;
         let local: HashSet<u32> = pack.materials.iter().map(|m| m.uid).collect();
@@ -259,10 +262,29 @@ pub fn run(args: &[String]) {
                 }
             }
         }
+        for b in &pack.bindings {
+            let Some(m) = pack.materials.iter().find(|m| m.uid == b.material) else { continue };
+            let at = format!("{at} '{}' {:08X} key {:08X}", m.name, m.uid, b.key);
+            let order: Vec<String> = b
+                .pairs
+                .iter()
+                .map(|&(ps, vs)| match m.passes.iter().position(|p| (p.pixel_shader, p.vertex_shader) == (ps, vs)) {
+                    Some(i) => pass_label(m.passes[i].name),
+                    None => "no pass".into(),
+                })
+                .collect();
+            t.note(format!("variant binding pairs are (ps, vs) of passes, in order: {}", order.join(", ")), &at);
+            t.note(format!("variant binding pair count {} pass count", if b.pairs.len() == m.passes.len() { "==" } else { "!=" }), &at);
+            let keys = binding_keys.entry(b.material).or_default();
+            keys.insert(b.key);
+        }
         for &pm in &pack.prim_materials {
             let where_ = if local.contains(&pm) { "this pack" } else if all_materials.contains(&pm) { "another pack only" } else { "no pack" };
             t.note(format!("mesh primitive material names a material in {where_} ({})", pack.magic), &format!("{at} {}", hash_label(pm)));
         }
+    }
+    for (uid, keys) in &binding_keys {
+        t.note(format!("variant binding keys per material uid: {}", keys.len()), &format!("{uid:08X}"));
     }
     let shaders: HashSet<u32> = packs.iter().flat_map(|p| p.materials.iter()).flat_map(|m| m.passes.iter()).flat_map(|p| [p.vertex_shader, p.pixel_shader]).filter(|&h| h != 0).collect();
     let named = shaders.iter().filter(|&&h| names::name(h).is_some()).count();

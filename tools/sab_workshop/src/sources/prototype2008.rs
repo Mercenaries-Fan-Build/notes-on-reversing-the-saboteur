@@ -1,1418 +1,887 @@
-//! Pre-release 2008-05 Xbox 360 build. Loose per-object assets under `Bin360/<Region>/`, keyed
-//! by hash inside per-block `<n>.Pack` files, with `.packlog` plain-text manifests mapping every
-//! hash to a friendly name.
+//! The 2008-05 Xbox 360 prototype (`Bin360/`) as a [`GameSource`]: the meshes, textures and
+//! materials of every loose `SBL*` sub-pack, read through `sab_formats::proto2008`, and the loose
+//! `.dds` files. Formats and evidence: `docs/2008_subpack_format.md`, `docs/2008_msh4_format.md`,
+//! `docs/2008_texture_format.md`, `docs/2008_materials_format.md`.
 //!
-//! **What works today** (this initial impl):
-//! - Fingerprint the folder + open it (via `source::detect_version` upstream).
-//! - Parse all `.packlog` manifests into a global hash→friendly-name inventory. This is the
-//!   single biggest immediate win — it names every packed object in the build (and, because
-//!   the hash scheme is identical to retail's `pandemic_hash`, names retail assets too).
-//! - Enumerate mesh handles from the inventory.
-//! - **Materials**: walk every `<hash>.materials` slot at open time, parse the WSAO/MTLD
-//!   stream in each one, and build a global `material_uid → [d,s,n,wm]` lookup. See
-//!   `prototype2008_material.rs` for the on-disk shape. Only slots that land on raw WSAO
-//!   are indexed today — the rest are SBL4-container-wrapped (probe #1's territory) and
-//!   counted in the fingerprint so the count-vs-total is visible.
+//! Opening indexes headers only, over memory-mapped packs: sub-pack directories, slot directories,
+//! texture headers, mesh names (`mesh::record_name` on a `mesh::NAME_PREFIX` prefix) and the
+//! `materials` slots. Every pack of the build parses (the `sab_formats` game gate), so a pack that
+//! does not fails the open with its path: that copy of the build is damaged.
 //!
-//! **What's stubbed** (returns explicit errors — the app can still open the source and browse):
-//! - Reading mesh bytes: the 2008 sub-pack magic is `SBL4` (retail is `ALBS`/`SBLA`). Same
-//!   family, different version tag — probably a small variant of `dtex::find_records` / the
-//!   ALBS reader will decode it, but that needs a targeted probe against a real `.Pack` first.
-//! - Textures: loose `.dds` on disk + `<hash>.textures` slots inside `.Pack`. Xbox 360 tiling
-//!   is likely on-disk; the existing BC1/BC3 block decoders in `dtex.rs` can be reused after
-//!   un-tiling.
-//!
-//! The stubs return `Err("prototype 2008: <what and why>")` so the UI can display the reason
-//! rather than looking silently broken. Each stub gets replaced by a real reader as we probe
-//! formats — one at a time, driven by what a user actually clicks on.
+//! `MP00` archives are not indexed: every entry is a byte copy of a loose file. `Animations.pack`
+//! (`AP04`) belongs to the animation catalog.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::dds;
+use glam::{Mat3, Mat4, Quat, Vec3};
+use memmap2::Mmap;
+use sab_formats::proto2008::material::{self, Material};
+use sab_formats::proto2008::sbl::{self, SlotKind};
+use sab_formats::proto2008::{mesh, slot_dir, texture};
+use sab_formats::{dds, names, pandemic_hash, pixels, zlib};
+
 use crate::dtex::CpuTexture;
-use sab_formats::pandemic_hash;
+use crate::formats::{Bone, Prim, Smsh};
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
-use crate::sources::prototype2008_anim::{Anim2008Catalog, Clip2008};
-use crate::sources::prototype2008_material::MaterialIndex;
-use crate::sources::prototype2008_subpack::SubPack;
+use crate::sources::prototype2008_anim::Anim2008Catalog;
 
-pub struct Prototype2008Source {
-    /// The `Bin360` directory itself (not its parent).
-    bin360: PathBuf,
-    fingerprint: SourceFingerprint,
+/// A texture handle's key: the texture hash for a slot texture; this bit plus an index for a loose
+/// `.dds` file.
+const LOOSE_DDS_KEY: u64 = 1 << 32;
 
-    /// Hash → friendly name, populated from every `.packlog` we found. Global inventory.
-    hash_names: HashMap<u32, String>,
-    /// One handle per mesh entry mined from the packlogs (`<hash>.meshes` lines).
-    mesh_index: Vec<PackedRef>,
-    /// Same for textures (`<hash>.textures`).
-    tex_index: Vec<PackedRef>,
-    /// Same for materials (`<hash>.materials`).
-    mat_index: Vec<PackedRef>,
-    /// Loose `.dds` files under Bin360/, keyed by `pandemic_hash(stem)`. Populated at `open()`
-    /// so `load_texture(hash)` is a cheap lookup — the actual bytes and RGBA are only touched
-    /// on demand. Multiple DDS files can share a name (Branches/*/DiffuseCube.dds mirrors the
-    /// root one), so we keep the FIRST match at the shallowest depth (root wins over branches).
-    loose_dds: HashMap<u32, LooseDds>,
-    /// Per-sub-texture inventory mined from every `<hash>.textures` slot's inner directory
-    /// (see `parse_texslot`). Key is `pandemic_hash(sub_name)` — the game's own lookup — so
-    /// a material's `[d,s,n,wm]` slot vector round-trips here without a name resolution step.
-    slot_textures: HashMap<u32, SlotTex>,
-    /// Decoded-texture cache — repeated preview / material-slot lookups don't re-decode.
-    tex_cache: Mutex<HashMap<u32, CpuTexture>>,
-    /// Global `material_uid → [d,s,n,wm]` lookup, populated from every readable
-    /// `<hash>.materials` slot at open time. What `textures_for_material` consults.
-    materials: MaterialIndex,
-    /// Every loose `.hkx` + every `Animations.pack` record enumerated at open time. The
-    /// browser's Nav Anims tab walks `.handles()`; `load_clip(hash)` fetches by key. See
-    /// `prototype2008_anim.rs` for why the pack rows are anonymous today (outer-header
-    /// layout only partially reversed) and why they're still worth showing (the count and
-    /// codec breakdown match the pack's declared 1605-record table exactly).
-    anim_catalog: Anim2008Catalog,
+/// One loose `SBL*` pack.
+struct Pack {
+    path: PathBuf,
+    /// Path relative to `Bin360`, `/`-separated.
+    rel: String,
+    magic: [u8; 4],
+    materials: Vec<Material>,
 }
 
-#[derive(Clone, Debug)]
-struct LooseDds {
-    /// Filename stem, used as the friendly name.
+/// One `meshes` slot record.
+struct MeshRef {
+    pack: usize,
+    /// The stored record's byte range in the pack file.
+    offset: usize,
+    stored: usize,
+    unpacked: usize,
     name: String,
-    /// Absolute path on disk. Rustc's dead-code pass mis-flags this on release builds — it IS
-    /// read by `load_texture` for `std::fs::read(&entry.path)`. `#[allow]` at the field keeps
-    /// the compiler quiet without silencing warnings on the wider module.
-    #[allow(dead_code)]
+    hash: u32,
+}
+
+/// One `textures` slot record.
+#[derive(Clone)]
+struct TexRef {
+    pack: usize,
+    offset: usize,
+    stored: usize,
+    header: texture::Header,
+    /// Slot record `+0x14`: `UnloadNormalMaps` may evict the texture.
+    evictable: bool,
+}
+
+/// One loose `.dds` file.
+struct LooseDds {
+    name: String,
+    rel: String,
     path: PathBuf,
 }
 
-/// One texture living inside a `<hash>.textures` slot. Enough info to name it in the browser
-/// and to eventually extract + decode the pixel bytes once the Xbox 360 texture-format probe
-/// (the `1A 20 01 xx` code + XGI tiling) lands.
-#[derive(Clone, Debug)]
-struct SlotTex {
-    /// Plaintext name, from the payload's `BE u32 name_len + ascii name` header.
-    name: String,
-    /// Dimensions, from the header two u16-BE past the format tag.
-    width: u16,
-    height: u16,
-    /// Four bytes of format tag — Xbox 360 XGI format code (still under investigation, hence
-    /// stored raw for later decoding). Example: `1A 20 01 52`.
-    format_tag: [u8; 4],
-    /// The `.Pack` file the slot lives in. Where `load_texture` seeks to on demand.
-    pack_file: PathBuf,
-    /// Byte range within the `.Pack` file of the WHOLE `.textures` slot (i.e. the SubPack
-    /// record's slot bytes). Extraction reopens the file, parses the inner directory, and
-    /// finds THIS sub-texture by its offset into the slot.
-    #[allow(dead_code)]
-    slot_off: u64,
-    #[allow(dead_code)]
-    slot_len: u64,
-    /// Byte range of this sub-texture's PAYLOAD within the slot (relative to slot start).
-    /// `data_off` points at the `name_len` u32; the format bytes + pixels follow.
-    #[allow(dead_code)]
-    data_off: u32,
-    #[allow(dead_code)]
-    data_size: u32,
+/// What the engine knows about a texture that bears on its role (`docs/2008_materials_format.md`,
+/// "Texture kinds per sampler").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextureKind {
+    /// Sampled as sRGB.
+    Colour,
+    /// DXN, or evictable by `UnloadNormalMaps`: every such texture is normal-map-named.
+    Normal,
+    /// Any other linear texture — specular, mask, emissive or detail; the data does not say which.
+    Linear,
 }
 
-/// One line out of a `.packlog`: pointer to a slot inside a specific `.Pack` file.
+impl TexRef {
+    fn kind(&self) -> TextureKind {
+        if self.header.format & !texture::GAMMA_SIGNS == texture::DXN || self.evictable {
+            TextureKind::Normal
+        } else if self.header.srgb() {
+            TextureKind::Colour
+        } else {
+            TextureKind::Linear
+        }
+    }
+}
+
+/// A material's `Color-Pass` textures, as the workshop shows and binds them.
 #[derive(Clone, Debug)]
-struct PackedRef {
-    /// The friendly file-part-of-path from the packlog (e.g.
-    /// `Global\979087517.textures`). Named separately from `name` because the friendly name is
-    /// often derived from a different source.
-    slot_path: String,
-    /// The hash the game itself uses to look this up (parsed from the filename).
-    hash: u32,
-    /// The `.Pack` file this slot lives in, absolute-ish (relative to bin360 root).
-    pack_file: PathBuf,
-    /// The packlog's claimed slot start. NOT the on-disk position — the packer reorders
-    /// slots on write, so trusting this to seek inside a `.Pack` reads bytes from the
-    /// wrong region (see `docs/2008_subpack_format.md`). Kept only so texture / material
-    /// probes can compare vs the authoritative SBL4 offset when they land.
-    #[allow(dead_code)]
-    start: u64,
-    /// Packlog's declared slot size — same caveat as `start`. Close to but not equal to
-    /// the SBL4 record's `size` (the packer adds per-slot wrappers).
-    #[allow(dead_code)]
-    size: u64,
+pub struct MaterialView {
+    pub uid: u32,
+    pub name: String,
+    /// The pack the material record is in.
+    pub pack: String,
+    /// `Color-Pass` samplers in order: texture hash and kind (`None` when no pack holds it).
+    pub samplers: Vec<(u32, Option<TextureKind>)>,
+    /// `Color-Pass` sampler 0.
+    pub colour: Option<u32>,
+    /// The first `Color-Pass` texture of kind [`TextureKind::Normal`].
+    pub normal: Option<u32>,
+}
+
+/// A mesh record converted for the renderer: geometry in bind space with global bone indices, its
+/// rig, and the materials its primitives name.
+pub struct LoadedMesh {
+    pub name: String,
+    pub smsh: Smsh,
+    pub rig: Vec<Bone>,
+    pub materials: HashMap<u32, MaterialView>,
+    /// Index ranges `(start, count)` of primitives whose stream has no texture coordinates.
+    pub uvless: Vec<(u32, u32)>,
+    /// The pack the record is in, for texture lookups that prefer it.
+    pack: usize,
+}
+
+pub struct Prototype2008Source {
+    bin360: PathBuf,
+    fingerprint: SourceFingerprint,
+    packs: Vec<Pack>,
+    meshes: Vec<MeshRef>,
+    /// Texture hash -> every record with that hash, in pack order.
+    textures: HashMap<u32, Vec<TexRef>>,
+    loose_dds: Vec<LooseDds>,
+    tex_cache: Mutex<HashMap<u64, CpuTexture>>,
+    anim_catalog: Anim2008Catalog,
+}
+
+fn files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let p = e.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if p.is_dir() {
+            files(&p, out)?;
+        } else {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+fn has_ext(p: &Path, ext: &str) -> bool {
+    p.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case(ext)) == Some(true)
+}
+
+fn map(path: &Path) -> Result<Mmap, String> {
+    let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // SAFETY: the file is opened read-only and the build's files are not modified while mapped.
+    unsafe { Mmap::map(&f) }.map_err(|e| format!("{}: mmap: {e}", path.display()))
 }
 
 impl Prototype2008Source {
-    /// Read a 2008-build mesh handle straight into the retail `Smsh` shape the wgpu renderer
-    /// already accepts. Path: pack → `SubPack` → `.meshes` slot → mini-directory → inflate
-    /// first zlib stream → `MSH4` body → `parse_msh4` → `to_smsh`. Framing is proven; the
-    /// multi-stream VB/IB inside the payload is one decoder short (see `prototype2008_mesh`),
-    /// so today the returned `Smsh` has empty geometry vectors — the renderer draws nothing
-    /// rather than crashing.
-    pub fn read_mesh_smsh(&self, handle: &AssetHandle) -> Result<crate::formats::Smsh, String> {
-        let body = self.read_mesh_body(handle)?;
-        Ok(crate::sources::prototype2008_mesh::to_smsh(&body))
-    }
-
-    /// Read the full parsed `Msh4Body` — geometry + skeleton + diagnostics — so callers that
-    /// need more than the retail-shaped `Smsh` (renderer wiring that wants real bones, tests
-    /// asserting stream shape) can consume it directly. `read_mesh_smsh` delegates through
-    /// this, so any decode change reaches both paths.
-    pub fn read_mesh_body(
-        &self,
-        handle: &AssetHandle,
-    ) -> Result<crate::sources::prototype2008_mesh::Msh4Body, String> {
-        let slot = <Self as GameSource>::read_mesh_bytes(self, handle)?;
-        let raw = crate::sources::prototype2008_mesh::inflate_first_msh4_stream(&slot)?;
-        crate::sources::prototype2008_mesh::parse_msh4(&raw)
-    }
-
     pub fn open(root: &Path) -> Result<Self, String> {
-        // The caller might have handed us the extract's outer folder (which contains Bin360/) or the
-        // Bin360 contents themselves under any name. Same rule as `detect_version`.
         let bin360 = sab_formats::game_paths::proto2008_bin360(root).ok_or_else(|| {
-            format!(
-                "{} is not the 2008 build: it neither contains a `Bin360/` directory nor holds \
-                 `Saboteur.xex` itself",
-                root.display()
-            )
+            format!("{} is not the 2008 build: it neither contains a `Bin360/` directory nor holds `Saboteur.xex` itself", root.display())
         })?;
-
         let mut fingerprint = SourceFingerprint::default();
         fingerprint.matched(format!("Bin360 root: {}", bin360.display()));
-
-        // Mine every .packlog under Bin360/ into a global hash→name map + per-kind slot indexes.
-        let packlogs = find_packlogs(&bin360);
-        fingerprint.matched(format!("{} .packlog manifests found", packlogs.len()));
-        if packlogs.is_empty() {
-            fingerprint.warn(
-                "no .packlog manifests found — the hash→name inventory will be empty and \
-                 asset names will show as raw hashes",
-            );
-        }
-
-        let mut hash_names = HashMap::new();
-        let mut mesh_index = Vec::new();
-        let mut tex_index = Vec::new();
-        let mut mat_index = Vec::new();
-        let mut phys_count = 0usize;
-        let mut parse_errs = 0usize;
-
-        for pl in &packlogs {
-            // The BLOCK is named by the .Packlog's own filename stem, and every entry inside is
-            // that block's per-type slot (`<block_hash>.textures`, `<block_hash>.meshes`, …)
-            // all sharing ONE hash which is `pandemic_hash(block_name)`. So the name inventory
-            // keys on the block hash, not per-entry.
-            let stem = pl
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            match parse_packlog(pl, &bin360) {
-                Ok(entries) => {
-                    // Chunk splits (`Barge0.Packlog` + `Barge1.Packlog` etc.) both record the
-                    // SAME block hash keyed on the base name (`Barge`, no trailing digit) — see
-                    // `docs/2008_namespace_prefix.md`. If the raw stem's pandemic_hash matches
-                    // the block hash, use it as-is; otherwise strip trailing ASCII digits and
-                    // try again. Falls back to the raw stem when neither matches (so a genuine
-                    // hash-scheme mismatch still keeps the packlog stem in the inventory).
-                    let block_hash = entries.first().map(|e| e.hash).unwrap_or(0);
-                    let block_name = if !stem.is_empty() && pandemic_hash(&stem) == block_hash {
-                        stem.clone()
-                    } else {
-                        let trimmed = stem.trim_end_matches(|c: char| c.is_ascii_digit());
-                        if !trimmed.is_empty() && pandemic_hash(trimmed) == block_hash {
-                            trimmed.to_string()
-                        } else {
-                            stem.clone()
-                        }
-                    };
-                    for e in entries {
-                        if !block_name.is_empty() {
-                            hash_names.entry(e.hash).or_insert_with(|| block_name.clone());
-                        }
-                        let bucket = std::path::Path::new(&e.slot_path)
-                            .extension()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("");
-                        match bucket {
-                            "meshes" => mesh_index.push(e),
-                            "textures" => tex_index.push(e),
-                            "materials" => mat_index.push(e),
-                            "physics" => phys_count += 1,
-                            _ => {}
+        let mut all = Vec::new();
+        files(&bin360, &mut all)?;
+        all.sort();
+        let mut packs = Vec::new();
+        let mut meshes = Vec::new();
+        let mut textures: HashMap<u32, Vec<TexRef>> = HashMap::new();
+        let mut loose_dds = Vec::new();
+        let (mut empty, mut mega, mut anim_packs) = (0usize, 0usize, 0usize);
+        for p in &all {
+            let rel = p.strip_prefix(&bin360).expect("under Bin360").to_string_lossy().replace('\\', "/");
+            if has_ext(p, "dds") {
+                let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+                loose_dds.push(LooseDds { name, rel, path: p.clone() });
+                continue;
+            }
+            if !has_ext(p, "pack") {
+                continue;
+            }
+            let m = map(p)?;
+            if m.len() < 4 {
+                empty += 1;
+                continue;
+            }
+            match &m[..4] {
+                b"MP00" => {
+                    mega += 1;
+                    continue;
+                }
+                b"AP04" => {
+                    anim_packs += 1;
+                    continue;
+                }
+                head if head.starts_with(b"SBL") => {}
+                head => return Err(format!("{rel}: a .pack with magic {head:02X?}, which is none of SBL*, MP00, AP04")),
+            }
+            let damaged = |e: String| format!("{rel}: {e} — every pack of the 2008 build parses, so this copy is damaged");
+            let sp = sbl::parse(&m).map_err(damaged)?;
+            let pack = packs.len();
+            let mats = match sp.slot(SlotKind::Materials) {
+                Some(slot) => material::parse(slot).map_err(damaged)?,
+                None => Vec::new(),
+            };
+            for (r, slot) in sp.records.iter().zip(&sp.slots) {
+                match r.kind {
+                    SlotKind::Textures => {
+                        for t in slot_dir::parse(slot).map_err(damaged)?.into_iter().filter(|t| t.stored != 0) {
+                            let rec = &slot[t.offset as usize..(t.offset + t.stored) as usize];
+                            let header = texture::parse_header(&rec[..rec.len().min(texture::MAX_HEADER)]).map_err(damaged)?;
+                            if pandemic_hash(&header.name) != t.hash {
+                                return Err(damaged(format!("texture record {:08X} holds '{}'", t.hash, header.name)));
+                            }
+                            textures.entry(t.hash).or_default().push(TexRef {
+                                pack,
+                                offset: r.offset as usize + t.offset as usize,
+                                stored: t.stored as usize,
+                                header,
+                                evictable: t.f14 != 0,
+                            });
                         }
                     }
+                    SlotKind::Meshes => {
+                        for t in slot_dir::parse(slot).map_err(damaged)?.into_iter().filter(|t| t.stored != 0) {
+                            let rec = &slot[t.offset as usize..(t.offset + t.stored) as usize];
+                            let compressed = t.stored < t.unpacked;
+                            let prefix = if compressed { &rec[..rec.len().min(mesh::NAME_PREFIX)] } else { rec };
+                            let name = mesh::record_name(prefix, compressed).map_err(damaged)?;
+                            meshes.push(MeshRef {
+                                pack,
+                                offset: r.offset as usize + t.offset as usize,
+                                stored: t.stored as usize,
+                                unpacked: t.unpacked as usize,
+                                name,
+                                hash: t.hash,
+                            });
+                        }
+                    }
+                    _ => {}
                 }
-                Err(_) => parse_errs += 1,
             }
+            packs.push(Pack { path: p.clone(), rel, magic: sp.magic, materials: mats });
         }
-
+        let n_textures: usize = textures.values().map(Vec::len).sum();
+        let n_materials: usize = packs.iter().map(|p| p.materials.len()).sum();
         fingerprint.matched(format!(
-            "packlog inventory: {} meshes, {} textures, {} materials, {} physics",
-            mesh_index.len(),
-            tex_index.len(),
-            mat_index.len(),
-            phys_count,
+            "{} SBL packs: {} mesh records, {n_textures} texture records ({} distinct), {n_materials} materials",
+            packs.len(),
+            meshes.len(),
+            textures.len()
         ));
-        if parse_errs > 0 {
-            fingerprint.warn(format!("{parse_errs} .packlog files could not be parsed"));
-        }
-        fingerprint
-            .matched(format!("global hash→name inventory: {} entries", hash_names.len()));
-
-        // NOTE: the material walk that probe #3 landed here was rewritten in the merge below to
-        // read via `SubPack::read_slot` (probe #1) — see the block just before `Ok(Self { … })`.
-        // Keeping the sanity check + Ok(Self) here; the actual walk is deferred until after the
-        // loose-DDS sweep so all fingerprint entries land in a consistent order.
-
-        // Sanity: pandemic_hash(block_name) should reproduce the block's on-disk hash. If it
-        // does, the 2008 hash namespace is IDENTICAL to retail — every packlog stem is a
-        // ready-made hash→name entry, and both builds' asset lookups round-trip. If not, we
-        // shouldn't assume the two namespaces share.
-        let mut cross_hash_matches = 0usize;
-        let mut cross_hash_checked = 0usize;
-        for (h, name) in hash_names.iter().take(200) {
-            cross_hash_checked += 1;
-            if pandemic_hash(name) == *h {
-                cross_hash_matches += 1;
-            }
-        }
-        if cross_hash_matches == cross_hash_checked && cross_hash_matches > 0 {
-            fingerprint.matched(format!(
-                "hash scheme confirmed IDENTICAL to retail: pandemic_hash matches all \
-                 {cross_hash_matches}/{cross_hash_checked} sampled block names"
-            ));
-        } else if cross_hash_matches > 0 {
-            fingerprint.warn(format!(
-                "hash scheme PARTIALLY matches retail: {cross_hash_matches}/{cross_hash_checked} \
-                 block names hash correctly — some entries may use a different scheme"
-            ));
-        } else {
-            fingerprint.warn(
-                "pandemic_hash did not reproduce any sampled block hashes — the 2008 build may \
-                 use a different hash scheme than retail",
-            );
-        }
-
-        // Sweep the Bin360 tree for loose `.dds` files. Empirically these are standard PC-style
-        // DDS (linear, LE DXT blocks) — see docs/2008_texture_format.md. Every one is keyed by
-        // `pandemic_hash(stem)` so any consumer that has a texture hash (from a packlog entry
-        // whose stem is a friendly-name, or from a material record) can resolve it here without
-        // caring where on disk it lives. Root-level files win over Branches/* twins because the
-        // shallower path is the canonical asset (Branches/ are per-team snapshots).
-        let mut loose_dds: HashMap<u32, LooseDds> = HashMap::new();
-        let mut loose_dds_by_depth: HashMap<u32, usize> = HashMap::new();
-        let mut loose_dds_count = 0usize;
-        walk_loose_dds(&bin360, &bin360, &mut |path, name, depth| {
-            let h = pandemic_hash(&name);
-            let keep = match loose_dds_by_depth.get(&h) {
-                Some(&prev) => depth < prev,
-                None => true,
-            };
-            if keep {
-                loose_dds.insert(h, LooseDds { name: name.clone(), path: path.to_path_buf() });
-                loose_dds_by_depth.insert(h, depth);
-                // Bonus name-inventory entry — a texture whose only appearance is a loose file
-                // still gets a plaintext name we can show in the browser.
-                hash_names.entry(h).or_insert(name);
-            }
-            loose_dds_count += 1;
-        });
+        fingerprint.matched(format!("{} loose .dds files", loose_dds.len()));
         fingerprint.matched(format!(
-            "{loose_dds_count} loose .dds files ({} unique hashes)",
-            loose_dds.len()
+            "not indexed: {mega} MP00 archives (byte copies of loose files), {anim_packs} AP04 animation pack, {empty} empty .pack files"
         ));
-
-        // Walk every `.materials` slot at open time and build the global material→slot-vector
-        // lookup. Reads go through the SBL-family sub-pack directory (all seven of
-        // SBL0/SBL4/SBL5/SBL6/SBL8/SBLL/SBLX share the same 8-byte header + 24-byte record +
-        // contiguous BE data layout — the 4-byte magic suffix is a family tag, not a format
-        // switch; see `docs/2008_subpack_variants.md`). Its offsets are authoritative; the
-        // earlier packlog-driven read landed in the wrong region for every non-first slot on
-        // disk. Genuinely-out-of-family packs (empty placeholders, MP00 mega-streamblocks,
-        // AP04 Animations.pack — none of which are sub-packs at all) are counted separately.
-        let mut materials = MaterialIndex::new();
-        let mut read_errs = 0usize;
-        let mut non_family = 0usize;
-        let mut by_magic: HashMap<[u8; 4], usize> = HashMap::new();
-        // Iterate unique pack files — every packlog entry for the same block points at the same
-        // .Pack, and one .Pack has at most one `.materials` slot. Deduping keeps us from
-        // re-opening + re-parsing the same file per mat_index entry.
-        let mut seen_packs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        for e in &mat_index {
-            if !seen_packs.insert(e.pack_file.clone()) {
-                continue;
-            }
-            let buf = match std::fs::read(&e.pack_file) {
-                Ok(b) => b,
-                Err(_) => { read_errs += 1; continue }
-            };
-            let sbl = match SubPack::parse(&buf) {
-                Ok(s) => s,
-                Err(_) => { non_family += 1; continue }
-            };
-            *by_magic.entry(sbl.magic).or_insert(0) += 1;
-            let Some(rec) = sbl.find("materials") else { continue };
-            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
-            materials.ingest_slot(slot);
-        }
-        fingerprint.matched(format!(
-            "material bindings: {} materials indexed from {}/{} readable .materials slots \
-             (non-family .Pack files skipped: {}; read errors: {})",
-            materials.materials_indexed,
-            materials.slots_ok,
-            materials.slots_read,
-            non_family,
-            read_errs,
-        ));
-        // Per-magic split of what actually opened — distinguishes a "SBL4-only reader regressed"
-        // failure from a "genuine non-family file" outcome. Two very different problems.
-        if !by_magic.is_empty() {
-            let mut parts: Vec<(String, usize)> = by_magic
-                .iter()
-                .map(|(m, n)| (String::from_utf8_lossy(m).into_owned(), *n))
-                .collect();
-            parts.sort_by(|a, b| b.1.cmp(&a.1));
-            let list = parts.iter().map(|(m, n)| format!("{m}={n}")).collect::<Vec<_>>().join(", ");
-            fingerprint.matched(format!("sub-pack magics: [{list}]"));
-        }
-        if non_family > 0 {
-            fingerprint.warn(format!(
-                "{non_family} .Pack files are not sub-pack containers at all \
-                 (empty placeholders / MP00 mega-streamblocks / AP04 Animations.pack)"
-            ));
-        }
-        // Fold material NAMES into the global hash→name map — packlogs don't name materials
-        // themselves (only the blocks that contain them), and the picker's Material handles
-        // want the plaintext, not the raw hash.
-        for (uid, name) in &materials.name_by_uid {
-            hash_names.entry(*uid).or_insert_with(|| name.clone());
-        }
-
-        // Walk every `<hash>.textures` slot and mine its inner directory into a per-sub-texture
-        // inventory. Each slot's inner layout is `BE u32 count + N × 24-byte records + payloads`;
-        // each payload starts with `BE u32 name_len + ascii name + 4B format tag + u16 width +
-        // u16 height + …`. We index by `pandemic_hash(name)` so a material's `[d,s,n,wm]` slot
-        // vector round-trips here without a second name lookup. Format tag + pixel bytes stay
-        // where they are — decoding waits on the XGI format-code + Xbox 360 tiling probe.
-        let mut slot_textures: HashMap<u32, SlotTex> = HashMap::new();
-        let mut slot_tex_read = 0usize;
-        seen_packs.clear();
-        for e in &tex_index {
-            if !seen_packs.insert(e.pack_file.clone()) {
-                continue;
-            }
-            let Ok(buf) = std::fs::read(&e.pack_file) else { continue };
-            let Ok(sbl) = SubPack::parse(&buf) else { continue };
-            let Some(rec) = sbl.find("textures") else { continue };
-            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
-            // slot bytes lie at (rec.offset .. rec.offset + rec.size) in the file — keep those
-            // absolute so `load_texture` can re-open + re-seek without redoing SubPack parse.
-            let slot_off = rec.offset as u64;
-            let slot_len = rec.size as u64;
-            for sub in parse_texslot(slot) {
-                let h = pandemic_hash(&sub.name);
-                hash_names.entry(h).or_insert_with(|| sub.name.clone());
-                slot_textures.entry(h).or_insert(SlotTex {
-                    name: sub.name,
-                    width: sub.width,
-                    height: sub.height,
-                    format_tag: sub.format_tag,
-                    pack_file: e.pack_file.clone(),
-                    slot_off,
-                    slot_len,
-                    data_off: sub.data_off,
-                    data_size: sub.data_size,
-                });
-                slot_tex_read += 1;
-            }
-        }
-        fingerprint.matched(format!(
-            "slot textures: {} unique sub-textures across {} .textures slots",
-            slot_textures.len(),
-            slot_tex_read
-        ));
-
-        // Enumerate the animation catalog last — it's cheap (header-only reads over the
-        // loose tree + a byte-scan of the pack), and produces an immediately visible win
-        // for the Nav Anims tab. See `prototype2008_anim.rs` for the format spec and the
-        // reason we don't have a spline-anim-style per-frame decoder for this build yet
-        // (the 2008 clips are Pandemic-custom ANM0*0 records, not Havok packfiles — the
-        // magic `57 E0 E0 57` and every `hka*` classname is absent from the pack).
         let anim_catalog = Anim2008Catalog::open(&bin360);
         fingerprint.matched(format!(
-            "animations: {} clips ({} loose + {} pack) — {}·WAV0 {}·DEL0 {}·NOC0",
+            "animations: {} clips ({} loose + {} pack)",
             anim_catalog.clips.len(),
             anim_catalog.loose_count,
-            anim_catalog.pack_count,
-            anim_catalog.codec_counts[0],
-            anim_catalog.codec_counts[1],
-            anim_catalog.codec_counts[2],
+            anim_catalog.pack_count
         ));
-        if anim_catalog.pack_path.is_none() {
-            fingerprint.warn(
-                "no Animations.pack found — the loose animations/ tree still provides the \
-                 named clip catalog, but the pack's 1605 curated records are absent",
-            );
-        }
-        // Fold the loose animation names into the global hash→name inventory. Every named
-        // loose clip contributes one entry, keyed by pandemic_hash(stem) — the same
-        // namespace as retail's asset lookups, so a hash pulled from any FSM/AI/AnimBank
-        // reference round-trips to a friendly name here.
-        for c in &anim_catalog.clips {
-            if !c.name.is_empty() {
-                hash_names.entry(c.hash).or_insert_with(|| c.name.clone());
-            }
-        }
-
         Ok(Self {
             bin360,
             fingerprint,
-            hash_names,
-            mesh_index,
-            tex_index,
-            mat_index,
+            packs,
+            meshes,
+            textures,
             loose_dds,
-            slot_textures,
             tex_cache: Mutex::new(HashMap::new()),
-            materials,
             anim_catalog,
         })
     }
 
-    /// Load one clip by its handle key (pandemic_hash of the loose stem, or the synthetic
-    /// offset-based key for pack-only anonymous records). Exposed on the concrete type so
-    /// the app's future "play this 2008 clip" path can reach it without going through the
-    /// version-agnostic trait; the trait doesn't expose a Clip payload yet because retail
-    /// and 2008 return different structs (retail's `SplineAnim` vs the 2008 `Clip2008`).
-    pub fn load_2008_clip(&self, key: u32) -> Result<Clip2008, String> {
-        self.anim_catalog.load_clip(key)
+    /// The pack (relative to `Bin360`) a mesh handle's record is in.
+    pub fn mesh_pack(&self, handle: &AssetHandle) -> Result<&str, String> {
+        Ok(&self.packs[self.mesh_ref(handle)?.pack].rel)
     }
 
-    /// Read-only accessor for the concrete anim catalog. Used by tests + the app's Nav
-    /// Anims tab detail card (codec breakdown + duration histogram).
-    pub fn anim_catalog(&self) -> &Anim2008Catalog { &self.anim_catalog }
-
-    /// Resolve a 24-bit material hash pulled from an MSH4 prim to a full u32 uid.
-    ///
-    /// MSH4 prims store the drawcall material as a 24-bit truncated pandemic_hash (see
-    /// `prototype2008_mesh` module docs); the MTLD `uid` on disk is the full 32-bit value.
-    /// The trait's `textures_for_material` takes the full u32, so we need to walk the index
-    /// looking for a uid whose top or bottom 24 bits match this stub — the truncation side
-    /// isn't documented anywhere in the sources we have, so we accept either. On a match the
-    /// full uid is returned; caller can feed it to `textures_for_material`.
-    ///
-    /// Cost is linear in the material count on cache miss (~860 comparisons); called once per
-    /// submesh on mesh load, never per frame, so no lookup table is warranted.
-    pub fn resolve_material_hash_24(&self, hash24: u32) -> Option<u32> {
-        // Fast path: someone handed us a full u32 that happened to be low-24. Direct hit
-        // covers the case where a caller pre-widened by zero-extension.
-        if self.materials.by_uid.contains_key(&hash24) {
-            return Some(hash24);
+    fn mesh_ref(&self, handle: &AssetHandle) -> Result<&MeshRef, String> {
+        if handle.kind != AssetKind::Mesh {
+            return Err(format!("handle {:?} '{}' is not a mesh", handle.kind, handle.name));
         }
-        // Try both truncation conventions. In sample material `0x0373DF9E`, the high 24 are
-        // `0x0373DF` and low 24 are `0x73DF9E`; MSH4 gives us one of those. First match wins;
-        // a mesh with an alias-only reference falls off both branches and returns None.
-        for &uid in self.materials.by_uid.keys() {
-            if (uid >> 8) == hash24 || (uid & 0x00FF_FFFF) == hash24 {
-                return Some(uid);
+        self.meshes.get(handle.key as usize).ok_or_else(|| format!("mesh handle {} out of range", handle.key))
+    }
+
+    /// The parsed record of a mesh handle.
+    pub fn read_mesh_record(&self, handle: &AssetHandle) -> Result<mesh::Record, String> {
+        let r = self.mesh_ref(handle)?;
+        let pack = &self.packs[r.pack];
+        let m = map(&pack.path)?;
+        let stored = &m[r.offset..r.offset + r.stored];
+        let body = if r.stored < r.unpacked { zlib::inflate_exact(stored, r.unpacked, &r.name)? } else { stored.to_vec() };
+        mesh::parse_record(&body).map_err(|e| format!("{} in {}: {e}", r.name, pack.rel))
+    }
+
+    /// A texture record, preferring one in pack `prefer`.
+    fn tex_ref(&self, hash: u32, prefer: Option<usize>) -> Option<&TexRef> {
+        let refs = self.textures.get(&hash)?;
+        prefer.and_then(|p| refs.iter().find(|t| t.pack == p)).or_else(|| refs.first())
+    }
+
+    fn material_view(&self, pack: usize, m: &Material) -> MaterialView {
+        let colour_pass = m.passes.iter().find(|p| p.name == material::PASS_COLOR);
+        let samplers: Vec<(u32, Option<TextureKind>)> = colour_pass
+            .map(|p| p.sampler_textures(m).map(|h| (h, self.tex_ref(h, Some(pack)).map(TexRef::kind))).collect())
+            .unwrap_or_default();
+        MaterialView {
+            uid: m.uid,
+            name: m.name.clone(),
+            pack: self.packs[pack].rel.clone(),
+            colour: samplers.first().map(|s| s.0),
+            normal: samplers.iter().find(|s| s.1 == Some(TextureKind::Normal)).map(|s| s.0),
+            samplers,
+        }
+    }
+
+    /// Load a mesh for the renderer: see [`convert`].
+    pub fn load_mesh(&self, handle: &AssetHandle) -> Result<LoadedMesh, String> {
+        let r = self.mesh_ref(handle)?;
+        let record = self.read_mesh_record(handle)?;
+        let m = record.mesh();
+        let (smsh, rig, uvless) = convert(m)?;
+        let pack = &self.packs[r.pack];
+        let mut materials = HashMap::new();
+        for p in &smsh.prims {
+            if materials.contains_key(&p.material_hash) {
+                continue;
+            }
+            let mat = pack.materials.iter().find(|x| x.uid == p.material_hash).ok_or_else(|| {
+                format!("{} in {}: primitive material {:08X} is not in the pack's materials slot", r.name, pack.rel, p.material_hash)
+            })?;
+            materials.insert(p.material_hash, self.material_view(r.pack, mat));
+        }
+        Ok(LoadedMesh { name: m.name.clone(), smsh, rig, materials, uvless, pack: r.pack })
+    }
+
+    /// Everything a bundle export of a mesh handle writes, decoded: the stored record, the converted
+    /// mesh and rig, each submesh's colour and normal textures, and a manifest of the record's pack,
+    /// materials (every `Color-Pass` sampler with its texture and kind) and texture failures.
+    pub fn bundle_job(&self, handle: &AssetHandle, outroot: PathBuf) -> Result<crate::bundle::Job2008, String> {
+        use crate::resolve::SubmeshBinding;
+        let r = self.mesh_ref(handle)?;
+        let lm = self.load_mesh(handle)?;
+        let raw = map(&self.packs[r.pack].path)?[r.offset..r.offset + r.stored].to_vec();
+        let ni = lm.smsh.indices.len() as u32;
+        let submeshes = crate::formats::submesh_cover(&lm.smsh.prims, ni);
+        let mut textures: Vec<(String, CpuTexture)> = Vec::new();
+        let mut index_of: HashMap<(u32, bool), usize> = HashMap::new();
+        let mut errors: Vec<String> = Vec::new();
+        let mut bindings = vec![SubmeshBinding::default(); submeshes.len()];
+        let mut rows = Vec::new();
+        for (i, sm) in submeshes.iter().enumerate() {
+            let (s0, s1) = (sm.index_start, sm.index_start + sm.index_count);
+            let textured = !lm.uvless.iter().any(|&(a, n)| a < s1 && s0 < a + n);
+            let views: Vec<&MaterialView> = sm.materials.iter().filter_map(|u| lm.materials.get(u)).collect();
+            if let (true, Some(v)) = (textured, views.first()) {
+                for (hash, role, slot) in [(v.colour, TextureKind::Colour, SubmeshBinding::DIFFUSE), (v.normal, TextureKind::Normal, SubmeshBinding::NORMAL)] {
+                    let Some(h) = hash else { continue };
+                    let key = (h, role == TextureKind::Normal);
+                    let idx = match index_of.get(&key) {
+                        Some(&k) => Some(k),
+                        None => match self.load_mesh_texture(&lm, h, role) {
+                            Ok(t) => {
+                                let name = if role == TextureKind::Normal { format!("{}_xyz", t.name) } else { t.name.clone() };
+                                textures.push((name, t));
+                                index_of.insert(key, textures.len() - 1);
+                                Some(textures.len() - 1)
+                            }
+                            Err(e) => {
+                                errors.push(format!("submesh {i} {role:?} {h:08X}: {e}"));
+                                None
+                            }
+                        },
+                    };
+                    bindings[i].set(slot, idx);
+                }
+            }
+            let materials: Vec<serde_json::Value> = views
+                .iter()
+                .map(|v| {
+                    serde_json::json!({
+                        "uid": format!("0x{:08X}", v.uid),
+                        "name": v.name,
+                        "pack": v.pack,
+                        "color_pass_samplers": v.samplers.iter().map(|(h, k)| serde_json::json!({
+                            "texture": self.name_of_hash(*h),
+                            "hash": format!("0x{h:08X}"),
+                            "kind": k.map(|k| format!("{k:?}")),
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            rows.push(serde_json::json!({
+                "index": i, "lod": sm.lod, "index_start": sm.index_start, "index_count": sm.index_count,
+                "has_texture_coordinates": textured, "materials": materials,
+            }));
+        }
+        let record = self.read_mesh_record(handle)?;
+        let m = record.mesh();
+        let manifest = serde_json::json!({
+            "build": "2008-05 Xbox 360 prototype",
+            "record": {
+                "pack": self.packs[r.pack].rel,
+                "name": r.name,
+                "hash": format!("0x{:08X}", r.hash),
+                "magic": String::from_utf8_lossy(&m.magic),
+                "stored": r.stored,
+                "unpacked": r.unpacked,
+            },
+            "bones": m.bones.iter().enumerate().map(|(i, b)| serde_json::json!({
+                "index": i,
+                "name": lm.rig[i].name,
+                "hash": format!("0x{:08X}", b.hash),
+                "parent": b.parent,
+                "has_stored_inverse_bind": m.remaps.iter().any(|x| x.bone as usize == i),
+            })).collect::<Vec<_>>(),
+            "submeshes": rows,
+            "texture_errors": errors,
+        });
+        let raw_file = format!("{}.{}", r.name, if r.stored < r.unpacked { "zlib" } else { "variant" });
+        Ok(crate::bundle::Job2008 {
+            label: r.name.clone(),
+            raw,
+            raw_file,
+            mesh: crate::meshload::LoadedMesh {
+                name: lm.name.clone(),
+                prim_parent_bone: lm.smsh.prims.iter().map(|p| p.parent_bone).collect(),
+                bone_hashes: m.bones.iter().map(|b| b.hash).collect(),
+                stored_ibm: HashMap::new(),
+                part_ranges: Vec::new(),
+                bones: lm.rig.clone(),
+                mesh: lm.smsh,
+            },
+            submeshes,
+            textures,
+            submesh_tex: bindings,
+            manifest,
+            outroot,
+        })
+    }
+
+    /// Decode a texture by hash for a mesh, preferring the mesh's own pack, prepared for its role.
+    pub fn load_mesh_texture(&self, mesh: &LoadedMesh, hash: u32, role: TextureKind) -> Result<CpuTexture, String> {
+        let t = self.tex_ref(hash, Some(mesh.pack)).ok_or_else(|| format!("no pack holds texture {hash:08X}"))?;
+        let mut tex = self.decode_tex(t)?;
+        if role == TextureKind::Normal {
+            to_xyz_normal(&mut tex, t.header.format & !texture::GAMMA_SIGNS);
+        }
+        Ok(tex)
+    }
+
+    fn decode_tex(&self, t: &TexRef) -> Result<CpuTexture, String> {
+        let m = map(&self.packs[t.pack].path)?;
+        let x = texture::parse(&m[t.offset..t.offset + t.stored])?;
+        let rgba = texture::decode_base(&x)?;
+        Ok(CpuTexture { name: x.name, width: x.width as u32, height: x.height as u32, format: x.format, rgba })
+    }
+
+    fn decode_loose_dds(&self, i: usize) -> Result<CpuTexture, String> {
+        let f = &self.loose_dds[i];
+        let b = std::fs::read(&f.path).map_err(|e| format!("{}: {e}", f.path.display()))?;
+        let d = dds::parse(&b).map_err(|e| format!("{}: {e}", f.rel))?;
+        let rgba = pixels::decode(d.format, d.width as usize, d.height as usize, d.level(0, 0)?).map_err(|e| format!("{}: {e}", f.rel))?;
+        Ok(CpuTexture { name: f.name.clone(), width: d.width, height: d.height, format: d.four_cc, rgba })
+    }
+}
+
+/// Rebuild a normal map's texels as `(x, y, z)` in RGB for the renderer: DXN and X8R8G8B8 normal
+/// maps carry the normal in R and G only (B is 0 in DXN; in X8R8G8B8 it varies and `|RGB|` is not
+/// unit), so `z = sqrt(1 - x² - y²)`; DXT5 normal maps store a unit `|RGB|` and are used as stored.
+/// Measured by `sab_probe proto2008-textures`; the shaders' own tangent frame is not established.
+fn to_xyz_normal(t: &mut CpuTexture, format: u32) {
+    if format != texture::DXN && format != texture::X8R8G8B8 {
+        return;
+    }
+    for p in t.rgba.chunks_exact_mut(4) {
+        let s = |v: u8| v as f32 / 127.5 - 1.0;
+        let (x, y) = (s(p[0]), s(p[1]));
+        let z = (1.0 - x * x - y * y).max(0.0).sqrt();
+        p[2] = ((z + 1.0) * 127.5).round() as u8;
+        p[3] = 255;
+    }
+}
+
+fn row_major(m: Mat4) -> [f32; 16] {
+    m.transpose().to_cols_array()
+}
+
+/// A mesh's rig and its geometry in bind space, for the renderer's `jointMatrix = world · inv_bind`.
+///
+/// * Rig: each bone's TRS; `inv_bind` is the bone's stored remap matrix (row-vector convention,
+///   transposed here) when it has one, else the inverse of its bind world.
+/// * Skinned streams: model space as stored, bone indices through the remap palette.
+/// * Bone-space streams: a vertex `p` of bone `b` becomes `inverse(inv_bind[b]) · p` with full weight
+///   on `b`, so `world[b] · inv_bind[b]` places it at `world[b] · p`.
+/// * Other model-space streams (terrain, normalised boxes): weighted to their stream bone, carried so
+///   the bind pose draws them where they are; with no bones, unweighted.
+/// * Streams without normals get area-weighted face normals; streams without texture coordinates get
+///   zeros and their primitives are listed in the returned ranges.
+pub fn convert(m: &mesh::Mesh) -> Result<(Smsh, Vec<Bone>, Vec<(u32, u32)>), String> {
+    let mut stored: HashMap<u32, [f32; 16]> = HashMap::new();
+    for r in &m.remaps {
+        if let Some(prev) = stored.insert(r.bone, r.matrix) {
+            if prev != r.matrix {
+                return Err(format!("mesh '{}': bone {} has two different remap matrices", m.name, r.bone));
             }
         }
-        None
     }
+    let mut world: Vec<Mat4> = Vec::with_capacity(m.bones.len());
+    for (i, b) in m.bones.iter().enumerate() {
+        let local = Mat4::from_scale_rotation_translation(Vec3::from_array(b.scale), Quat::from_array(b.rotation), Vec3::from_array(b.translation));
+        let w = match b.parent {
+            -1 => local,
+            p if p >= 0 && (p as usize) < i => world[p as usize] * local,
+            p => return Err(format!("mesh '{}': bone {i} has parent {p}, not an earlier bone", m.name)),
+        };
+        world.push(w);
+    }
+    let inv_bind: Vec<Mat4> = (0..m.bones.len())
+        .map(|i| match stored.get(&(i as u32)) {
+            Some(rm) => Mat4::from_cols_array(rm),
+            None => world[i].inverse(),
+        })
+        .collect();
+    let rig: Vec<Bone> = m
+        .bones
+        .iter()
+        .enumerate()
+        .map(|(i, b)| Bone {
+            parent: b.parent,
+            name: names::name(b.hash).map(str::to_string).unwrap_or_else(|| format!("bone_{:08X}", b.hash)),
+            t: b.translation,
+            r: b.rotation,
+            s: b.scale,
+            inv_bind: Some(row_major(inv_bind[i])),
+            local_m: None,
+        })
+        .collect();
+    let mut out = Smsh { positions: Vec::new(), normals: Vec::new(), uvs: Vec::new(), joints: Vec::new(), weights: Vec::new(), indices: Vec::new(), prims: Vec::new() };
+    let mut uvless = Vec::new();
+    for (si, s) in m.streams.iter().enumerate() {
+        let at = |e: String| format!("mesh '{}' stream {si}: {e}", m.name);
+        let base = out.positions.len() as u32;
+        let ibase = out.indices.len() as u32;
+        let (space, mut ps) = m.stream_positions(s).map_err(at)?;
+        let mut ns = m.stream_normals(s).map_err(at)?;
+        let skin = m.stream_skin(s).map_err(at)?;
+        let bone = |b: u32| -> Result<u16, String> {
+            if (b as usize) < m.bones.len() {
+                Ok(b as u16)
+            } else {
+                Err(at(format!("bone {b} past {} bones", m.bones.len())))
+            }
+        };
+        let place = |to_bind: Mat4, ps: &mut Vec<[f32; 3]>, ns: &mut Option<Vec<[f32; 3]>>| {
+            for p in ps.iter_mut() {
+                *p = to_bind.transform_point3(Vec3::from_array(*p)).to_array();
+            }
+            if let Some(ns) = ns {
+                let nm = Mat3::from_mat4(to_bind).inverse().transpose();
+                for n in ns.iter_mut() {
+                    *n = (nm * Vec3::from_array(*n)).normalize_or_zero().to_array();
+                }
+            }
+        };
+        let n = ps.len();
+        let (joints, weights): (Vec<[u16; 4]>, Vec<[f32; 4]>) = match (skin, space) {
+            (Some(sk), _) => {
+                let mut j = Vec::with_capacity(n);
+                let mut w = Vec::with_capacity(n);
+                for (bs, ws) in sk {
+                    j.push([bone(bs[0])?, bone(bs[1])?, bone(bs[2])?, bone(bs[3])?]);
+                    w.push(ws);
+                }
+                (j, w)
+            }
+            (None, mesh::Space::Bone(b)) => {
+                let b16 = bone(b)?;
+                place(inv_bind[b as usize].inverse(), &mut ps, &mut ns);
+                (vec![[b16, 0, 0, 0]; n], vec![[1.0, 0.0, 0.0, 0.0]; n])
+            }
+            (None, mesh::Space::Model) if m.bones.is_empty() => (vec![[0; 4]; n], vec![[0.0; 4]; n]),
+            (None, mesh::Space::Model) => {
+                let b16 = bone(s.bone)?;
+                let b = s.bone as usize;
+                place((world[b] * inv_bind[b]).inverse(), &mut ps, &mut ns);
+                (vec![[b16, 0, 0, 0]; n], vec![[1.0, 0.0, 0.0, 0.0]; n])
+            }
+        };
+        if s.indices.len() % 3 != 0 {
+            return Err(at(format!("{} indices is not a triangle list", s.indices.len())));
+        }
+        if let Some(&i) = s.indices.iter().find(|&&i| i as usize >= n) {
+            return Err(at(format!("index {i} past {n} vertices")));
+        }
+        let ns = match ns {
+            Some(ns) => ns,
+            None => face_normals(&ps, &s.indices),
+        };
+        let uvs = m.stream_uvs(s, 0).map_err(at)?;
+        out.uvs.extend(uvs.clone().unwrap_or_else(|| vec![[0.0, 0.0]; n]));
+        out.positions.extend(ps);
+        out.normals.extend(ns);
+        out.joints.extend(joints);
+        out.weights.extend(weights);
+        out.indices.extend(s.indices.iter().map(|&i| base + i as u32));
+        for p in &s.prims {
+            if p.index_start as usize + p.index_count as usize > s.indices.len() {
+                return Err(at(format!("primitive {}+{} past {} indices", p.index_start, p.index_count, s.indices.len())));
+            }
+            let lod = u8::try_from(p.lod).map_err(|_| at(format!("LOD level {}", p.lod)))?;
+            out.prims.push(Prim {
+                index_start: ibase + p.index_start,
+                index_count: p.index_count,
+                material_hash: p.material,
+                flags: 0,
+                parent_bone: if m.bones.is_empty() { 0 } else { bone(s.bone)? },
+                lod,
+            });
+            if uvs.is_none() {
+                uvless.push((ibase + p.index_start, p.index_count));
+            }
+        }
+    }
+    Ok((out, rig, uvless))
 }
 
-/// One record parsed from a `<hash>.textures` slot's inner directory.
-struct ParsedSlotTex {
-    name: String,
-    width: u16,
-    height: u16,
-    format_tag: [u8; 4],
-    /// Payload location within the containing slot.
-    data_off: u32,
-    data_size: u32,
-}
-
-/// Parse the inner directory of a `.textures` slot. Layout (BE throughout):
-/// - `u32 count`
-/// - `count × 24-byte record { hash, offset, size, unk, flag, block? }`
-/// - concatenated payloads (each: `u32 name_len + ascii name + 4B format + u16 W + u16 H + …`)
-///
-/// This is a fresh parser (not a SubPack call) because the container is HEADLESS — the outer
-/// `SBL4` magic and 8-byte header do not appear here; the slot bytes start straight at the u32
-/// count. Handling short/malformed records defensively so a single bad slot doesn't sink the
-/// whole `open()` walk.
-fn parse_texslot(slot: &[u8]) -> Vec<ParsedSlotTex> {
-    if slot.len() < 4 {
-        return Vec::new();
+/// Area-weighted vertex normals of a triangle list.
+fn face_normals(ps: &[[f32; 3]], indices: &[u16]) -> Vec<[f32; 3]> {
+    let mut acc = vec![Vec3::ZERO; ps.len()];
+    for t in indices.chunks_exact(3) {
+        let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
+        let (pa, pb, pc) = (Vec3::from_array(ps[a]), Vec3::from_array(ps[b]), Vec3::from_array(ps[c]));
+        let n = (pb - pa).cross(pc - pa);
+        acc[a] += n;
+        acc[b] += n;
+        acc[c] += n;
     }
-    let count = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]) as usize;
-    if count == 0 || count > 256 {
-        return Vec::new();
-    }
-    let dir_end = 4 + count * 24;
-    if dir_end > slot.len() {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let ro = 4 + i * 24;
-        // An all-zero record is an unused directory entry, not a texture: the slot's `count` can
-        // include one (FBP_CF_GR_Doriss_Lace_LB.Pack declares 2 with rec[1] zeroed). Read as a
-        // record it aimed at offset 0, took the count field as a name length, and indexed two
-        // bytes of rec[0]'s hash as a texture named "\x06-" (hash C5FD0C82) that could never load.
-        if slot[ro..ro + 24].iter().all(|&b| b == 0) {
-            continue;
-        }
-        let data_off = u32::from_be_bytes([slot[ro + 4], slot[ro + 5], slot[ro + 6], slot[ro + 7]]);
-        let data_size = u32::from_be_bytes([slot[ro + 8], slot[ro + 9], slot[ro + 10], slot[ro + 11]]);
-        let d = data_off as usize;
-        // A payload starts after the directory (rec[0] of that slot sits at 0x34 = 4 + 2*24) and
-        // must hold at least its own name-length field, inside the slot.
-        if d < dir_end || data_size < 4 || d + data_size as usize > slot.len() {
-            continue;
-        }
-        let name_len = u32::from_be_bytes([slot[d], slot[d + 1], slot[d + 2], slot[d + 3]]) as usize;
-        if name_len == 0 || name_len > 256 || d + 4 + name_len + 8 > slot.len() {
-            continue;
-        }
-        let name_bytes = &slot[d + 4..d + 4 + name_len];
-        let Ok(name) = std::str::from_utf8(name_bytes) else { continue };
-        let name = name.trim_end_matches('\0').to_string();
-        let hdr = d + 4 + name_len;
-        let format_tag = [slot[hdr], slot[hdr + 1], slot[hdr + 2], slot[hdr + 3]];
-        // Width + height as BE u16 pairs, 4 bytes after the format tag (a u32 gap we haven't
-        // named — flags or a variant field; probing left for later). See the probe output in
-        // this file's tests for the raw bytes at these positions.
-        if hdr + 12 > slot.len() {
-            continue;
-        }
-        let width = u16::from_be_bytes([slot[hdr + 8], slot[hdr + 9]]);
-        let height = u16::from_be_bytes([slot[hdr + 10], slot[hdr + 11]]);
-        out.push(ParsedSlotTex { name, width, height, format_tag, data_off, data_size });
-    }
-    out
+    acc.into_iter().map(|n| n.normalize_or_zero().to_array()).collect()
 }
 
 impl GameSource for Prototype2008Source {
-    fn version(&self) -> GameVersion { GameVersion::Prototype2008Xbox360 }
+    fn version(&self) -> GameVersion {
+        GameVersion::Prototype2008Xbox360
+    }
 
     fn label(&self) -> String {
         format!("Prototype 2008 Xbox 360 — {}", self.bin360.display())
     }
 
-    fn fingerprint(&self) -> &SourceFingerprint { &self.fingerprint }
+    fn fingerprint(&self) -> &SourceFingerprint {
+        &self.fingerprint
+    }
 
     fn list_meshes(&self) -> Vec<AssetHandle> {
-        self.mesh_index
+        self.meshes
             .iter()
             .enumerate()
-            .map(|(i, e)| AssetHandle {
-                key: i as u64,
-                hash: Some(e.hash),
-                name: self.hash_names.get(&e.hash).cloned().unwrap_or_default(),
-                kind: AssetKind::Mesh,
-            })
+            .map(|(i, r)| AssetHandle { key: i as u64, name: r.name.clone(), kind: AssetKind::Mesh, hash: Some(r.hash) })
             .collect()
     }
 
     fn list_textures(&self) -> Vec<AssetHandle> {
-        // Two population sources: per-sub-texture handles mined from every `<hash>.textures`
-        // slot's inner directory (real textures, hundreds per block — decoded via the XGI
-        // format+tiling probe once it lands), and loose `*.dds` files at Bin360 root / under
-        // Branches/ (already decode via `dds::decode_bytes`). Both flow through `load_texture`
-        // by hash — the caller doesn't need to know which population owns the row.
         let mut out: Vec<AssetHandle> = self
-            .slot_textures
+            .textures
             .iter()
-            .map(|(h, s)| AssetHandle {
-                key: *h as u64,
-                hash: Some(*h),
-                name: s.name.clone(),
-                kind: AssetKind::Texture,
-            })
+            .map(|(h, refs)| AssetHandle { key: *h as u64, name: refs[0].header.name.clone(), kind: AssetKind::Texture, hash: Some(*h) })
             .collect();
-        for (h, entry) in self.loose_dds.iter() {
-            // Skip if this loose DDS shadows a slot texture with the same hash — first-write
-            // in hash_names already picked one canonical name; the browser doesn't need two
-            // rows for the same asset.
-            if self.slot_textures.contains_key(h) {
-                continue;
-            }
-            out.push(AssetHandle {
-                key: *h as u64,
-                hash: Some(*h),
-                name: entry.name.clone(),
-                kind: AssetKind::Texture,
-            });
-        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out.extend(self.loose_dds.iter().enumerate().map(|(i, f)| AssetHandle {
+            key: LOOSE_DDS_KEY | i as u64,
+            name: f.rel.clone(),
+            kind: AssetKind::Texture,
+            hash: None,
+        }));
         out
     }
 
-    fn read_mesh_bytes(&self, handle: &AssetHandle) -> Result<Vec<u8>, String> {
-        let e = self
-            .mesh_index
-            .get(handle.key as usize)
-            .ok_or_else(|| format!("mesh handle {} out of range", handle.key))?;
-        // The packlog's `Start`/`Size` fields point at an intermediate build-time layout —
-        // the packer reorders slots on disk, so trusting those numbers reads bytes from the
-        // wrong slot (usually a hunk of the neighbouring textures blob). The authoritative
-        // directory lives in the `.Pack` file itself, prefixed by SBL4. Parse it, find the
-        // record whose kind_hash == pandemic_hash("meshes"), and hand back exactly that.
-        //
-        // This is still not a per-mesh MSHA extraction — the meshes slot is itself a
-        // mini-directory of zlib-compressed `MSH4` records with a shape distinct from
-        // retail's `AHSM`, and that inner format is a follow-up probe. For now the caller
-        // gets the correct slot boundary, from which the individual `MSH4` records can be
-        // walked once that reader lands.
-        let pack_bytes = std::fs::read(&e.pack_file)
-            .map_err(|err| format!("read {}: {err}", e.pack_file.display()))?;
-        let sub = SubPack::parse(&pack_bytes)
-            .map_err(|err| format!("{}: {err}", e.pack_file.display()))?;
-        let rec = sub.find("meshes").ok_or_else(|| {
-            format!(
-                "{}: SBL4 sub-pack has no meshes slot (records: {:?})",
-                e.pack_file.display(),
-                sub.records
-                    .iter()
-                    .map(|r| r.kind_name.unwrap_or("?"))
-                    .collect::<Vec<_>>()
-            )
-        })?;
-        Ok(pack_bytes[rec.offset..rec.offset + rec.size].to_vec())
-    }
-
-    fn list_animations(&self) -> Vec<AssetHandle> {
-        // Loose entries (named) and packed entries (anonymous, synthetic-keyed) both flow
-        // through the same handle list. The `AssetKind::Animation` discriminator flags them
-        // for the Nav Anims tab; the `name`/`hash` shape mirrors what `list_meshes` does.
-        self.anim_catalog.handles()
-    }
-
-    fn load_animation_clip(
-        &self,
-        handle: &AssetHandle,
-    ) -> Result<Box<dyn crate::clip::AnimClip>, String> {
-        let key = handle.key as u32;
-        let clip = self.anim_catalog.load_clip(key)?;
-        Ok(Box::new(clip))
-    }
-
     fn list_materials(&self) -> Vec<AssetHandle> {
-        // Iterate MaterialIndex — each entry is a distinct MTLD record parsed at open time.
-        // Name comes from `name_by_uid` (populated from the MTLD name field). Key mirrors the
-        // uid so a downstream consumer can round-trip a handle to `textures_for_material`.
-        self.materials
-            .by_uid
-            .keys()
-            .map(|uid| AssetHandle {
-                key: *uid as u64,
-                hash: Some(*uid),
-                name: self.materials.name_by_uid.get(uid).cloned().unwrap_or_default(),
-                kind: AssetKind::Material,
+        self.packs
+            .iter()
+            .enumerate()
+            .flat_map(|(pi, p)| {
+                p.materials.iter().enumerate().map(move |(mi, m)| AssetHandle {
+                    key: ((pi as u64) << 32) | mi as u64,
+                    name: m.name.clone(),
+                    kind: AssetKind::Material,
+                    hash: Some(m.uid),
+                })
             })
             .collect()
     }
 
-    fn textures_for_material(&self, mat: u32) -> Option<[Option<u32>; 4]> {
-        // Global `.materials`-slot inventory built at open time (see `open`). Slots that were
-        // SBL4-wrapped are absent from this index; `None` here means either "unknown material"
-        // OR "material lives in a still-wrapped block" — the fingerprint counter distinguishes.
-        self.materials.textures_for(mat)
+    fn list_animations(&self) -> Vec<AssetHandle> {
+        self.anim_catalog.handles()
     }
 
     fn load_texture(&self, hash: u32) -> Result<CpuTexture, String> {
-        // Cache hit — repeated preview / material-slot lookups don't reopen the file.
-        if let Some(t) = self.tex_cache.lock().unwrap().get(&hash) {
+        if let Some(t) = self.tex_cache.lock().expect("texture cache").get(&(hash as u64)) {
             return Ok(t.clone());
         }
-        // Path A: loose `.dds` at Bin360 root or under Branches/. Empirically standard PC DDS
-        // (linear layout, LE DXT blocks — see docs/2008_texture_format.md), so we can go
-        // straight through the shared `dtex::decode_surface` block decoder. This lights up 615
-        // textures across DXT1/2/3/4/5 with no further work.
-        if let Some(entry) = self.loose_dds.get(&hash) {
-            let bytes = std::fs::read(&entry.path)
-                .map_err(|e| format!("read {}: {e}", entry.path.display()))?;
-            let tex = dds::decode_bytes(&entry.name, &bytes)?;
-            self.tex_cache.lock().unwrap().insert(hash, tex.clone());
-            return Ok(tex);
+        let t = self.tex_ref(hash, None).ok_or_else(|| format!("no pack holds texture {hash:08X}"))?;
+        let tex = self.decode_tex(t)?;
+        self.tex_cache.lock().expect("texture cache").insert(hash as u64, tex.clone());
+        Ok(tex)
+    }
+
+    fn load_texture_handle(&self, handle: &AssetHandle) -> Result<CpuTexture, String> {
+        if handle.key & LOOSE_DDS_KEY == 0 {
+            return self.load_texture(handle.key as u32);
         }
-        if let Some(s) = self.slot_textures.get(&hash) {
-            // Path B: slot-hosted DXT record. Open the containing .Pack, seek to the whole
-            // .textures slot's byte range (SubPack directory offset the mining pass captured),
-            // slice the sub-texture's payload, hand it to the shared Xbox 360 decoder.
-            let pack = std::fs::read(&s.pack_file)
-                .map_err(|e| format!("read {}: {e}", s.pack_file.display()))?;
-            let slot_start = s.slot_off as usize;
-            let slot_end = slot_start + s.slot_len as usize;
-            if slot_end > pack.len() {
-                return Err(format!("slot overruns pack file for {}", s.name));
-            }
-            let slot = &pack[slot_start..slot_end];
-            let sub_start = s.data_off as usize;
-            let sub_end = sub_start + s.data_size as usize;
-            if sub_end > slot.len() {
-                return Err(format!("sub-texture bytes overrun slot for {}", s.name));
-            }
-            let tex = crate::sources::prototype2008_texture::decode_slot_texture(&slot[sub_start..sub_end])?;
-            self.tex_cache.lock().unwrap().insert(hash, tex.clone());
-            return Ok(tex);
+        if let Some(t) = self.tex_cache.lock().expect("texture cache").get(&handle.key) {
+            return Ok(t.clone());
         }
-        Err(format!("no texture with hash {hash:08X}"))
+        let tex = self.decode_loose_dds((handle.key & 0xFFFF_FFFF) as usize)?;
+        self.tex_cache.lock().expect("texture cache").insert(handle.key, tex.clone());
+        Ok(tex)
     }
 
     fn name_of_hash(&self, hash: u32) -> Option<String> {
-        // The one thing we can absolutely do — every packlog line named an asset. Free win,
-        // works from opening the source.
-        self.hash_names.get(&hash).cloned()
+        if let Some(refs) = self.textures.get(&hash) {
+            return Some(refs[0].header.name.clone());
+        }
+        names::name(hash).map(str::to_string)
     }
 
-    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
-}
-
-// ── packlog parsing ──────────────────────────────────────────────────────────────────────────
-
-fn find_packlogs(root: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("packlog")).unwrap_or(false) {
-                out.push(p);
+    fn describe(&self, handle: &AssetHandle) -> Result<Vec<(String, String)>, String> {
+        let mut kv: Vec<(String, String)> = Vec::new();
+        match handle.kind {
+            AssetKind::Mesh => {
+                let r = self.mesh_ref(handle)?;
+                let p = &self.packs[r.pack];
+                kv.push(("pack".into(), format!("{} ({})", p.rel, String::from_utf8_lossy(&p.magic))));
+                kv.push(("stored".into(), format!("{} bytes{}", r.stored, if r.stored < r.unpacked { format!(", zlib of {}", r.unpacked) } else { " raw (variant record)".into() })));
             }
-        }
-    }
-    let mut v = Vec::new();
-    walk(root, &mut v);
-    v
-}
-
-/// Parse one `.Packlog`. Entries are stanzas of four labelled lines, one field per line,
-/// separated by a blank line:
-///
-/// ```text
-/// File: D:\projects\wildstar\art\Cache\PackData\Xbox 360\Global\-1288447421.textures
-/// Time: 05.01.2008 04:20:20
-/// Start: 104
-/// Size: 987151
-///
-/// File: ...
-/// ```
-///
-/// The hash portion of the leaf is signed on disk (Pandemic printed the hash as a signed
-/// int) — decode as `i32` then reinterpret to `u32`, which round-trips exactly. The `.Pack`
-/// twin sits next to the `.Packlog` with the same stem.
-fn parse_packlog(packlog: &Path, _bin360_root: &Path) -> Result<Vec<PackedRef>, String> {
-    let text = std::fs::read_to_string(packlog).map_err(|e| e.to_string())?;
-    let pack_file = packlog.with_extension("Pack");
-    let mut out = Vec::new();
-    // Multi-line state — one field at a time, emit a PackedRef when all four are present.
-    let mut cur_file: Option<String> = None;
-    let mut cur_start: Option<u64> = None;
-    let mut cur_size: Option<u64> = None;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("File:") {
-            cur_file = Some(normalize_windows_slash(rest.trim()));
-        } else if let Some(rest) = line.strip_prefix("Start:") {
-            cur_start = rest.trim().parse().ok();
-        } else if let Some(rest) = line.strip_prefix("Size:") {
-            cur_size = rest.trim().parse().ok();
-        }
-        // Entry is complete once we have all three of the fields we care about — the `Time:`
-        // line is ignored. Emit and clear.
-        if let (Some(fp), Some(st), Some(sz)) = (&cur_file, cur_start, cur_size) {
-            let stem = std::path::Path::new(fp).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            // `stem` looks like `-1288447421` or `979087517` — signed decimal. Parse as i32 and
-            // reinterpret to u32 (the same hash bit pattern the retail namespace uses).
-            let hash = stem.parse::<i32>().map(|v| v as u32).unwrap_or(0);
-            if hash != 0 {
-                out.push(PackedRef {
-                    slot_path: fp.clone(),
-                    hash,
-                    pack_file: pack_file.clone(),
-                    start: st,
-                    size: sz,
-                });
+            AssetKind::Texture if handle.key & LOOSE_DDS_KEY != 0 => {
+                let f = self.loose_dds.get((handle.key & 0xFFFF_FFFF) as usize).ok_or("loose .dds handle out of range")?;
+                kv.push(("file".into(), f.rel.clone()));
             }
-            cur_file = None;
-            cur_start = None;
-            cur_size = None;
-        }
-    }
-    Ok(out)
-}
-
-fn normalize_windows_slash(s: &str) -> String {
-    s.replace('\\', "/")
-}
-
-/// Recursive `*.dds` walk. Depth is measured in path components below `root` so callers can
-/// prefer the shallowest twin when the same stem appears in more than one Branches/*/ tree.
-fn walk_loose_dds(
-    root: &Path,
-    dir: &Path,
-    visit: &mut dyn FnMut(&Path, String, usize),
-) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            walk_loose_dds(root, &p, visit);
-        } else if p
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.eq_ignore_ascii_case("dds"))
-            .unwrap_or(false)
-        {
-            let name = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if name.is_empty() {
-                continue;
+            AssetKind::Texture => {
+                let refs = self.textures.get(&(handle.key as u32)).ok_or("unknown texture handle")?;
+                let t = &refs[0];
+                kv.push(("format".into(), format!("0x{:08X}", t.header.format)));
+                kv.push(("size".into(), format!("{}×{}, {} mips", t.header.width, t.header.height, t.header.mips)));
+                kv.push(("kind".into(), format!("{:?}", t.kind())));
+                kv.push(("in packs".into(), refs.len().to_string()));
+                kv.push(("first pack".into(), self.packs[t.pack].rel.clone()));
             }
-            let depth = p
-                .strip_prefix(root)
-                .map(|rel| rel.components().count())
-                .unwrap_or(usize::MAX);
-            visit(&p, name, depth);
+            AssetKind::Material => {
+                let (pi, mi) = ((handle.key >> 32) as usize, (handle.key & 0xFFFF_FFFF) as usize);
+                let m = self.packs.get(pi).and_then(|p| p.materials.get(mi)).ok_or("material handle out of range")?;
+                let v = self.material_view(pi, m);
+                kv.push(("pack".into(), v.pack.clone()));
+                kv.push(("uid".into(), format!("{:08X}", m.uid)));
+                let passes: Vec<String> = m
+                    .passes
+                    .iter()
+                    .map(|p| match p.name {
+                        material::PASS_COLOR => "Color".to_string(),
+                        material::PASS_Z => "Z".into(),
+                        material::PASS_CAST_SHADOW => "Cast-Shadow".into(),
+                        material::PASS_RECEIVE_SHADOW => "Receive-Shadow".into(),
+                        material::PASS_FOLIAGE => "Foliage".into(),
+                        other => format!("{other:08X}"),
+                    })
+                    .collect();
+                kv.push(("passes".into(), passes.join(", ")));
+                for (i, (h, k)) in v.samplers.iter().enumerate() {
+                    let name = self.name_of_hash(*h).unwrap_or_else(|| format!("{h:08X}"));
+                    let kind = k.map(|k| format!("{k:?}")).unwrap_or_else(|| "in no pack".into());
+                    kv.push((format!("sampler {i}"), format!("{name} ({kind})")));
+                }
+            }
+            other => kv.push(("kind".into(), format!("{other:?}"))),
         }
+        Ok(kv)
+    }
+
+    fn load_animation_clip(&self, handle: &AssetHandle) -> Result<Box<dyn crate::clip::AnimClip>, String> {
+        Ok(Box::new(self.anim_catalog.load_clip(handle.key as u32)?))
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 }
-
-// NOTE: the earlier `read_pack_slot(pack_file, start, size)` helper — which trusted the
-// packlog's Start/Size fields to seek into a `.Pack` — was dropped when the SBL4 sub-pack
-// decoder landed. The packlog offsets describe a build-time intermediate layout that the
-// packer reorders on write, so seeking to them read the wrong bytes; the SBL4SubPack
-// directory (see `prototype2008_subpack.rs`) is the authoritative on-disk map.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::GameSource;
+    use sab_formats::proto2008::mesh::{Bounds, Mesh, Prim as MPrim, Remap, Stream, Tail};
 
-    fn test_root() -> Option<PathBuf> {
-        crate::testenv::prototype2008_root()
+    fn bone(parent: i32, t: [f32; 3]) -> mesh::Bone {
+        mesh::Bone { hash: 1, parent, translation: t, rotation: [0.0, 0.0, 0.0, 1.0], scale: [1.0; 3], centre: [0.0; 3], half: [1.0; 4], export_flags: 0 }
     }
 
-    /// Guard the discovered slot layout: at least one `.textures` slot in the extract must
-    /// parse into ≥1 sub-texture with a plausible name + power-of-two dimensions. Regresses
-    /// visibly if `parse_texslot` breaks (e.g. someone flips the endianness or the record
-    /// stride).
-    #[test]
-    fn slot_texture_directory_yields_named_subtextures() {
-        let Some(root) = test_root() else { eprintln!("skip"); return };
-        let src = Prototype2008Source::open(&root).expect("open");
-        assert!(
-            src.slot_textures.len() > 100,
-            "expected many slot sub-textures, got {}",
-            src.slot_textures.len()
-        );
-        // Any sub-texture with a real name + a plausible dimension proves the parser.
-        let ok = src.slot_textures.values().any(|s| {
-            !s.name.is_empty()
-                && s.name.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-                && s.width.is_power_of_two()
-                && s.height.is_power_of_two()
-                && s.width >= 16
-                && s.height >= 16
-        });
-        assert!(ok, "no slot sub-texture with plausible name + power-of-two dims");
-    }
-
-    /// A slot whose `count` includes an all-zero record must not invent a texture out of it.
-    /// Built from the real case (FBP_CF_GR_Doriss_Lace_LB.Pack): count = 2, rec[1] zeroed. Before
-    /// the fix rec[1] was read at offset 0 and indexed as a texture named "\x06-" (C5FD0C82).
-    #[test]
-    fn parse_texslot_ignores_an_all_zero_record() {
-        let name = b"lace_d";
-        let mut slot = Vec::new();
-        slot.extend_from_slice(&2u32.to_be_bytes()); // count
-        let payload_off = 4 + 2 * 24;
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&(name.len() as u32).to_be_bytes());
-        payload.extend_from_slice(name);
-        payload.extend_from_slice(&[0x1A, 0x20, 0x01, 0x52, 0, 0, 0, 0, 0, 64, 0, 64]);
-        // rec[0]: hash, data_off, data_size, f3, f4, f5
-        for v in [0x062D_4C9Bu32, payload_off as u32, payload.len() as u32, 0x8000, 1, 0] {
-            slot.extend_from_slice(&v.to_be_bytes());
+    /// One triangle in a bone-space stream (format 2: a float3 position only) of bone 1, which sits
+    /// at x = 5 under the root.
+    fn rigid_mesh(remap: Option<[f32; 16]>) -> Mesh {
+        let format = 0x0000_0002;
+        let l = mesh::Layout::of(format).unwrap();
+        let mut vertices = Vec::new();
+        for p in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            let mut v = vec![0u8; l.stride as usize];
+            let (_, o) = l.position.unwrap();
+            for (k, c) in p.iter().enumerate() {
+                v[o as usize + 4 * k..o as usize + 4 * k + 4].copy_from_slice(&c.to_be_bytes());
+            }
+            vertices.extend(v);
         }
-        slot.extend_from_slice(&[0u8; 24]); // rec[1]: unused
-        slot.extend_from_slice(&payload);
-        let got = parse_texslot(&slot);
-        assert_eq!(got.len(), 1, "only rec[0] is a texture");
-        assert_eq!(got[0].name, "lace_d");
-        assert_eq!((got[0].width, got[0].height), (64, 64));
-    }
-
-    /// Over every `.textures` slot the prototype has, the ONLY directory records `parse_texslot`
-    /// drops are all-zero (unused) ones. Any other rejection would be a texture silently missing
-    /// from the index — this test is what makes that `continue` safe rather than a blind spot.
-    #[test]
-    fn every_dropped_texslot_record_is_an_unused_all_zero_entry() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: SAB_2008_DIR not set to a 2008 prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let mut seen = std::collections::HashSet::new();
-        let (mut slots, mut records, mut zero, mut kept) = (0usize, 0usize, 0usize, 0usize);
-        let mut bad: Vec<String> = Vec::new();
-        let mut missing = 0usize;
-        for e in &src.tex_index {
-            if !seen.insert(e.pack_file.clone()) {
-                continue;
-            }
-            // Packlogs name some packs this extract does not ship; only NotFound is expected.
-            let buf = match std::fs::read(&e.pack_file) {
-                Ok(b) => b,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    missing += 1;
-                    continue;
-                }
-                Err(err) => panic!("read {}: {err}", e.pack_file.display()),
-            };
-            let Ok(sbl) = SubPack::parse(&buf) else { continue };
-            let Some(rec) = sbl.find("textures") else { continue };
-            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
-            if slot.len() < 4 {
-                continue;
-            }
-            let count = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]) as usize;
-            let dir_end = 4 + count * 24;
-            if count == 0 || count > 256 || dir_end > slot.len() {
-                continue;
-            }
-            slots += 1;
-            records += count;
-            kept += parse_texslot(slot).len();
-            for i in 0..count {
-                let r = &slot[4 + i * 24..4 + i * 24 + 24];
-                if r.iter().all(|&b| b == 0) {
-                    zero += 1;
-                }
-            }
-            let dropped = count - parse_texslot(slot).len();
-            let zero_here = (0..count).filter(|i| slot[4 + i * 24..4 + i * 24 + 24].iter().all(|&b| b == 0)).count();
-            if dropped != zero_here {
-                bad.push(format!("{} (count {count}, dropped {dropped}, all-zero {zero_here})", e.pack_file.display()));
-            }
+        Mesh {
+            magic: *b"MSH4",
+            name: "t".into(),
+            reserved: 0,
+            shadow_caster: false,
+            streams: vec![Stream {
+                format,
+                bone: 1,
+                stride: l.stride,
+                vertex_count: 3,
+                vertices,
+                indices: vec![0, 1, 2],
+                prims: vec![MPrim { strip: 0, triangle_count: 1, material: 7, lod: 0, segment_bits: 0, index_start: 0, index_count: 3 }],
+            }],
+            bones: vec![bone(-1, [0.0, 0.0, 0.0]), bone(0, [5.0, 0.0, 0.0])],
+            remaps: remap.map(|m| vec![Remap { bone: 1, matrix: m }]).unwrap_or_default(),
+            bounds: Bounds { centre: [0.0; 3], half: [1.0; 3], radius: 1.0 },
+            tail: Tail::None,
         }
-        eprintln!(
-            "{slots} slots, {records} records: {kept} textures indexed, {zero} unused all-zero \
-             entries; {missing} packlog-listed packs not present in this extract"
-        );
-        assert!(slots > 100, "expected the prototype's texture slots, walked {slots}");
-        assert!(bad.is_empty(), "records dropped that are not all-zero:\n{}", bad.join("\n"));
     }
 
-    /// Keep the raw probe as a manually-run diagnostic — `cargo test -- --nocapture
-    /// probe_inside_a_textures_slot` prints the first bytes of a few real slots for
-    /// eyeballing when the format needs a re-check.
-    #[test]
-    fn probe_inside_a_textures_slot() {
-        let Some(root) = test_root() else { eprintln!("skip"); return };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let mut checked = 0;
-        for e in src.tex_index.iter().take(500) {
-            let Ok(buf) = std::fs::read(&e.pack_file) else { continue };
-            let Ok(sbl) = SubPack::parse(&buf) else { continue };
-            let Some(rec) = sbl.find("textures") else { continue };
-            let Some(slot) = sbl.slot_bytes(rec, &buf) else { continue };
-            if slot.len() < 32 { continue }
-            checked += 1;
-            let name = src.hash_names.get(&e.hash).cloned().unwrap_or_default();
-            println!("\n--- {} ({:08X}) — slot {} bytes ---", name, e.hash, slot.len());
-            let count = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]);
-            println!("  count (BE u32): {count}");
-            if count > 64 { println!("  ... too many for a real directory; format guess is wrong"); continue }
-            for i in 0..(count.min(3) as usize) {
-                let o = 4 + i * 24;
-                if o + 24 > slot.len() { break }
-                let hash = u32::from_be_bytes([slot[o], slot[o+1], slot[o+2], slot[o+3]]);
-                let dat_off = u32::from_be_bytes([slot[o+4], slot[o+5], slot[o+6], slot[o+7]]) as usize;
-                let dat_size = u32::from_be_bytes([slot[o+8], slot[o+9], slot[o+10], slot[o+11]]) as usize;
-                let f3 = u32::from_be_bytes([slot[o+12], slot[o+13], slot[o+14], slot[o+15]]);
-                let f4 = u32::from_be_bytes([slot[o+16], slot[o+17], slot[o+18], slot[o+19]]);
-                let f5 = u32::from_be_bytes([slot[o+20], slot[o+21], slot[o+22], slot[o+23]]);
-                println!("  rec[{i}] hash={hash:08X} off={dat_off} size={dat_size} f3={f3:08X} f4={f4:08X} f5={f5:08X}");
-                if dat_off + 4 > slot.len() { continue }
-                // Payload should start with BE u32 name_len then ascii name.
-                let name_len = u32::from_be_bytes([
-                    slot[dat_off], slot[dat_off+1], slot[dat_off+2], slot[dat_off+3]
-                ]) as usize;
-                if name_len == 0 || name_len > 256 || dat_off + 4 + name_len > slot.len() { continue }
-                let name_bytes = &slot[dat_off + 4 .. dat_off + 4 + name_len];
-                if let Ok(s) = std::str::from_utf8(name_bytes) {
-                    println!("      name_len={name_len}, name={s:?}");
-                    // The next 4 bytes after the name should be the D3D9 format code (retail
-                    // packs it BE-swapped as a u32 that reads as ASCII "DXT1"/"DXT5" etc, and
-                    // uncompressed formats as small ints). Dump them for eyeball.
-                    let after = dat_off + 4 + name_len;
-                    if after + 16 <= slot.len() {
-                        let hdr_be: [u8; 16] = slot[after..after+16].try_into().unwrap();
-                        print!("      after-name: ");
-                        for b in &hdr_be { print!("{b:02X} "); }
-                        println!();
-                        let fmt = std::str::from_utf8(&hdr_be[..4]).unwrap_or("?");
-                        println!("      fmt-ascii (be): {fmt:?}");
-                    }
-                }
-            }
-            if checked >= 6 { break }
-        }
-        assert!(checked > 0, "no textures slots probed");
-    }
-
-    #[test]
-    fn opens_2008_and_mines_packlog_inventory() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        // The prototype ships ~1399 packlogs — even a corrupted copy should yield hundreds.
-        let names = src.hash_names.len();
-        assert!(names > 100, "expected many hash→name entries, got {names}");
-        // Some meshes should exist.
-        let meshes = src.list_meshes();
-        assert!(!meshes.is_empty(), "no meshes indexed");
-        // Some textures too.
-        let textures = src.list_textures();
-        assert!(!textures.is_empty(), "no textures indexed");
-        // Fingerprint should mention the packlog count.
-        assert!(
-            src.fingerprint().matched.iter().any(|m| m.contains("packlog")),
-            "fingerprint should surface the packlog count"
-        );
-    }
-
-    #[test]
-    fn hash_scheme_matches_retails_pandemic_hash() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        // Enough block names must hash correctly under retail's `pandemic_hash` to prove the two
-        // namespaces are the same. We accept partial (some blocks need a folder prefix or a case
-        // fix that isn't wired yet — a follow-up probe would tighten the 74% we get today to
-        // 100%). Anything above 50% is proof of scheme-identity; anything below suggests a
-        // wholly different hash.
-        let confirmed = src
-            .fingerprint()
-            .matched
+    fn skinned(smsh: &Smsh, rig: &[Bone]) -> Vec<Vec3> {
+        let joints = crate::skinning::bind_pose(rig);
+        smsh.positions
             .iter()
-            .any(|m| m.contains("hash scheme confirmed IDENTICAL"))
-            || src
-                .fingerprint()
-                .warnings
-                .iter()
-                .any(|w| w.contains("PARTIALLY matches"));
-        assert!(
-            confirmed,
-            "expected some pandemic_hash matches on block names; got fingerprint: {:#?}",
-            src.fingerprint()
-        );
+            .zip(&smsh.joints)
+            .zip(&smsh.weights)
+            .map(|((p, j), w)| {
+                let m = joints[j[0] as usize] * w[0];
+                m.transform_point3(Vec3::from_array(*p))
+            })
+            .collect()
     }
 
     #[test]
-    fn walks_all_material_slots_and_indexes_the_readable_ones() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        // With SBL4 unwrap wired (probe #1), the material walk now reads FROM the correct
-        // on-disk offsets. Every SBL4 .Pack with a materials slot ingests; the count should be
-        // in the many-hundreds. If this drops back to the pre-SBL4 double-digits floor, the
-        // walk regressed to packlog offsets.
-        assert!(
-            src.materials.slots_ok >= 100,
-            "expected ≥100 material slots to parse cleanly post-SBL4, got {}/{}",
-            src.materials.slots_ok,
-            src.materials.slots_read
-        );
-        assert!(
-            src.materials.materials_indexed >= 500,
-            "expected ≥500 materials indexed, got {}",
-            src.materials.materials_indexed
-        );
-        // The fingerprint must surface the split (readable + non-SBL4 + errored).
-        assert!(
-            src.fingerprint().matched.iter().any(|m| m.contains("material bindings")),
-            "fingerprint missing 'material bindings' row: {:#?}",
-            src.fingerprint()
-        );
+    fn a_rigid_stream_draws_at_its_bone_at_bind_pose() {
+        let m = rigid_mesh(None);
+        let (smsh, rig, uvless) = convert(&m).unwrap();
+        assert_eq!(uvless, vec![(0, 3)]);
+        let got = skinned(&smsh, &rig);
+        assert!((got[1] - Vec3::new(6.0, 0.0, 0.0)).length() < 1e-5, "{got:?}");
+        // A stored inverse bind (row-vector convention: translation in m[12..14]) that differs from
+        // the inverse bind world still draws the vertex at world · p.
+        let ib = Mat4::from_translation(Vec3::new(-4.0, 1.0, 0.0)).to_cols_array();
+        let (smsh, rig, _) = convert(&rigid_mesh(Some(ib))).unwrap();
+        let got = skinned(&smsh, &rig);
+        assert!((got[1] - Vec3::new(6.0, 0.0, 0.0)).length() < 1e-4, "{got:?}");
+        assert_eq!(smsh.prims[0].material_hash, 7);
+        assert!(smsh.normals.iter().all(|n| (Vec3::from_array(*n).length() - 1.0).abs() < 1e-5));
     }
 
     #[test]
-    fn textures_for_material_resolves_a_known_uid() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let (uid, slots) = src
-            .materials
-            .by_uid
-            .iter()
-            .find(|(_, slots)| slots.iter().any(|s| s.is_some()))
-            .map(|(u, s)| (*u, *s))
-            .expect("at least one indexed material with a texture");
-        let looked_up = src.textures_for_material(uid).expect("known uid resolves");
-        assert_eq!(looked_up, slots, "trait lookup must match the underlying index");
-        assert!(
-            looked_up[0].is_some() || looked_up.iter().any(|s| s.is_some()),
-            "expected at least one populated slot for uid {uid:#010x}"
-        );
+    fn dxn_normals_get_z() {
+        let mut t = CpuTexture { name: String::new(), width: 1, height: 1, format: 0, rgba: vec![128, 128, 0, 255] };
+        to_xyz_normal(&mut t, texture::DXN);
+        assert_eq!(t.rgba[2], 255);
+        let mut dxt5 = CpuTexture { name: String::new(), width: 1, height: 1, format: 0, rgba: vec![128, 128, 200, 255] };
+        to_xyz_normal(&mut dxt5, texture::DXT5);
+        assert_eq!(dxt5.rgba[2], 200);
     }
 
+    /// Opens the build named by `proto2008_dir` in the repo-root `.sab-local.toml` and loads every
+    /// mesh record: decoded, converted, and every primitive's material found in its pack.
+    #[cfg(feature = "retail")]
     #[test]
-    fn textures_for_material_returns_none_for_unknown_uid() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        assert!(src.textures_for_material(0xDEAD_BEEF).is_none());
-    }
-
-    #[test]
-    fn loose_dds_decodes_to_rgba8() {
-        // Real-file check for the loose-DDS path. CloudProj is the biggest and cleanest of the
-        // Bin360 root DDS files (512×512 DXT1, no mips, no cubemap). If the decoder ever
-        // regresses to a tiled interpretation the byte-count assertion still passes but the
-        // image is scrambled — the eyeball-verified reference PNG lives in the docs.
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let hash = pandemic_hash("CloudProj");
-        let tex = src.load_texture(hash).expect("decode loose CloudProj.dds");
-        assert_eq!(tex.width, 512);
-        assert_eq!(tex.height, 512);
-        assert_eq!(tex.rgba.len() as u64, tex.width as u64 * tex.height as u64 * 4);
-    }
-
-    #[test]
-    fn load_texture_on_real_hash_either_decodes_or_stubs_explicitly() {
-        // Both outcomes are pass states — either a loose DDS decodes, or the packlog-mined slot
-        // returns the SBL4-blocked stub. What we're guarding against is a silent success on a
-        // hash we can't actually decode (returning garbage), or a panic.
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let textures = src.list_textures();
-        assert!(!textures.is_empty(), "packlog + loose DDS should yield textures");
-        let mut decoded_any = false;
-        let mut blocked_any = false;
-        for (h, _name) in src.hash_names.iter().take(2000) {
-            match src.load_texture(*h) {
-                Ok(t) => {
-                    decoded_any = true;
-                    assert_eq!(t.rgba.len() as u64, t.width as u64 * t.height as u64 * 4);
-                }
-                Err(e) => {
-                    if e.contains('×') {
-                        blocked_any = true;
-                    } else if e.starts_with("no texture with hash") {
-                        // A hash that showed up in `hash_names` but not in either texture table
-                        // — a block-name hash for a mesh/material. Fine.
-                    } else {
-                        panic!("unexpected error for hash {h:08X}: {e}");
-                    }
-                }
-            }
-            if decoded_any && blocked_any {
-                break;
-            }
-        }
-        assert!(
-            decoded_any || blocked_any,
-            "expected at least one hash to either decode (loose DDS) or hit the SBL4 stub"
-        );
-    }
-
-    #[test]
-    fn read_mesh_bytes_extracts_the_sbl4_meshes_slot() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let meshes = src.list_meshes();
-        assert!(!meshes.is_empty(), "packlog inventory should yield meshes");
-
-        // What "correct" looks like: a 2008 SBL4 meshes slot has the shape
-        //   u32 BE count  |  count × 24-byte records (BE)  |  zlib blobs
-        // where each inflated blob starts with the ASCII magic "MSH4". So the earmark
-        // is straightforward: parse the small outer header, chase the first record's
-        // offset, and expect a zlib stream (`78 01…`). If we grabbed the wrong bytes
-        // (the OLD packlog-driven path did — it landed in the middle of the textures
-        // blob), this check falls over.
-        //
-        // .Pack files that aren't SBL4 (SBLL, SBL8, …) surface as clean errors here;
-        // we walk to the first mesh whose containing pack IS an SBL4, so the presence
-        // of other container magics doesn't fail this test.
-        let mut probed = 0usize;
-        let mut ok_shape = 0usize;
-        let mut inflated_msh4 = 0usize;
-        for m in meshes.iter().take(500) {
-            probed += 1;
-            let Ok(bytes) = src.read_mesh_bytes(m) else { continue };
-            if bytes.len() < 4 {
-                continue;
-            }
-            let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-            if n == 0 || n > 4096 {
-                continue;
-            }
-            let dir_end = 4 + n * 24;
-            if dir_end > bytes.len() {
-                continue;
-            }
-            let first_off = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]])
-                as usize;
-            let first_comp = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]])
-                as usize;
-            if first_off + first_comp > bytes.len() || first_off < dir_end {
-                continue;
-            }
-            ok_shape += 1;
-            // Zlib magic 0x78 0x01/0x9C is the loader-friendly earmark: no other
-            // 2008 container starts that way, so seeing it at first_off proves we
-            // hit a meshes slot and not, say, a padded audio buffer.
-            let head = &bytes[first_off..first_off + first_comp.min(2)];
-            if head.len() < 2 || head[0] != 0x78 {
-                continue;
-            }
-            use std::io::Read;
-            let mut z = flate2::read::ZlibDecoder::new(&bytes[first_off..first_off + first_comp]);
-            let mut out = Vec::new();
-            if z.read_to_end(&mut out).is_err() {
-                continue;
-            }
-            if out.len() >= 4 && &out[0..4] == b"MSH4" {
-                inflated_msh4 += 1;
-                if inflated_msh4 >= 3 {
-                    break; // three concordant witnesses = the layout is real
-                }
-            }
-        }
-        eprintln!(
-            "[read_mesh_bytes] probed {probed} handles, {ok_shape} looked like a meshes slot, \
-             {inflated_msh4} inflated to a MSH4 record"
-        );
-        assert!(
-            inflated_msh4 > 0,
-            "no meshes slot round-tripped: read_mesh_bytes is still returning wrong bytes \
-             (probed={probed}, shape-ok={ok_shape})"
-        );
-    }
-
-    #[test]
-    fn unknown_texture_hash_returns_the_catchall_error() {
-        // A hash that isn't in any index at all — neither a loose DDS nor a packlog-mined slot
-        // — should hit the catch-all error, not the SBL4-blocked one and not a silent success.
-        // (Probe #1's earlier `stubbed_texture_decoder_still_returns_explicit_error` was
-        // dropped when probe #2 wired loose DDS — texture decode is no longer wholly stubbed;
-        // this covers the still-unreachable-hash case.)
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        let err = match src.load_texture(0xdeadbeef) {
-            Err(e) => e,
-            Ok(_) => panic!("expected error for unknown hash, got a decoded texture"),
-        };
-        assert!(
-            err.starts_with("no texture with hash"),
-            "expected explicit unknown-hash error, got: {err}"
-        );
-    }
-
-    /// End-to-end proof that a 2008 mesh + its per-prim material lookups can be assembled into
-    /// the shape the workshop's renderer consumes: `renderer.submeshes().len() == prim count`,
-    /// and for every submesh with a resolvable material we can look up the texture slot vector.
-    /// This is the acceptance test for the "render 2008 meshes in the workshop" wiring — a
-    /// regression on any of the four decoders (mesh, material index, hash correspondence,
-    /// texture load) drops the fraction below the floor.
-    #[test]
-    fn mesh_prims_resolve_to_material_slot_vectors() {
-        let Some(root) = test_root() else {
-            eprintln!("skip: no Bin360/ prototype");
-            return;
-        };
-        let src = Prototype2008Source::open(&root).expect("open");
-        // Sean HD is the reference mesh for the whole 2008 decode work — if its material
-        // lookups regress, everything downstream is broken.
-        let handle = src
-            .list_meshes()
-            .into_iter()
-            .find(|h| h.name == "BP_AL_Sean_HD")
-            .expect("BP_AL_Sean_HD present in packlog");
-        let smsh = src.read_mesh_smsh(&handle).expect("Sean HD decodes to Smsh");
-        assert!(!smsh.prims.is_empty(), "Sean HD has prims");
-        assert!(!smsh.positions.is_empty(), "Sean HD has vertex positions");
-        assert_eq!(smsh.indices.len() % 3, 0, "IB is triangle-list");
-
-        // What the renderer will consume — the same submesh cover it computes internally.
-        let cover =
-            crate::formats::submesh_cover(&smsh.prims, smsh.indices.len() as u32);
-        assert!(!cover.is_empty(), "submesh cover non-empty");
-        // The cover collapses coincident ranges; it can never have MORE submeshes than prims.
-        assert!(
-            cover.len() <= smsh.prims.len(),
-            "cover ({}) exceeds prim count ({})",
-            cover.len(),
-            smsh.prims.len()
-        );
-
-        // For each submesh, at least ONE candidate material must resolve to a slot vector.
-        // A submesh whose only material is an alias not indexed today is expected to miss —
-        // the acceptance bar is "most submeshes wire up", not "all". Guards a broken hash
-        // correspondence (which would drop the fraction to 0) or a broken material index
-        // (which would also drop it to 0).
-        let mut resolved = 0usize;
-        let mut with_diffuse = 0usize;
-        for sm in &cover {
-            for &mat_hash_24 in &sm.materials {
-                if let Some(uid) = src.resolve_material_hash_24(mat_hash_24) {
-                    if let Some(slots) = src.textures_for_material(uid) {
-                        resolved += 1;
-                        if slots[0].is_some() {
-                            with_diffuse += 1;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        assert!(
-            resolved > 0,
-            "no submesh resolved to a material slot vector (cover={} prims={}) — the mesh \
-             prim hash ↔ MTLD uid correspondence is broken",
-            cover.len(),
-            smsh.prims.len()
-        );
-        // Some submeshes on Sean HD should have a diffuse hash after resolution — if all
-        // materials indexed lack diffuse, the slot ordering claim ([d,s,n,wm]) is wrong.
-        assert!(
-            with_diffuse > 0,
-            "no submesh got a diffuse slot after resolution ({resolved}/{} submeshes matched)",
-            cover.len()
-        );
-        eprintln!(
-            "  Sean HD: prims={} cover={} resolved={} with_diffuse={}",
-            smsh.prims.len(),
-            cover.len(),
-            resolved,
-            with_diffuse
-        );
+    fn every_mesh_of_the_build_loads() {
+        let bin360 = sab_formats::game_paths::local_config_proto2008_bin360(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap_or_else(|e| panic!("{e}"));
+        let src = Prototype2008Source::open(&bin360).unwrap_or_else(|e| panic!("{e}"));
+        let handles = src.list_meshes();
+        let failures: Vec<String> = handles.iter().filter_map(|h| src.load_mesh(h).err()).collect();
+        assert!(failures.is_empty(), "{} of {} meshes failed:\n{}", failures.len(), handles.len(), failures.join("\n"));
+        assert_eq!(handles.len(), 137_861);
     }
 }

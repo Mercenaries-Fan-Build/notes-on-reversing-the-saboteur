@@ -444,6 +444,177 @@ impl Layout {
     }
 }
 
+// ------------------------------------------------------------------ model space
+
+/// Terrain lattice spacing in metres (`8F000001` streams): 37.5 m chunks of 16 cells.
+pub const TERRAIN_STEP: f32 = 37.5 / 16.0;
+/// Terrain lattice width: 17 points per row.
+pub const TERRAIN_ROW: u16 = 17;
+
+fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let t = [2.0 * (y * v[2] - z * v[1]), 2.0 * (z * v[0] - x * v[2]), 2.0 * (x * v[1] - y * v[0])];
+    [v[0] + w * t[0] + (y * t[2] - z * t[1]), v[1] + w * t[1] + (z * t[0] - x * t[2]), v[2] + w * t[2] + (x * t[1] - y * t[0])]
+}
+
+impl Mesh {
+    /// A point in bone `bone`'s space carried to model space through the bind pose: each bone's
+    /// `translation + rotation · (scale ⊙ p)`, from `bone` up to the root.
+    pub fn bone_to_model(&self, bone: usize, p: [f32; 3]) -> [f32; 3] {
+        let mut q = p;
+        let mut k = bone as i32;
+        while k >= 0 {
+            let b = &self.bones[k as usize];
+            let r = rotate(b.rotation, [q[0] * b.scale[0], q[1] * b.scale[1], q[2] * b.scale[2]]);
+            q = [r[0] + b.translation[0], r[1] + b.translation[1], r[2] + b.translation[2]];
+            k = b.parent;
+        }
+        q
+    }
+
+    /// A stream's vertex positions in model space: [`Mesh::stream_positions`], with bone-space streams
+    /// carried by [`Mesh::bone_to_model`].
+    pub fn positions(&self, s: &Stream) -> Result<Vec<[f32; 3]>, String> {
+        let (space, ps) = self.stream_positions(s)?;
+        Ok(match space {
+            Space::Model => ps,
+            Space::Bone(b) => ps.into_iter().map(|p| self.bone_to_model(b as usize, p)).collect(),
+        })
+    }
+
+    /// A stream's vertex positions and the space they are in:
+    ///
+    /// * terrain (`USHORT2` position): `[height, lattice]`, lattice = `17·Zq + Xq`;
+    ///   `x/z = origin + (Xq, Zq) · TERRAIN_STEP`, `y = box_min.y + height / 65535 · box_size.y`, with
+    ///   `origin` the stream bone carried to model space — model space;
+    /// * a `FLOAT16_4` stream without a normal: normalised, `box_min + q · box_size` of the stream bone's
+    ///   box — model space;
+    /// * a skinned stream, or a stream of a body without bones: as stored, model space;
+    /// * any other stream: as stored, in the stream bone's space.
+    ///
+    /// Evidence for each rule: `docs/2008_msh4_format.md` ("Coordinate spaces").
+    pub fn stream_positions(&self, s: &Stream) -> Result<(Space, Vec<[f32; 3]>), String> {
+        let l = Layout::of(s.format)?;
+        let ps = self.decode_positions(s, &l)?;
+        let normalised = matches!(l.position, Some((Element::UShort2, _)))
+            || (matches!(l.position, Some((Element::Half4, _))) && l.normal.is_none());
+        let space = if normalised || l.skin.is_some() || self.bones.is_empty() { Space::Model } else { Space::Bone(s.bone) };
+        Ok((space, ps))
+    }
+
+    /// A stream's normals in the space of its positions ([`Mesh::stream_positions`]), or `None` when
+    /// the format has no normal.
+    pub fn stream_normals(&self, s: &Stream) -> Result<Option<Vec<[f32; 3]>>, String> {
+        let l = Layout::of(s.format)?;
+        Ok(l.normal.map(|(e, o)| {
+            s.vertices
+                .chunks_exact(s.stride as usize)
+                .map(|v| {
+                    let n = floats(e, v, o);
+                    [n[0], n[1], n[2]]
+                })
+                .collect()
+        }))
+    }
+
+    /// Texture coordinate set `set` of a stream, or `None` when the format has fewer sets.
+    pub fn stream_uvs(&self, s: &Stream, set: usize) -> Result<Option<Vec<[f32; 2]>>, String> {
+        let l = Layout::of(s.format)?;
+        Ok(l.uvs.get(set).map(|&(e, o)| {
+            s.vertices
+                .chunks_exact(s.stride as usize)
+                .map(|v| {
+                    let t = floats(e, v, o);
+                    [t[0], t[1]]
+                })
+                .collect()
+        }))
+    }
+
+    /// A skinned stream's influences: bone indices (through the remap palette) and weights in [0,1],
+    /// x component first. `None` when the format is not skinned. An influence with weight 0 gets bone 0.
+    pub fn stream_skin(&self, s: &Stream) -> Result<Option<Vec<([u32; 4], [f32; 4])>>, String> {
+        let l = Layout::of(s.format)?;
+        let Some((wo, io)) = l.skin else { return Ok(None) };
+        let mut out = Vec::with_capacity(s.vertex_count as usize);
+        for v in s.vertices.chunks_exact(s.stride as usize) {
+            let w = ubyte4(v, wo);
+            let i = ubyte4(v, io);
+            let mut bones = [0u32; 4];
+            let mut weights = [0f32; 4];
+            for k in 0..4 {
+                if w[k] == 0 {
+                    continue;
+                }
+                let r = self.remaps.get(i[k] as usize).ok_or_else(|| {
+                    format!("mesh '{}': skin index {} past {} remaps", self.name, i[k], self.remaps.len())
+                })?;
+                bones[k] = r.bone;
+                weights[k] = w[k] as f32 / 255.0;
+            }
+            out.push((bones, weights));
+        }
+        Ok(Some(out))
+    }
+
+    fn decode_positions(&self, s: &Stream, l: &Layout) -> Result<Vec<[f32; 3]>, String> {
+        let Some((e, o)) = l.position else { return Err(format!("mesh '{}': stream format {:08X} has no position", self.name, s.format)) };
+        let bone = self.bones.get(s.bone as usize);
+        let boxed = |b: &Bone| {
+            let min = [b.centre[0] - b.half[0], b.centre[1] - b.half[1], b.centre[2] - b.half[2]];
+            let size = [2.0 * b.half[0], 2.0 * b.half[1], 2.0 * b.half[2]];
+            (min, size)
+        };
+        let verts = s.vertices.chunks_exact(s.stride as usize);
+        match e {
+            Element::UShort2 => {
+                let b = bone.ok_or_else(|| format!("mesh '{}': a terrain stream needs its bone", self.name))?;
+                let (min, size) = boxed(b);
+                let origin = self.bone_to_model(s.bone as usize, [0.0; 3]);
+                verts
+                    .map(|v| {
+                        let [h, lat] = ushort2(v, o);
+                        let (zq, xq) = (lat / TERRAIN_ROW, lat % TERRAIN_ROW);
+                        if zq >= TERRAIN_ROW {
+                            return Err(format!("mesh '{}': terrain lattice index {lat} past 17x17", self.name));
+                        }
+                        Ok([
+                            origin[0] + xq as f32 * TERRAIN_STEP,
+                            min[1] + h as f32 / 65535.0 * size[1],
+                            origin[2] + zq as f32 * TERRAIN_STEP,
+                        ])
+                    })
+                    .collect()
+            }
+            Element::Half4 if l.normal.is_none() => {
+                let b = bone.ok_or_else(|| format!("mesh '{}': a normalised stream needs its bone", self.name))?;
+                let (min, size) = boxed(b);
+                Ok(verts
+                    .map(|v| {
+                        let q = floats(e, v, o);
+                        [min[0] + q[0] * size[0], min[1] + q[1] * size[1], min[2] + q[2] * size[2]]
+                    })
+                    .collect())
+            }
+            Element::Half4 | Element::Float2 | Element::Float3 | Element::Float4 => Ok(verts
+                .map(|v| {
+                    let p = floats(e, v, o);
+                    [p[0], p[1], p[2]]
+                })
+                .collect()),
+            other => Err(format!("mesh '{}': position element {other:?}", self.name)),
+        }
+    }
+}
+
+/// The space a stream's stored positions are in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Space {
+    Model,
+    /// The space of this bone, carried to model space through the bind pose.
+    Bone(u32),
+}
+
 // ------------------------------------------------------------------ element decoding
 
 /// An IEEE half from its big-endian bits.
@@ -497,6 +668,13 @@ pub fn bytes4(v: &[u8], o: u32) -> [u8; 4] {
     [v[o], v[o + 1], v[o + 2], v[o + 3]]
 }
 
+/// A `UBYTE4` / `UBYTE4N` element's components x, y, z, w: the element is one big-endian u32 with x in
+/// its low byte, so x is the last byte stored.
+pub fn ubyte4(v: &[u8], o: u32) -> [u8; 4] {
+    let b = bytes4(v, o);
+    [b[3], b[2], b[1], b[0]]
+}
+
 /// A `USHORT2` element's two big-endian halves in stored order.
 pub fn ushort2(v: &[u8], o: u32) -> [u16; 2] {
     [be16(v, o as usize), be16(v, o as usize + 2)]
@@ -542,6 +720,70 @@ mod tests {
         assert_eq!(floats(Element::Half4, &v, 0), [1.0, 0.5, 0.0, 1.0]);
         let n = (511u32 << 20) | (1u32.wrapping_neg() & 0x3ff) << 10;
         assert_eq!(floats(Element::Dec3N, &n.to_be_bytes(), 0), [0.0, -1.0 / 511.0, 1.0, 1.0]);
+    }
+
+    fn bone(t: [f32; 3], r: [f32; 4], parent: i32, centre: [f32; 3], half: [f32; 3]) -> Bone {
+        Bone { hash: 0, parent, translation: t, rotation: r, scale: [1.0; 3], centre, half: [half[0], half[1], half[2], 0.0], export_flags: 0 }
+    }
+
+    fn mesh_with(streams: Vec<Stream>, bones: Vec<Bone>) -> Mesh {
+        Mesh {
+            magic: *b"MSH4",
+            name: "t".into(),
+            reserved: 0,
+            shadow_caster: false,
+            streams,
+            bones,
+            remaps: vec![Remap { bone: 1, matrix: [0.0; 16] }],
+            bounds: Bounds { centre: [0.0; 3], half: [1.0; 3], radius: 1.0 },
+            tail: Tail::None,
+        }
+    }
+
+    #[test]
+    fn positions_follow_each_space_rule() {
+        let id = [0.0, 0.0, 0.0, 1.0];
+        let bones = vec![
+            bone([10.0, 0.0, 0.0], id, -1, [10.0, 1.0, 0.0], [18.75, 1.0, 18.75]),
+            bone([0.0, 2.0, 0.0], [0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2], 0, [0.0; 3], [1.0; 3]),
+        ];
+        // Terrain: lattice 18 = (Xq 1, Zq 1), full height.
+        let terrain = Stream {
+            format: 0x8F00_0001,
+            bone: 0,
+            stride: 4,
+            vertex_count: 1,
+            vertices: [0xFFFFu16.to_be_bytes(), 18u16.to_be_bytes()].concat(),
+            indices: vec![],
+            prims: vec![],
+        };
+        // Normalised half4 (no normal): q = (0.5, 1, 0) in bone 0's box.
+        let unit = Stream {
+            format: 0x0F00_0002,
+            bone: 0,
+            stride: 8,
+            vertex_count: 1,
+            vertices: vec![0x38, 0, 0x3C, 0, 0, 0, 0x3C, 0],
+            indices: vec![],
+            prims: vec![],
+        };
+        // Rigid float3 + normal under bone 1 (90 degrees about z, 2 up, under bone 0 at x = 10).
+        let mut rigid_v = Vec::new();
+        for f in [1.0f32, 0.0, 0.0] {
+            rigid_v.extend_from_slice(&f.to_be_bytes());
+        }
+        rigid_v.extend_from_slice(&(511u32 << 20).to_be_bytes());
+        let rigid = Stream { format: 0x0E00_1002, bone: 1, stride: 16, vertex_count: 1, vertices: rigid_v, indices: vec![], prims: vec![] };
+        let m = mesh_with(vec![terrain, unit, rigid], bones);
+        let t = m.positions(&m.streams[0]).unwrap()[0];
+        assert!((t[0] - (10.0 + TERRAIN_STEP)).abs() < 1e-4 && (t[1] - 2.0).abs() < 1e-4 && (t[2] - TERRAIN_STEP).abs() < 1e-4, "{t:?}");
+        let u = m.positions(&m.streams[1]).unwrap()[0];
+        assert!((u[0] - 10.0).abs() < 1e-4 && (u[1] - 2.0).abs() < 1e-4 && (u[2] + 18.75).abs() < 1e-4, "{u:?}");
+        assert_eq!(m.stream_positions(&m.streams[2]).unwrap().0, Space::Bone(1));
+        let r = m.positions(&m.streams[2]).unwrap()[0];
+        assert!((r[0] - 10.0).abs() < 1e-4 && (r[1] - 3.0).abs() < 1e-4 && r[2].abs() < 1e-4, "{r:?}");
+        assert_eq!(m.stream_normals(&m.streams[2]).unwrap(), Some(vec![[0.0, 0.0, 1.0]]));
+        assert_eq!(ubyte4(&[1, 2, 3, 4], 0), [4, 3, 2, 1]);
     }
 
     fn body(magic: &[u8; 4], tail: &[u8]) -> Vec<u8> {

@@ -1,145 +1,137 @@
-# 2008 Xbox 360 prototype — `<hash>.materials` slot format
+# 2008 Xbox 360 prototype — materials (`WSAO` / `MTLD`)
 
-**Status:** solved for the record-level shape (name + texture-slot vector); post-texture
-sub-blocks (aliases, render passes, constants, shader refs) are known-present but not needed
-by the workshop yet and left unparsed.
+A `materials` slot of an `SBL*` sub-pack (`docs/2008_subpack_format.md`) is one `WSAO` block of
+`MTLD` records. Each record is a material: its texture list and one to three render passes, each
+pass naming a vertex and a pixel shader, the textures it binds, shader constants, and D3D render and
+sampler states. Reader: `sab_formats::proto2008::material`.
 
-**Evidence:** proven end-to-end against the two `Global/*.materials` slots on the current extract
-whose packlog offset happens to land on raw WSAO bytes (12 out of ~717 slots today — see the
-"scope" section below for why). Cross-referenced 20+ texture hashes against retail's
-`France.materials` `XTSW` table; every one is present, confirming (a) the parser reads real
-texture-name-hashes at the right offsets and (b) the 2008 hash namespace is identical to
-retail's `pandemic_hash`.
+Engine evidence (WildStar_d unless marked; WildStar_p's copy of `ReadMaterials` reads the same
+fields in the same order but is constant-folded by the decompiler):
 
-**Impl:** `tools/sab_workshop/src/sources/prototype2008_material.rs`; wired into
-`Prototype2008Source::textures_for_material` and the `hash_names` fallback.
+* `ReadMaterials` @0x826554a8 (WildStar_p @0x8236c440) — the reader.
+* `XenonOdin::SetMaterial` @0x831420e8 — binds a pass's textures, shaders and constants.
+* `XenonOdin::SetStates` @0x83143da8 — applies its render and sampler states.
+* `D3DRENDERSTATETYPE`, `D3DSAMPLERSTATETYPE` and value enums — `WildStar_p.pdb`.
 
-## Where materials live
+## Layout (big-endian)
 
-Retail keeps every material record in one loose `France.materials` (WSAO, LE) at the game root.
-The 2008 build has no such consolidated file. Instead, each packlog block ships **one**
-`<blockhash>.materials` slot inside its per-block `.Pack` container:
+```text
+char  magic[4] = "WSAO"
+u32   count
+MTLD  records[count]
 
-    File: D:\projects\wildstar\art\Cache\PackData\Xbox 360\Global\-1288447421.materials
-    Start: 987255
-    Size: 299
+MTLD
+  char  magic[4] = "MTLD"
+  u32   uid                      the key mesh primitives name (see below)
+  u32   size                     bytes of the record after this word
+  u32   name_len                 <= 0x100, NUL included
+  char  name[name_len]
+  u32   texture_count
+  u32   textures[texture_count]  texture name hashes
+  u32   pass_count
+  Pass  passes[pass_count]
 
-`-1288447421` is signed decimal for `pandemic_hash("Act1_IntKey")`. There are 863 such
-`.materials` entries across the 1399 Global packlogs.
-
-## On-disk layout (big-endian throughout)
-
-```
-WSAO file (one per .materials slot):
-  char magic[4]   = "WSAO"       (retail is "OASW" LE — 2008 flips both magic and endianness)
-  u32  num_records
-  MTLD records[num_records]      (packed back-to-back, no per-record padding)
-
-MTLD record:
-  char magic[4]   = "MTLD"
-  u32  uid                       (drawcall material hash — the key for
-                                  textures_for_material)
-  u32  body_size                 (bytes that follow, not counting these 12 header bytes)
-  u8   body[body_size]:
-    u32  name_len                (INCLUDES the trailing NUL — a 24-char name has name_len=25)
-    char name[name_len]          (NOT 4-byte padded — subsequent u32s are unaligned reads)
-    u32  num_textures
-    u32  texture_hashes[num_textures]    (slot order [diffuse, spec, normal, wm])
-    ... sub-blocks (render passes, constants, shader refs) — NOT parsed here ...
-```
-
-### Why this is not retail's WSAO with a different endianness
-
-The magic is different (`WSAO` vs `OASW`), yes, but the interior is a wholly different
-serialisation. Retail's OASW has **separate typed sub-blocks** — an `XTSW` array of every
-texture hash in the file, an `AMSW` array of `WSMA` records that point INTO it by
-`(tex_begin, num_tex)` slice indices, plus `APSW` / `TSSW` / `PCSW` / `PPSW` / `PVSW` for
-passes/state/constants. The 2008 WSAO has **inline records** — each `MTLD` is
-self-contained, texture hashes are stored right inside it, and there is no shared texture-hash
-array. Retail's `MTLD` string does not appear anywhere in `France.materials` (checked); 2008's
-`XTSW` / `AMSW` do not appear in any 2008 `.materials` (checked). Different formats that share
-a family name.
-
-### Slot ordering
-
-The retail workshop's `wsao.rs` and the community engine-comparison doc both fix the slot
-order as `[diffuse, specular, normal, wm]`. This impl assumes the same for 2008 — untested for
-2008 specifically. Two independent props to verify once the SBL4 unwrap (probe #1) lets us see
-enough materials to pick a known-good sample:
-
-1. Take a material that has 3 textures and cross-reference each hash against a texture whose
-   name suffix (`_D` / `_S` / `_N`) unambiguously identifies its slot.
-2. Compare the 2008 record for a material name that also appears in retail's WSAO (mapping
-   through material-name → aliases → retail WSMA record) — the retail slot vector is
-   independently `[d,s,n,wm]` and should line up index-for-index.
-
-### Aliases
-
-Retail's `WSMA` record carries an `ids[]` array — mesh drawcalls can key on either the
-primary uid or any alias, and both resolve to the same slot vector. The 2008 MTLD body
-carries additional fields after the texture list that MAY be aliases (a bunch of
-hash-shaped u32s in the same-position that retail keeps aliases). Not decoded here because
-the workshop's picker doesn't need them yet — mesh drawcalls in the 2008 build come from
-`.meshes` slots we can't unwrap either (again, probe #1). When that changes and drawcalls
-start driving the lookup, a mesh whose material hash matches an alias will miss this index
-and we'll need to add alias fold-ins. The parser's `MaterialRecord` shape leaves room for
-this — just extend it and update the ingest to key every alias to the same slot vector.
-
-## Sample record (`DefaultLib.GR_C2_metal:0`, from `Common.materials`)
-
-```
-0x008  MTLD magic
-0x00C  uid          0x0373DF9E
-0x010  body_size    0x0000011D  (285)
-0x014  body:
-0x014    name_len   0x00000019  (25 = 24 chars + NUL)
-0x018    name       "DefaultLib.GR_C2_metal:0\0"
-0x031    num_tex    0x00000002
-0x035    tex[0]     0xE74F9B28   (retail-WSTX match: DIFFUSE)
-0x039    tex[1]     0x183EA998   (retail-WSTX match)
-0x03D    (sub-blocks follow: 3 render passes tagged 0x0ABCCFE8 / 0x236F5A8D / 0xB20202F9;
-0x03D     each pass carries a per-slot texture-index + per-pass floats; skipped by this parser)
-0x131  ← next MTLD record
+Pass
+  u32   name                     pandemic_hash of the pass name
+  u32   flags
+  u32   render_state_count
+  u32   sampler_state_count
+  u32   vertex_shader            shader hash
+  u32   pixel_shader             shader hash, 0 for depth-only passes
+  u32   texture_ref_count
+  u32   vs_float_count, vs_int_count, vs_bool_count
+  u32   ps_float_count, ps_int_count, ps_bool_count
+  u32   register_vector_count
+  u32   texture_refs[texture_ref_count]           indices into textures
+  { u32 register; f32 v[4] }[register_vector_count]
+  f32   vs_float[vs_float_count][4]
+  i32   vs_int[vs_int_count][4]
+  i32   vs_bool[vs_bool_count]
+  f32   ps_float[ps_float_count][4]
+  i32   ps_int[ps_int_count][4]
+  i32   ps_bool[ps_bool_count]
+  { u32 state; u32 value }[render_state_count]    D3DRENDERSTATETYPE
+  { u32 state; u32 value }[sampler_state_count]   D3DSAMPLERSTATETYPE; 0x7FFFFFFF ends a sampler
 ```
 
-(The parser reads `MaterialRecord { uid: 0x0373DF9E, textures: [Some(0xE74F9B28), Some(0x183EA998), None, None], name: "DefaultLib.GR_C2_metal:0" }` and moves on.)
+PROVEN: every one of the **3,552 `materials` slots** in the build — all seven sub-pack revisions
+(`SBL0` 4, `SBL4` 1,891, `SBL5` 4, `SBL6` 57, `SBL8` 234, `SBLL` 1,257, `SBLX` 105) — parses with every
+record consuming exactly its `size`, every texture ref inside its material's list, and the records
+ending at the slot's end: 97,597 materials, 257,093 passes.
 
-## Distribution of slot sizes across the 863 material slots
+## Fields
 
-The smallest is 258 bytes (`CollectionItems`, `NaziOfficerTag`, `SabotageItem`, `SniperScope` —
-each an item slot with a minimal material set), the largest 14999 bytes (`Common` — 42 records)
-followed by 7746 (`Saboteur` — the main character bundle) and 7351 (a repeated
-skeleton-scale/infantry bundle referenced by 16 different packlogs). The 258-byte slots are
-truncated on this extract; the 14999-byte one holds 42 fully-formed MTLD records.
+* **`uid`** — `ReadMaterials` registers the material under it (`OdinMaterialManager::SetMaterial`)
+  and skips `size` bytes when a material with that uid is already loaded. Every mesh primitive's
+  `material` (`docs/2008_msh4_format.md`), and every variant binding's material, is the uid of a
+  material in **the same pack**: 298,524 / 298,524 references. PROVEN. The uid is not
+  `pandemic_hash(name)` for any record (names repeat: `Procedural Mtl:0`, `DefaultLib.Material:0`);
+  its preimage is unknown.
+* **`size`** — the bytes after the `size` word to the end of the record. PROVEN (all records).
+* **`textures`** — texture name hashes, the keys of `textures` slot records
+  (`docs/2008_texture_format.md`): of 341,248 references, 196,096 name a texture in the same pack,
+  143,387 one only in another pack, 1,765 none in the build. PROVEN.
+* **Passes.** `ReadMaterials` builds one `XenonMaterial` per pass, chained, and sorts each into a
+  render bucket by its name: `Z-Pass` → 0x12, `Cast-Shadow-Pass` → 2, `Receive-Shadow-Pass` → 0x1C,
+  else `flags & 1` → 0x40, else `Foliage-Pass` → 0x4E, else 0x27. The four names are string literals
+  in the reader; the fifth name in the data, `0x0ABCCFE8`, is `pandemic_hash("Color-Pass")`.
 
-## Scope of this probe vs the whole build
+  | pass order | materials |
+  |---|---|
+  | Color, Receive-Shadow, Cast-Shadow | 59,636 |
+  | Color, Receive-Shadow | 34,820 |
+  | Color, Z, Cast-Shadow | 2,371 |
+  | Color, Z | 716 |
+  | (none) | 54 |
 
-At extract time the packlog `Start:` offsets were written for the pre-SBL4-container layout of
-each `.Pack`. When the container was later applied, some byte ranges were preserved in place
-(giving us the 12 slots we can read raw today) and most were reshuffled or wrapped, giving us
-gibberish at the packlog offset. The `MaterialIndex` counter split (`slots_ok` /
-`slots_sbl4` / `slots_bad_magic`) tells the user exactly how much of the total probe #1
-unlocks.
+  Every material with passes starts with `Color-Pass`. `Foliage-Pass` does not occur. PROVEN.
+* **`flags`** — `ReadMaterials` tests bit 0 (bucket 0x40) and counts bit 2. 73 distinct values
+  occur (0x0 on 109,076 passes); the reader does nothing else with them. What bits other than 0 and
+  2 select: UNKNOWN.
+* **Shaders** — `ReadMaterials` resolves both hashes through `OdinShaderManager::GetShaders`. The
+  first word goes to material `+0x24`, which `SetMaterial` binds with `SetVertexShader`; the second
+  to `+0x20`, bound with `SetPixelShader`. Every pass has a vertex shader. Every `Color-Pass` and
+  `Receive-Shadow-Pass` has a pixel shader; a `Z-Pass` or `Cast-Shadow-Pass` has one exactly when it
+  sets `ALPHATESTENABLE` (829 + 18,552 passes) and none otherwise (2,258 + 43,455). 1,331 distinct
+  hashes. PROVEN.
+* **`texture_refs`** — `SetMaterial` binds ref `i` to sampler `i` (or to vertex sampler `0x10+n`
+  when bit `i` of material `+0x38` is set, which only `OdinMaterial::SetVertexShaderTextureFlag`
+  does — no file field). PROVEN.
+* **Constants** — `SetMaterial` loads the float, int and bool sets with
+  `Set{Vertex,Pixel}ShaderConstant{F,I,B}` from register 0 (`c0`, `i0`, `b0`). The data uses floats
+  only (vs 0–2, ps 0–11 vectors). PROVEN.
+* **`register_vectors`** — `{register, vec4}` pairs `SetMaterial` sets through its `PblVector4`
+  state tracker at the given register; registers 0, 1, 4, 5, 6 occur. Which shader stage the tracker
+  feeds: UNKNOWN.
+* **Render states** — the ids that occur, by `WildStar_p.pdb`: `ZWRITEENABLE`, `CULLMODE`,
+  `ALPHABLENDENABLE`, `ALPHATESTENABLE`, `ALPHAREF`, `STENCILENABLE` / `FUNC` / `PASS` / `REF` /
+  `WRITEMASK`, `DEPTHBIAS`, `COLORWRITEENABLE` (set to 0 on every `Z-Pass` and `Cast-Shadow-Pass`).
+  `ALPHATESTENABLE` is on in 18,552 `Color-Pass`, 17,723 `Receive-Shadow-Pass`, 18,552
+  `Cast-Shadow-Pass` and 829 `Z-Pass` passes. PROVEN.
+* **Sampler states** — split into one group per sampler by `0x7FFFFFFF` (`D3DSAMP_FORCE_DWORD`);
+  `SetStates` advances the sampler at each. Where a pass has groups (35,534 passes) there is one
+  per texture ref, except 321 passes with 2 groups for 3 refs. Every group is
+  `ADDRESSU, ADDRESSV, MAGFILTER, MINFILTER, MIPFILTER` = all `CLAMP` (105,565) or all `WRAP`
+  (61,195), with `LINEAR` filters. PROVEN.
 
-Empirically on the current extract:
+## What this replaces
 
-| bucket                     | slots | note                                             |
-|----------------------------|-------|--------------------------------------------------|
-| `slots_ok` (WSAO parsed)   | 12    | 78 materials indexed today                       |
-| `slots_bad_magic`          | 705   | packlog offset lands on high-entropy SBL4 payload |
-| `slots_sbl4` (SBL4 magic)  | 0     | none literally begin with `SBL4` on this extract  |
-| pack missing / truncated   | 146   | 0-byte or short `.Pack` files in the extract      |
-| total per-slot manifests   | 863   |                                                  |
+The earlier version of this page read 12 of 863 packlog-addressed slots, stopped after the texture
+list and assumed a `[diffuse, specular, normal, wm]` slot order taken from retail. The record has no
+fixed slot order: a pass's `texture_refs` order is its shader's sampler order. Which sampler a
+shader samples as diffuse, normal or specular is the shaders' business (`*.shaders`, next).
 
-The parser itself is complete for the WSAO/MTLD shape — the number-of-materials-indexed
-counter jumps from 78 to (thousands) automatically the moment probe #1 hands us un-wrapped
-slot bytes.
+## Method
 
-## Not solved here (deliberately out of scope)
+```
+sab_probe proto2008-materials <Bin360>     # every number above
+```
 
-- Full MTLD sub-block schema (render passes, constants, shader refs). Needed for exact shader
-  reproduction, not for the workshop's picker + Blinn-Phong preview + bundle export.
-- Alias fold-ins into the material-uid index. Needed once mesh drawcalls start driving the
-  lookup — parked pending probe #1 (mesh reads).
-- SBL4 sub-pack unwrap. Owned by probe #1 in this batch.
-- 2008 texture decode. Owned by probe #2 in this batch.
+`D3D*` enum values: CodeView `LF_ENUMERATE` records of `WildStar_p.pdb`.
+
+## Unknowns
+
+* The preimage of `uid`.
+* `flags` bits other than 0 and 2.
+* The shader stage behind `register_vectors`.
+* Sampler roles per shader — from the `.shaders` files and their constant tables.

@@ -36,6 +36,9 @@ sab_probe proto2008-shaders <Bin360>       every .shaders file; layouts, variant
                                            registers vs material texture refs; docs/2008_shaders_format.md
 sab_probe proto2008-textures <Bin360>      every textures record and loose .dds; formats, sRGB, slot words,
                                            mip layout vs unpacked, mips vs base; docs/2008_texture_format.md
+sab_probe proto2008-anims <Bin360>         every ANM0 clip and Animations.pack, decoded; codecs, loader
+                                           rejections, header values, rotation norms, pack sections;
+                                           docs/2008_animations_format.md
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

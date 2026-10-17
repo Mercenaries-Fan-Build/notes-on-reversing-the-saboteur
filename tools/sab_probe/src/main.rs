@@ -964,6 +964,9 @@ mod editnodes;
 mod gametext;
 mod hash_names;
 mod megapack_layout;
+mod proto2008_binaries;
+mod proto2008_meshes;
+mod proto2008_packs;
 mod texbind;
 
 fn main() {
@@ -999,6 +1002,18 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "megapack-layout" {
         megapack_layout::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-binaries" {
+        proto2008_binaries::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-meshes" {
+        proto2008_meshes::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-packs" {
+        proto2008_packs::run(&args[2..]);
         return;
     }
     if args.len() < 4 {

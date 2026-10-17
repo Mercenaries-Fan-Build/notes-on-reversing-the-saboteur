@@ -1,290 +1,250 @@
-# 2008 Xbox 360 prototype — animation format
+# 2008 Xbox 360 prototype — animations (`ANM0` clips, `Animations.pack`)
 
-**Scope:** what the animation asset chain looks like on the 2008-05 Xbox 360 devkit build
-(`game-files/Bin360/`), and how it differs from retail. Written as a companion to
-`tools/sab_workshop/src/sources/prototype2008_anim.rs`, which enumerates the catalog and
-parses the shared header today.
+**Scope:** the animation clips of the 2008-05-20 Xbox 360 prototype (`Bin360/`) — loose `ANM0`
+files and the `AP04 ANIM` pack — read, decoded and sampled the way the engine does.
+**Library:** [`sab_formats::proto2008::anim`](../tools/sab_formats/src/proto2008/anim.rs) (one clip:
+header, bone CRCs, decoded poses, sampling) and
+[`sab_formats::proto2008::anim_pack`](../tools/sab_formats/src/proto2008/anim_pack.rs) (the pack).
+**Engine oracle:** the WildStar_d build of the same code, whose decomp carries full symbols
+(`output/_ghidra_wildstar/wildstar_d_all_functions_decomp.txt`); VAs below are WildStar_d.
 
-**Status:** header + catalog + one-clip round-trip **proven** on the real dump; per-frame
-sample codec (WAV0 wavelet / DEL0 delta / NOC0 uncompressed) **not yet decoded**. See
-"Open work" at the bottom for what a decoder needs to attack next.
+**Status:** every clip parses to its last byte, decodes and samples — 3,590 loose clips the loose
+loader accepts, all 1,605 pack clips; the 30 loose clips it rejects are listed below. The pack reads
+to its last byte. PROVEN by the game gate `every_2008_animation_parses_and_decodes`
+(`tools/sab_formats/tests/proto2008_retail.rs`) and the probe `sab_probe proto2008-anims` (Method).
 
----
+## Retail vs. 2008
 
-## Retail vs. 2008 at a glance
+| | Retail PC | 2008 Xbox 360 |
+|---|---|---|
+| Pack | `Animations.pack`, `AP0L` + one Havok 6.5 packfile | `Animations.pack`, `AP04 ANIM`: records + tagged sections, no Havok packfile |
+| Clip | `hkaSplineCompressedAnimation` | `ANM0` + `WAV0` / `DEL0` / `NOC0`: Pandemic's serialization of Havok 4.6 classes |
+| Endianness | little | big-endian headers and `NOC0` transforms; little-endian tables inside `WAV0`/`DEL0` data |
+| Track → bone | per-clip index list in the `ANIM` block | one bone name CRC per track, resolved with `PclSkeleton::FindBoneIndex` |
+| Loose clips | none | 3,620 `ANM0` files (`animations/`, `ObjectAnimations/`, `TestAnims/`), `.hkx` extension |
 
-| Aspect            | Retail PC (`AP0L`)              | 2008 Xbox 360 (`AP04ANIM`)          |
-|-------------------|---------------------------------|-------------------------------------|
-| Pack magic        | `L0PA` `MINA` (LE-swapped)      | `AP04ANIM` (natural / big-endian)   |
-| Endianness        | little-endian                   | big-endian (Xenon / PowerPC)        |
-| Middleware        | Havok 6.5.0-r1                  | Havok 4.6 (per `WildStar_d.map`)    |
-| Clip container    | one big Havok packfile blob     | 1605 `ANM0*0` records + loose files |
-| Compression       | `hkaSplineCompressedAnimation`  | `WAV0` / `DEL0` / `NOC0` (Pandemic) |
-| Names             | `ANIM` block, per-record        | filename of the loose `.hkx` twin   |
-| Bone binding      | `ANIM` per-track bone list      | not surfaced here (in FSM/PclAnimationBank) |
-| Havok magic       | `57 E0 E0 57` present in blob   | **absent** — no Havok packfile      |
-| `hka*` classnames | present (RTTI + registration)   | **absent** — no reflection strings  |
+## Where the clips are
 
-The header magic collision (`AP04ANIM` vs `AP0LANIM`) had the two look similar-shaped from
-a distance. They are **not** — same Pandemic team tagged both AP-flavoured, but the on-disk
-structure and the referenced middleware diverged wholesale.
+| | WAV0 | DEL0 | NOC0 |
+|---|---:|---:|---:|
+| `animations/` | 3,090 | 282 | 214 |
+| `ObjectAnimations/` | 9 | 3 | 21 |
+| `TestAnims/` | — | 1 | — |
+| `Animations.pack` | 1,501 | 6 | 98 |
 
----
+Each pack record is keyed by `pandemic_hash` of the animation's name. **Every one of the 1,605 keys is
+`pandemic_hash` of a loose clip's file stem**; 1,601 pack clips are byte-identical to that loose
+file, 4 differ (`idle_smoke_stop`, `idle_smoke_flick`, `idle_smoke_flick2`, and `civ_F_idle1`, whose
+loose file is a 24-byte empty `NOC0`). Two stems exist in both `animations/` and `ObjectAnimations/`
+(`sabotage_valve_success_obj`, `sabotage_valve_failure_obj`). PROVEN (probe).
 
-## `Bin360/Animations.pack` — the outer container
+## `ANM0` clip
 
-```text
-offset  size  meaning
-0x00    8     magic  "AP04ANIM"           (natural ASCII; NOT byte-reversed as retail)
-0x08    4    u32-BE  record count         (== 1605 on the shipped dump)
-0x0C    ?    ??      outer per-record header (only partially reversed)
-...          per-record body starts with an ANM0*0 magic (see below)
-```
-
-**The outer per-record header is only partially reversed.** A byte-scan for the ANM0
-magic finds exactly 1605 record starts — matching the declared count byte-for-byte — so
-enumeration is reliable without needing the outer header. But the layout of the ~12 bytes
-between records (which look like some mix of a hash, a size, and a variant tag) has not
-yet been decomposed cleanly enough to trust for record traversal from a directory table.
-
-**Chosen strategy:** magic-scan for `ANM0(WAV|DEL|NOC)0` byte-by-byte, then read each
-record's body starting at its magic. Slower than a directory walk, but hits every real
-record and cannot mistake in-body bytes for a record start (the 8-byte magics are
-distinctive enough that no false positive has been observed across the 15 MB pack).
-
-See `scan_pack_records` in `prototype2008_anim.rs` for the implementation.
-
-Pack-only records currently have no plaintext name — the outer header doesn't obviously
-carry one, and the plaintext-name inventory sits in the loose-file directory instead. A
-future pass can content-match a pack record's ANM0 body against the loose files' bodies
-(a chunk of the middle of each is often byte-identical for the sampled overlap) to wire
-up a name.
-
----
-
-## `ANM0*0` record — the per-clip container
-
-Every clip — whether packed inside `Animations.pack` or loose as a `.hkx` file — starts
-with one of three magics and shares a 24-byte fixed header:
+`PclAnimationManager::LoadAnimFile` @0x83197e50 (a loose file) and `LoadAnimFromPackfile`
+@0x8319e6f8 (a pack record) read: `ANM0`, a codec word, the codec loader's fields, then the bone
+list. All words big-endian.
 
 ```text
-offset  size  meaning
-0x00    8     magic         "ANM0WAV0" | "ANM0DEL0" | "ANM0NOC0"
-0x08    4     f32-BE  duration_s      the clip's playback duration in seconds
-0x0C    4     u32-BE  num_tracks      number of transform tracks (0..~64 typical)
-0x10    4     u32-BE  aux_count       codec-specific — wavelet: block count;
-                                      delta: frame count (== round(dur * 30fps));
-                                      NOC0: 0 for pose files
-0x14    4     u32-BE  stride16        always 16 in the sampled WAV0 + DEL0 corpus
-0x18    ...   codec-specific body
++0x00  "ANM0"
++0x04  codec        "WAV0" | "DEL0" | "NOC0"
++0x08  f32 duration (seconds)                       object +0x0C
++0x0C  i32 tracks                                   object +0x10
+       codec fields and data (below)
+       i32 n, n x u32 bone name CRC                 one per track (n == tracks in every clip)
 ```
 
-**The three codecs match Havok-4.6's skeletal-animation compression classes** — this is
-the same pre-6.x compression family the Mercs 2 codebase decoded (`hkaWaveletCompressed`,
-`hkaDeltaCompressed`, `hkaInterleavedUncompressed`). See
-`docs/mercs2-pdb-analysis/animation-skeleton.md` for the class-name tree.
-
-**All scalar fields are big-endian**, in keeping with the Xenon binary. The static-header
-plausibility gate in `Anim2008Header::parse` catches endian mistakes early: an accidental
-LE read of the duration slot yields a NaN/infinity float in the general case, which fails
-the `duration.is_finite()` check.
-
-### Header field ranges — sampled corpus (`Bin360/animations/`)
-
-Random sample of 12 files, mixed codecs:
+### `WAV0` — `LoadWaveletAnim` @0x83197080 → `hkWaveletSkeletalAnimation`
 
 ```text
-name                                  codec  size    dur     tracks  aux   stride
-weapon_bazooka_turn_180_R.hkx         WAV0   2657    0.434    52      14     16
-idle_loop8_rf.hkx                     WAV0   15549   2.700    58      82     16
-sky_idle_1.hkx                        WAV0   4777    2.669    37      81     16
-knee_to_idle.hkx                      WAV0   4329    0.733    58      12     16
-Ledge_Backjump_prep_loop.hkx          NOC0   ...     ...      ...     ...    ...
-conv_F_backpoint2.hkx                 WAV0   8278    2.436    46      74     16
-mach_run_bk_rdy_Loop1_RF.hkx          WAV0   5163    0.400    57      13     16
-ledge_hang_move_right_end.hkx         WAV0   5253    1.068    55      33     16
-jump_run_loop_rf.hkx                  WAV0   1770    1.001    55      31     16
-swim_dive_idle.hkx                    WAV0   1822    0.467    52      15     16
-weapon_2H_LG_swing.hkx                WAV0   6750    1.335    54      41     16
-dart_sitdwn_back.hkx                  WAV0   6358    0.533    55      17     16
-aurora_dead_idle_drvr.hkx             NOC0   2728    0.000     0      52     ...
-aurora_dead_idle_pass.hkx             NOC0   2728    0.000     0      52     ...
-back_prone_pose.hkx                   NOC0   8808    0.133    36     180     ...
-cine_A1M1_S1_Dierker.hkx              DEL0   222561  75.467   24    2265      8
-cine_A1M1_S1_Jules.hkx                DEL0   29203   75.467   30    2265      8
-cine_A1M1_S1_Sean.hkx                 DEL0   135269  75.467   28    2265      8
++0x10 i32 numberOfPoses   +0x14 i32 blockSize   +0x18 u8 maxBitWidth   +0x19 u8 preserved
++0x1A u32 numD, offsetIdx, scaleIdx, bitWidthIdx, staticMaskIdx, staticDOFsIdx,
+          blockIndexIdx, blockIndexSize, quantizedDataIdx, quantizedDataSize
++0x42 i32 dataSize        +0x46 data[dataSize]
 ```
 
-Observations:
-
-* **WAV0**: track counts cluster 24–64 (typical human/humanoid rig). `aux_count` scales
-  with duration but not linearly — a wavelet clip's block count depends on both the
-  frame count and the sparsity of the compressed coefficients.
-* **DEL0**: cinematic clips only. Track counts are small (a handful of facial /
-  cinematography channels), frame counts are big (`aux_count == 75.467 s × 30 fps = 2264`,
-  off-by-one from the header's 2265 — the "+1" is standard first-frame framing).
-* **NOC0**: static poses (`aurora_dead_idle_*`, `back_prone_pose`). Duration is often 0;
-  `num_tracks` reads as 0 for the pure-pose files, with the "track count equivalent"
-  living in the `aux_count` slot. A codec-aware NOC0 reader will need to swap the
-  interpretation of these two fields.
-
-### Loose-tree codec breakdown
-
-Counted across `Bin360/animations/` (the primary animation directory):
+### `DEL0` — `LoadDeltaAnim` @0x83197620 → `hkDeltaCompressedSkeletalAnimation`
 
 ```text
-ANM0WAV0  3090   (86%)   — wavelet compressed, the workhorse
-ANM0DEL0   282    (8%)   — delta compressed, mostly cinematics
-ANM0NOC0   214    (6%)   — uncompressed / static poses
-------
-total     3586
++0x10 i32 numberOfPoses   +0x14 i32 blockSize   +0x18 u8 maxBitWidth   +0x19 u8 preserved
++0x1A u32 numD, offsetIdx, scaleIdx, bitWidthIdx, quantizedDataIdx, quantizedDataSize,
+          staticMaskIdx, staticMaskSize, staticDOFsIdx, staticDOFsSize, totalBlockSize, lastBlockSize
++0x4A i32 dataSize        +0x4E data[dataSize]
 ```
 
-Plus 33 more in `ObjectAnimations/` and 1 in `TestAnims/`. Some directories
-(`AnimationTest/`, `SultanOfSwing/`) contain packed subassets, not loose `.hkx` files.
-
----
-
-## Directory layout
-
-Where the assets live on disk (`game-files/Bin360/`):
+### `NOC0` — `LoadUncompressedAnim` @0x83197be0 → `hkInterleavedSkeletalAnimation`
 
 ```text
-Animations.pack                 — the curated pack, 15 MB, 1605 records
-animations/                     — the loose authoring tree, 3586 .hkx files
-ObjectAnimations/               — object-attached anims, 33 .hkx
-TestAnims/                      — QA fixtures, 1 .hkx
-AnimText/                       — human-readable metadata files:
-    AnimEvents.txt              — per-clip event track (footsteps, weapon fires)
-    AnimIntervals.txt           — sub-ranges within a clip
-    AnimMasks.txt               — bone-mask filters
-    AnimOffset.txt              — per-clip root-motion offset
-    AnimSettings.txt            — hand/foot lock ranges, IK toggles
-    AdditiveAnims_v1.txt        — additive-blend clip pairs
-    EdgeTransitions_v5..v10.txt — ledge-navigation transition graph
-    MeleeCombos_v2.txt          — melee combo tables
-    MeleeReactions_v1..v3.txt   — reaction-anim picker
-    StaticPoses.txt             — pose asset ids
-    SeqTrans                    — sequence transition manifest
-    meleeattacks_v15.txt        — attack-animation registry
-    meleestates_v6..v9.txt      — melee state machine data
++0x10 u32 numTransforms   +0x14 numTransforms x 48-byte hkQsTransform, big-endian:
+      T.x T.y T.z T.w  R.x R.y R.z R.w  S.x S.y S.z S.w   (T.w, S.w unused)
+      frame-major: transform [frame * tracks + track]; frames = numTransforms / tracks
 ```
 
-The `AnimText/` files are pipe-separated / tab-separated tables ready to be cross-
-referenced with clip names. They are the closest thing this build has to the FSM data
-retail bakes into `Animations.pack`.
+### What the loaders reject (PROVEN, decomp)
 
-**Symbol trail:** `WildStar_d.map` places the loaders in `Puckel:PclAnimationManager.obj`
-(`d:/projects/wildstar/code/puckel/`):
+| check | where | effect |
+|---|---|---|
+| `duration >= 1000.0` | `LoadWaveletAnim`, `LoadDeltaAnim` | clip not loaded |
+| `dataSize` outside `1..=0x2FFFFF` | same | clip not loaded |
+| `numTransforms >= 0x5555556` | `LoadUncompressedAnim` | allocation size −1 |
+| `tracks` outside `1..=4999` | `LoadAnimFile` only — the pack loader does not check | loose clip not loaded |
+| record end ≠ `start + size` | `LoadAnimPackFile` | assert |
+
+The 30 loose clips `LoadAnimFile` rejects are all `NOC0` with 0 tracks: 20 `face_*` poses (6–18
+transforms each), `aurora_dead_idle_drvr`/`_pass`, `cvr_low_idle_2`, `shrd_M_crowd_couple_01`,
+`civ_F_idle1`/`2`, `civ_couple_wall_flirt_F`/`M` and `sabotage_valve_*_obj` (the last six with no
+transforms). The library parses them; `Clip::check_loose` reports the rejection and `Clip::decode`
+fails (frames = transforms / 0).
+
+## The `WAV0` / `DEL0` data buffer
+
+`handleEndian` (@0x83330948 wavelet, @0x833328b8 delta) byte-swaps the tables on load, so they are
+**little-endian on disk**. Offsets are relative to the data buffer.
+
+* **Track masks** at `staticMaskIdx` (0 in every clip): one `u16` per track. Bits 0–1, 2–3, 4–5 are
+  the translation, rotation and scale group types; type 2 is identity (`recompose` writes zero / unit
+  quaternion / unit scale and reads nothing). Bits 6–15 (`mask >> 6`) flag dynamic components:
+  `4 2 1` = T.x T.y T.z, `0x40 0x20 0x10 0x8` = R.x R.y R.z R.w, `0x200 0x100 0x80` = S.x S.y S.z.
+* **Static values** at `staticDOFsIdx`: one `f32` per component of a non-identity group that is not
+  dynamic, in recompose order.
+* **Per dynamic channel** (`numD` of them; the masks' dynamic bits always sum to `numD`): `f32`
+  offset at `offsetIdx`, `f32` scale at `scaleIdx`, `u8` bit width at `bitWidthIdx` (1..=16).
+* **`WAV0`**: a `u32` block index at `blockIndexIdx` (`blockIndexSize` = ⌈poses / blockSize⌉ entries,
+  offsets into the quantized data), quantized data at `quantizedDataIdx`.
+* **`DEL0`**: block `b` at `quantizedDataIdx + b * totalBlockSize`. `staticMaskSize` is 0 and
+  `staticDOFsSize` / `lastBlockSize` are not the sizes of anything the decoder reads; the decoder
+  derives every size from the masks and `numberOfPoses`.
+
+`hkTrackAnalysis::recompose` @0x83338d18 builds each track's transform from the next dynamic value
+where the mask bit is set and the next static value otherwise, in the order T.x T.y T.z, R.x R.y R.z
+R.w, S.x S.y S.z.
+
+Value sets in the build (probe): `WAV0` blockSize 16, preserved 0, maxBitWidth 11; `DEL0` blockSize
+8 or 2, preserved 1, maxBitWidth 8. maxBitWidth is 0 exactly in the clips with no dynamic channels
+(`numD` 0: 34 + 24 `WAV0`, 128 + 3 `DEL0`, loose + pack).
+
+## Decoding
+
+**`hkExpandReal`** @0x8333a458, shared: `preserved` raw `f32`s, then per sample
+`(q + 0.5) * (scale / 2^bits) + offset`, `q` read LSB-first from a little-endian bit stream.
+`hkCalcQuantizedSize` @0x8333b698: `preserved * 4 + ⌈bits * (n − preserved) / 8⌉` bytes per channel.
+
+**`WAV0`** (`decompressBlockToCache` → `_decompress`): per block, per channel in order:
+
+1. `hkBlockDecode` @0x8333aca0 — `preserved` raw words; a skip bitmap of `count` bits, LSB-first (set =
+   coefficient not stored); the stored codes LSB-first from 16-bit little-endian words. A skipped
+   coefficient takes the zero code `(int)(2^bits * −offset / scale)` (2^bits becomes 2^bits − 1). The
+   source advances `⌈(read * bits + 32 * preserved + count) / 8⌉` bytes.
+2. `hkExpandReal` over the decoded codes.
+3. `hkInverseWaveletTransform` @0x833393f0 — an 8-sample basis multiply (coefficient 0 adds to every
+   sample; rows 1–7 from `.rdata` 0x8229f030..0x8229f12f), then per doubling `hkUpdateReflect(−¼)`,
+   `hkPredictReflect(+½)`, `hkMergeOddEven`. The basis rows equal inverse CDF 5/3 lifting from one
+   sample (unit test `basis_equals_lifting_from_one_sample`).
+
+Every block's channels end inside the block (the next block-index entry, or the end of the quantized
+data): PROVEN for all 3,099 loose and 1,501 pack `WAV0` clips (the decoder fails otherwise).
+
+**`DEL0`** (`_decompress` @0x83331c90): block `b` holds `min(blockSize, poses − b * blockSize)`
+frames; per channel, `hkExpandReal` over them, then `hkInverseDeltaTransform` @0x8333be58 (running sum
+`x[i] += x[i − 1]`). Full blocks take exactly `totalBlockSize` bytes in every clip.
+
+**`NOC0`**: the transforms as stored.
+
+### How good the decoded rotations are
+
+`|‖q‖ − 1|` over every stored pose (probe): `NOC0` ≤ 0.0001; `DEL0` ≤ 0.0146 (235 of 12.4 M
+transforms above 0.01); `WAV0` ≤ 0.0393 (827 of 7.8 M above 0.01). The compressed codecs store
+quaternion components independently, so a non-unit result is the codec's quantization error; the
+engine normalizes the pose after sampling (below).
+
+There is **no uncompressed twin of any compressed clip** in the build, so the compressed decoders
+have no numeric ground truth: their correctness rests on reproducing the engine's functions step by
+step, every block's bytes being consumed exactly, and the rotation norms above. A second,
+independently structured implementation (the research decoders the library replaced) gives
+bit-identical poses and samples on every loose `WAV0`/`DEL0` clip (525,833 poses, 23,695 samples).
+
+## Sampling — `samplePartialPose`
+
+Wavelet @0x8332fdc0, delta @0x83331e08, interleaved @0x83332c10. All assert `time >= 0` and
+`duration > FLT_EPSILON` (0x34000000); the compressed ones assert `numberOfPoses >= 2`, the
+interleaved one `numTransforms >= 1`. `Animation::sample` returns an error for each.
+
+* **Compressed** — `getFrameAndDelta` (@0x8332ed98, @0x83330df8): `x = time / (duration / (poses − 1))`,
+  frame `min((int)x, poses − 2)`, delta `min(x − frame, 1)`. Each dynamic value is
+  `(1 − delta) * v[frame] + delta * v[frame + 1]` (the next frame may be the first sample of the next
+  block), then `recompose`. Rotations come out unnormalized.
+* **Interleaved** — for `time < duration`: the same `x`, frame `(int)x`, delta `x − frame`, and
+  `hkQsTransform::setInterpolate4` @0x83333430 between frames `frame` and `frame + 1`: translation
+  and scale interpolated linearly; rotation `(1 − t) * a + t' * b` with `t' = −t` when
+  `dot(a, b) < 0`, then normalized. For `time >= duration`: the last `tracks` transforms.
+* The engine then normalizes every rotation of the pose: `PclAnimator::SetupPose` @0x831ba6a0 calls
+  `PclPose::NormalizeQuats` @0x831aca70. A consumer of `Animation::sample` does the same.
+
+Every loose clip the loader accepts and every pack clip passes the sampler's preconditions (gate).
+
+## Bone binding
+
+The trailer lists one bone name CRC per track (count == tracks in all 5,195 accepted clips). With the
+record's object flag 0 (a character animation), the loader resolves each with
+`PclSkeleton::FindBoneIndex` into the `i16` track → bone table it hands `PclAnimation`; with the flag
+set (an object animation) it keeps the CRCs and stores −1 indices. Loose clips are loaded as
+character animations unless the caller passes the object flag (`LoadAnimFile`'s last argument).
+PROVEN (decomp of both loaders).
+
+## `Animations.pack` — `LoadAnimPackFile` @0x8319ebf8
 
 ```text
-LoadAnimFile         @ 0x83197E50   (opens one .hkx file)
-LoadAnimation        @ 0x8319E288   (name-driven)
-LoadAnimation (disk) @ 0x8319E580   (PblDiscFile + PblCRC)
-LoadAnimFromPackfile @ 0x8319E6F8   (reads one record from an open pack)
-LoadAnimPackFile     @ 0x8319EBF8   (opens Animations.pack itself)
+"AP04ANIM"  i32 n   n x record   i32 blendBoneException
+"INTV" "SEQC" "TRAN" "EDGE" "DIST" "BANK" "ADD0" "ALPH"     (each required, in this order)
 ```
 
-Class names (from the same map): `PclAnimation`, `PclAnimationSequence`, `PclAnimationBank`,
-`PclAnimator`, `PclAnimEventParam`, `PclCinematicAnimationSequence`, `PclAnimInterval`,
-`PclAnimationUserData`, `PclTransitionContainer`. String evidence points at
-`d:/projects/wildstar/Havok_46/include/animation/hk...` — the middleware version tag is
-Havok 4.6, older than both Mercs 2's 5.5 and retail Saboteur's 6.5.
+The pack reads to its last byte (14,917,957). Counts are signed and loop `for (i = 0; i < n; i++)`.
 
----
+**Record:** `u32` key, `u8` object flag, `i32` clip size, the `ANM0` clip (the loader asserts it ends
+at start + size), then the `PclAnimation` members: `f32` motion length (+0x20), 3 `f32` movement
+(+0x24), `f32` rotation (+0x30), `f32` start aim, end aim, aim pitch (+0x34..+0x3C), `u8` turn
+positive (bit 7 of +0x7C); `i32` event count, each `{i32 frame, u32 name CRC, 4 x (u32 parameter CRC,
+f32 value)}`; `i32` offset count, each `{3 f32, f32}` (`PclAnimOffset`). Object flag set on 2
+records; 822 events, 205 offsets. If the clip fails to load, the loader skips these members and the
+stream is misread — the library fails the pack instead.
 
-## What `prototype2008_anim.rs` currently provides
+| section | layout | in the build |
+|---|---|---|
+| `INTV` | n x `{u32 type CRC, i16, i16, n x u32 animation key}` — a `PclAnimInterval` (the two `i16`s at +0x0C, +0x0E) added to each animation; only `UnInterruptible` (0x501B960D) is accepted | 3: values (0, 10), (0, 5), (0, 30) |
+| `SEQC` | n x `{u32 name CRC, n x instruction {u32 word0, i32 word1, n x u32 animation key, n x u32 tag CRC}, body}`; body = `f32` length, 3 `f32` movement, `f32` rotation, `u32` type, 16-byte `AimMinMax`, 3 signed byte counts, that many 8-byte aim frames per count, `u8` turn positive, `u8` synchronized | 1,944 sequences, 4,181 instructions |
+| `TRAN` | n x container `{u32 name CRC, n x transition}`, below | 1 container, 286 transitions |
+| `EDGE` | 0x1F80 + 0x360 bytes copied into `PclEdgeTransData` | |
+| `DIST` | 0x60 bytes | |
+| `BANK` | n x `{u32 name CRC, i16 length, name bytes, u32 parent CRC (0 = none), n x (u32, u32) AddOverride}` | 24 banks; name CRC = `pandemic_hash(name)` for all |
+| `ADD0` | n x `(u32, u32)` `AdditiveAnimNamePair` | 0 |
+| `ALPH` | n x u32 → manager +0x88; n x u32 → manager +0x7C | 1,942 (every one a `SEQC` name); 1,605 (exactly the record keys, in another order) |
 
-1. **`Anim2008Header::parse`** — the 24-byte fixed-header reader.
-2. **`Anim2008Catalog::open`** — walks the loose tree (3620 clips) and byte-scans the
-   pack (1605 records); returns a `Vec<Clip2008Info>` with per-clip name (loose) or
-   synthetic offset key (pack), codec, duration, track count, and source location.
-3. **`Anim2008Catalog::load_clip(hash)`** — round-trips a clip by handle: fetches the
-   full record bytes and re-parses the header. Ends where a per-frame codec decoder
-   would take over.
-4. **`GameSource::list_animations`** trait method — implemented by `Prototype2008Source`
-   to expose the catalog to `app.rs`'s Nav Anims tab; default `Vec::new()` for retail
-   (which uses the existing `AnimCatalog` + `havok` path instead).
+**Transition** (`PclTransition`, 0xBC bytes): `u32` from sequence (+0x00), from tag (+0x04), to
+sequence (+0x08), to tag (+0x0C); `f32` minimum time (+0x10); `u32` inline type (+0x14), `f32` inline
+time (+0x18); `u32` inline sequence name (+0x1C) — when nonzero, `u32` animation key, `u32` tag, and a
+`SEQC` body follow; `u32` type (+0x20), `f32` time (+0x24), `i32` instruction index (+0x28), `i16`
+length and that many label bytes (+0x2C, NUL-terminated, e.g.
+`[TRANS]'LADDER_IDLE'(left_foot)->'ANY'(left_foot)`).
+`PclTransition::Match` @0x831c1d18 applies a transition when the target sequence's name is the to
+sequence (or `ANY`), the current one's is the from sequence (or `ANY`), the target sequence has the to
+tag and the current instruction the from tag (0 = no condition), and the time is at least the
+minimum. Types (`GenerateDebugString` @0x831c25f8): 0 SET, 1 FADE, 2 QUEUE, 3 SYNC, 4 QUEUE_FADE.
+In the build: type SET 81, FADE 155, QUEUE 2, SYNC 46, QUEUE_FADE 2; 90 transitions carry an inline
+sequence, whose animation is a record key in all 90.
 
-Tests in the module:
-* `parses_all_three_codec_variants` — synthetic header round-trip for WAV0/DEL0/NOC0.
-* `rejects_a_file_that_is_not_an_anm0_record` — magic gate.
-* `rejects_an_impossible_duration` — endian sanity gate.
-* `catalog_enumerates_loose_and_packed_clips` — real-file scan; asserts >3000 loose +
-  ~1605 pack records with plausible names/durations.
-* `load_clip_round_trips_a_known_loose_entry` — hash lookup + header re-parse.
-* `pack_scan_matches_declared_record_count` — the 1605-from-header vs 1605-from-scan
-  agreement.
+## Method
 
----
+* Game gate: `cargo test --release --features retail --test proto2008_retail` in `tools/sab_formats`
+  (reads `proto2008_dir` from `.sab-local.toml`); asserts the counts on this page.
+* Probe: `cargo run --release -p sab_probe -- proto2008-anims <Bin360>` — directories × codecs, the
+  rejected clips, header value sets and ranges, rotation norms, record flags, twins, section
+  statistics.
 
-## Per-frame sampling — status
+## Unknowns
 
-`Clip2008::sample_track(track_idx, time_s)` returns a `SampledTransform { pos, rot, scale }`
-per (clip, track, time). Coverage:
-
-| Codec | Header decoded? | Frames decoded? | Notes |
-|-------|-----------------|-----------------|-------|
-| **NOC0** (interleaved) | YES | **YES** | Full frame-major `hkQsTransform` array + slerp/lerp interpolation. Layout verified byte-for-byte on 214 loose files; every returned quaternion is unit and every scale is ≈identity across the sampled corpus. |
-| **WAV0** (wavelet)     | YES (238/238 on the sampled corpus) | Blocked | Extended HK-4.6 derived-struct header parses cleanly (`Wav0Header::parse` in `sources/prototype2008_anim_havok46.rs`) — QuantizationFormat + all section indices + contiguity gates. Havok wavelet math (`wv_entropy_unpack`, `wv_dequant`, `wv_inverse`, `wv_quat_w_sentinel`, `static_mask_dynamic`) ported from the numerically-validated Mercs 2 HK-5.5 decoder. Blocked on `block_size == 16`: every shipped 2008 wavelet clip uses 16-sample blocks, but the ported `wv_inverse` implements only the 8-sample basis. Larger blocks need the un-ported predict/update/deinterleave lifting passes (Havok `FUN_009fe250/9fe180/9fe4b0` in Mercs 2's decomp). |
-| **DEL0** (delta)       | YES (282/282 on the sampled corpus) | NO | Extended header parses cleanly (`Del0Header::parse`). The delta bit-stream shape is different from wavelet and is NOT validated in the sibling Mercs 2 workspace either (Mercs 2's decoder stubs delta as well). Returns `Err` with a diagnostic pointing at `samplePartialWithDataChunks` @ 0x82a58cc8. |
-
-**Struct-layout diff HK 4.6 ↔ HK 5.5** (see the module doc of
-`sources/prototype2008_anim_havok46.rs` for the full table). Key point: HK 5.5
-added `m_numberOfFloatTracks` to `hkaAnimation`, shifting every derived field
-down by 4 bytes. Pandemic's 24-byte pre-header substitutes for the 32-byte
-`hkReferencedObject` + `hkSkeletalAnimation` base; the derived-struct body
-follows immediately, and the data buffer starts at file+0x54 (WAV0) / file+0x5C
-(DEL0). Section-index fields are stored as `u16-BE` in the high half of a
-4-byte slot (empirically low half is always zero on the corpus — a compact
-wire encoding for the runtime `u32` memory field).
-
-### NOC0 on-disk layout
-
-```text
-+0x00  8   magic         "ANM0NOC0"
-+0x08  4   f32 BE        duration_s
-+0x0C  4   u32 BE        num_transform_tracks  (0 for the static-pose special case)
-+0x10  4   u32 BE        aux_count             (= eff_tracks × frames)
-+0x14  4   u32 BE        stride/aux            (unused by the sampler)
-+0x18  N   hkQsTransform aux entries, 48 bytes each, frame-major
-                          transforms[f * eff_tracks + t]
-                          each 48B = 12 f32 BE: [T.x,T.y,T.z, R.x,R.y,R.z,R.w, S.x,S.y,S.z, pad, pad]
-+trail eff_tracks*4      per-track descriptor (pandemic_hash of the driven bone)
-
-  eff_tracks = num_tracks if num_tracks > 0 else aux_count
-  frames     = aux_count / eff_tracks    (integer; static-pose = 1)
-```
-
-Verified on `aurora_dead_idle_drvr`, `back_prone_pose`, `Bugatti_drive_turn_left`,
-`KD_head_front`, `Rope_horiz_down_long_start`, `Ledge_Backjump_prep_loop` — every file
-size matches `24 + aux×48 + eff_tracks×4`, and every 12-float transform decodes to a
-unit quaternion within 1e-4.
-
-## Open work — WAV0 and DEL0
-
-To play a WAV0/DEL0 clip against a rig, someone still needs to:
-
-1. **Reverse the wavelet + delta codec bodies.** These are Pandemic-derived compression
-   schemes that share the Havok-4.6 wavelet/delta compression classes (`hkWaveletSkeletalAnimation`,
-   `hkDeltaCompressedSkeletalAnimation` — publics present in `saboteur_pdb_p.txt`). The
-   Mercs 2 corpus has a **numerically-verified inverse-Haar wavelet decoder** for HK 5.5
-   (`mercs2_formats/src/anim.rs`) — the 4.6 → 5.5 layout is CLOSE but not identical, and
-   the outer Pandemic 24-byte header replaces Havok's serialized `hkReferencedObject` +
-   `hkaAnimation` base, so the port needs to re-derive the on-disk struct offsets. The
-   Saboteur.xex Ghidra decomp names every relevant function (`samplePartialPose`,
-   `samplePartialWithDataChunks`, `decompressBlockToCache`, `handleEndian`) — the
-   bitstream math is inlined PPC VMX128 that resists automated recovery but reads cleanly
-   from disassembly.
-2. **Reverse the outer per-record header.** Would let us drop the magic-scan in favour
-   of a directory walk, and — more importantly — surface the plaintext name for the
-   1605 pack records instead of the synthetic offset key.
-3. **Wire the bone binding.** For NOC0 the per-track u32 trailer gives us track→bone
-   hashes directly (via `Clip2008::track_descriptors_noc0`); a rig hash-name table
-   resolves those to bone names. WAV0/DEL0 likely have the same trailer layout — worth
-   confirming once the codec bodies are decoded.
-4. **Content-match loose → pack.** Even without solving (2), a name→pack-offset lookup
-   is achievable by hashing the ANM0 body bytes of each loose file and searching the
-   pack for the same window. Some loose files are byte-identical to pack records; some
-   are earlier revisions. A hash-match would surface plaintext names for the loose-
-   matching subset (empirically ~40% based on a random sample).
+* What the `INTV` values, the instruction words, the `SEQC` type (two sequences hold ASCII-looking
+  values, 0x65676574 and 0x656A656D) and the `EDGE` / `DIST` blocks mean.
+* What reads the `ALPH` lists at manager +0x88 / +0x7C.
+* The exact operation order of `hkVector4::setInterpolate4` (`a + t(b − a)` is used; the decomp is
+  VMX and was not read through). Rounding-level only. INFERRED.
+* Whether the 309 loose and 103 pack clips whose pose count is not `round(duration × 30) + 1` were
+  authored at another rate.

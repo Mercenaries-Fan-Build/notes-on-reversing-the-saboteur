@@ -42,3 +42,42 @@ Import + auto-analyze + the post-script export run in one pass (~30–90 min).
 
 Grep this file as the engine oracle (it's authoritative — the exe is unpacked). It is intentionally
 gitignored (too large); regenerate locally.
+
+# The 2008 Xbox 360 prototype binaries
+
+The prototype's `Bin360/` ships two raw PowerPC PEs with linker maps — `WildStar_d.exe` (debug, PE
+timestamp 2008-05-07) and `WildStar_p.exe` (profile, 2008-05-20) — plus `.xex` wrappers. They load
+different asset revisions: `WildStar_p` (and `Saboteur.xex`, `WildStar_p-org.xex`) reads `SBL4` packs and
+`MSH4` meshes, the revision the shipped data uses; `WildStar_d` reads `SBL6` / `MSH0`
+(`sab_probe proto2008-binaries`). **Grep the `WildStar_p` export for 2008 format questions.**
+
+Scripts (all take their paths as script arguments and fail without them):
+- `PrepWildStarPreAnalysis.java` (pre-script, no args) — disables the crashing PDB analyzer and creates a
+  function at every `.pdata` entry (Xbox 360 `.pdata` holds full big-endian VAs).
+- `ApplyMapSymbolsWildStar.java <map>` — names functions from the linker map's "Publics by Value".
+- `DecompileWildStar.java <out file>` — the full export, same format as `DecompileSaboteur.java`, with the
+  decompiler's unreachable-block elimination **off**: with it on, a value read through `PblFile`'s virtual
+  read into a stack local folds to its initial value and the branch testing it disappears (all of
+  `ReadMesh` and `LoadBlock`'s `SBL4` check in `WildStar_p`).
+- `ExportListing.java <out file> <name|0xaddr>…` — disassembly of the named functions, with the symbols
+  each instruction references. Even with elimination off, `WildStar_p`'s inlined `PblFile` reads leave
+  constant-folded conditions; read the field order off the listing.
+
+Prereq: the GhidraXenon extension (`PowerPC:BE:64:Xenon`, VMX128), loaded from a settings directory so
+the Ghidra install is untouched — unzip the extension into
+`<out>/ghidra_settings/<user>-ghidra/ghidra_12.1.4_PUBLIC/Extensions/` and pass
+`-Dapplication.settingsdir=<out>/ghidra_settings` in `GHIDRA_HEADLESS_JAVA_OPTIONS`.
+
+```
+analyzeHeadless <out>/proj WildStarP -import <Bin360>/WildStar_p.exe \
+  -processor PowerPC:BE:64:Xenon -cspec default -scriptPath tools/ghidra \
+  -preScript PrepWildStarPreAnalysis.java \
+  -postScript ApplyMapSymbolsWildStar.java <Bin360>/WildStar_p.map \
+  -postScript DecompileWildStar.java <out>/wildstar_p_all_functions_decomp.txt -max-cpu 8
+```
+Re-export from the saved project without re-analysing:
+`analyzeHeadless <out>/proj WildStarP -process WildStar_p.exe -noanalysis -readOnly -scriptPath tools/ghidra -postScript DecompileWildStar.java <out file>`.
+
+Last runs (2026-10-17, Ghidra 12.1.4, macOS): `WildStar_d.exe` 79,330 functions, 137 unnamed, 1 decomp
+failure; `WildStar_p.exe` 31,788 functions, 103 unnamed, 0 failures. Check the log, the header line and
+these counts, not the exit code.

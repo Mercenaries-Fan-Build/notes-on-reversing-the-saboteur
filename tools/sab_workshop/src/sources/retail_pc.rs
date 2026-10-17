@@ -76,6 +76,18 @@ impl RetailPcSource {
     pub fn palettes(&self) -> Option<&Megapack> { self.palettes.as_ref() }
     pub fn wsao(&self) -> Option<&Wsao> { self.wsao.as_ref() }
     pub fn root(&self) -> &Path { &self.root }
+
+    /// The raw MSHA bytes of a mesh handle.
+    #[cfg(test)]
+    fn read_mesh_bytes(&self, handle: &AssetHandle) -> Result<Vec<u8>, String> {
+        let entry = self
+            .mesh_index
+            .get(handle.key as usize)
+            .ok_or_else(|| format!("mesh handle {} out of range", handle.key))?;
+        meshload::raw_record(self.megapack.raw(), entry)
+            .map(|s| s.to_vec())
+            .ok_or_else(|| format!("could not read mesh {}", entry.name))
+    }
 }
 
 impl GameSource for RetailPcSource {
@@ -98,28 +110,6 @@ impl GameSource for RetailPcSource {
                 kind: AssetKind::Mesh,
             })
             .collect()
-    }
-
-    fn read_mesh_bytes(&self, handle: &AssetHandle) -> Result<Vec<u8>, String> {
-        let entry = self
-            .mesh_index
-            .get(handle.key as usize)
-            .ok_or_else(|| format!("mesh handle {} out of range", handle.key))?;
-        meshload::raw_record(self.megapack.raw(), entry)
-            .map(|s| s.to_vec())
-            .ok_or_else(|| format!("could not read mesh {}", entry.name))
-    }
-
-    fn textures_for_material(&self, mat: u32) -> Option<[Option<u32>; 4]> {
-        let w = self.wsao.as_ref()?;
-        let hashes = w.textures(mat)?;
-        let mut slots = [None; 4];
-        for (i, h) in hashes.iter().take(4).enumerate() {
-            if *h != 0 {
-                slots[i] = Some(*h);
-            }
-        }
-        Some(slots)
     }
 
     fn load_texture(&self, hash: u32) -> Result<CpuTexture, String> {

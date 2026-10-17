@@ -43,6 +43,9 @@
 //! never fired on shipped data — but authored data would). See
 //! `object_with_four_params_is_not_mistaken_for_a_leaf`. Both retail packs round-trip
 //! byte-identically. See `docs/formats/editnodes.md`.
+//!
+//! The 2008 Xbox 360 prototype stores entry bodies big-endian in its `wsd` slots
+//! ([`crate::proto2008::sbl`]); [`parse_entry_be`] reads them.
 
 use crate::pandemic_hash;
 
@@ -184,11 +187,51 @@ pub fn lua_param(d: &[u8]) -> Result<LuaParam, String> {
 
 // ------------------------------------------------------------------ reader
 
+/// Byte order of the framing words. Retail PC files are little-endian; the engine's reader
+/// `FUN_00a005a0` byte-reverses every scalar behind one flag for the console layout, which the 2008
+/// Xbox 360 prototype's `wsd` slots use ([`parse_entry_be`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Order {
+    Le,
+    Be,
+}
+
 fn u32_at(b: &[u8], o: usize, end: usize) -> Result<u32, String> {
+    u32_in(b, o, end, Order::Le)
+}
+
+fn u32_in(b: &[u8], o: usize, end: usize, order: Order) -> Result<u32, String> {
     if o + 4 > end {
         return Err(format!("EOF reading u32 at {o} (entry end {end})"));
     }
-    Ok(u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]))
+    let w = [b[o], b[o + 1], b[o + 2], b[o + 3]];
+    Ok(match order {
+        Order::Le => u32::from_le_bytes(w),
+        Order::Be => u32::from_be_bytes(w),
+    })
+}
+
+/// Parse one big-endian entry body (the 2008 prototype's `wsd` slot) that must fill `b` exactly, and
+/// return its objects. Framing words are big-endian; each param's bytes are kept verbatim, so their
+/// scalars are big-endian too — read them with [`vec3_be`], not [`Node::value`], which decodes the
+/// retail little-endian layout.
+pub fn parse_entry_be(b: &[u8]) -> Result<Vec<Node>, String> {
+    let (root, end) = parse_root_in(b, 0, b.len(), Order::Be)?;
+    if end != b.len() {
+        return Err(format!("big-endian entry: consumed {end} of {} bytes", b.len()));
+    }
+    match root {
+        Root::EditNode { objects } => Ok(objects),
+        Root::Container { tag, .. } => Err(format!("big-endian entry: root tag {tag:08x} is not an EditNode root")),
+    }
+}
+
+/// A 12-byte big-endian vector param's value.
+pub fn vec3_be(d: &[u8]) -> Option<[f32; 3]> {
+    (d.len() == 12).then(|| {
+        let f = |o: usize| f32::from_be_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]);
+        [f(0), f(4), f(8)]
+    })
 }
 
 impl Pack {
@@ -248,21 +291,25 @@ impl Pack {
 }
 
 fn parse_root(b: &[u8], o: usize, end: usize) -> Result<(Root, usize), String> {
-    let first = u32_at(b, o, end)?;
-    let count = u32_at(b, o + 4, end)? as usize;
+    parse_root_in(b, o, end, Order::Le)
+}
+
+fn parse_root_in(b: &[u8], o: usize, end: usize, order: Order) -> Result<(Root, usize), String> {
+    let first = u32_in(b, o, end, order)?;
+    let count = u32_in(b, o + 4, end, order)? as usize;
     let mut pos = o + 8;
     if first == 0 {
-        let mut objects = Vec::with_capacity(count);
+        let mut objects = Vec::with_capacity(count.min(1 << 16));
         for _ in 0..count {
-            let (n, p) = parse_object(b, pos, end)?;
+            let (n, p) = parse_object(b, pos, end, order)?;
             objects.push(n);
             pos = p;
         }
         Ok((Root::EditNode { objects }, pos))
     } else {
-        let mut children = Vec::with_capacity(count);
+        let mut children = Vec::with_capacity(count.min(1 << 16));
         for _ in 0..count {
-            let (r, p) = parse_root(b, pos, end)?;
+            let (r, p) = parse_root_in(b, pos, end, order)?;
             children.push(r);
             pos = p;
         }
@@ -275,13 +322,13 @@ fn parse_root(b: &[u8], o: usize, end: usize) -> Result<(Root, usize), String> {
 /// `n` is a CHILD COUNT here and a BYTE COUNT one level down — the split is positional, decided by
 /// depth, never by inspecting the value. This mirrors the engine's reader `FUN_00a005a0`, which
 /// loops `param_count` times and advances with `next = child + 8 + n` unconditionally.
-fn parse_object(b: &[u8], o: usize, end: usize) -> Result<(Node, usize), String> {
-    let tag = u32_at(b, o, end)?;
-    let count = u32_at(b, o + 4, end)? as usize;
+fn parse_object(b: &[u8], o: usize, end: usize, order: Order) -> Result<(Node, usize), String> {
+    let tag = u32_in(b, o, end, order)?;
+    let count = u32_in(b, o + 4, end, order)? as usize;
     let mut pos = o + 8;
     let mut children = Vec::with_capacity(count.min(256));
     for i in 0..count {
-        let (c, p) = parse_param(b, pos, end).map_err(|e| format!("object {tag:08x} param {i}: {e}"))?;
+        let (c, p) = parse_param(b, pos, end, order).map_err(|e| format!("object {tag:08x} param {i}: {e}"))?;
         children.push(c);
         pos = p;
     }
@@ -292,9 +339,9 @@ fn parse_object(b: &[u8], o: usize, end: usize) -> Result<(Node, usize), String>
 /// retail packs contain 138 850 params and **not one container below an object** (depth census in
 /// `docs/formats/editnodes.md`). Any nesting inside `data` is that tag's own private encoding, which
 /// the engine hands to a per-tag sub-reader; it is not generic node framing.
-fn parse_param(b: &[u8], o: usize, end: usize) -> Result<(Node, usize), String> {
-    let tag = u32_at(b, o, end)?;
-    let n = u32_at(b, o + 4, end)? as usize;
+fn parse_param(b: &[u8], o: usize, end: usize, order: Order) -> Result<(Node, usize), String> {
+    let tag = u32_in(b, o, end, order)?;
+    let n = u32_in(b, o + 4, end, order)? as usize;
     let ds = o + 8;
     let de = ds.checked_add(n).ok_or_else(|| format!("tag {tag:08x}: length {n} overflows"))?;
     if de > end {
@@ -741,6 +788,37 @@ mod tests {
         assert_eq!(children[1].value(), Some(Value::Str("Human_GS_Grunt".into())));
         assert_eq!(tag_name(children[1].tag()), Some("ClassName"));
         assert!(matches!(children[2].value(), Some(Value::Vec3(_))));
+    }
+
+    /// The big-endian entry layout (2008 prototype `wsd` slot): framing words and vector params BE.
+    #[test]
+    fn big_endian_entry_parses() {
+        let be = |w: u32| w.to_be_bytes();
+        let mut b = Vec::new();
+        b.extend_from_slice(&be(0));
+        b.extend_from_slice(&be(1));
+        b.extend_from_slice(&be(0xe21d_5e7f));
+        b.extend_from_slice(&be(2));
+        b.extend_from_slice(&be(tags::CLASS_NAME));
+        b.extend_from_slice(&be(4));
+        b.extend_from_slice(b"abc\0");
+        b.extend_from_slice(&be(tags::POSITION));
+        b.extend_from_slice(&be(12));
+        for f in [415.0f32, 31.9, 193.7] {
+            b.extend_from_slice(&f.to_be_bytes());
+        }
+        let objs = parse_entry_be(&b).unwrap();
+        let Node::Container { tag, children } = &objs[0] else { panic!("expected an object") };
+        assert_eq!(*tag, 0xe21d_5e7f);
+        let Node::Leaf { data, .. } = &children[1] else { panic!("expected a leaf") };
+        assert_eq!(vec3_be(data), Some([415.0, 31.9, 193.7]));
+        let mut extra = b.clone();
+        extra.push(0);
+        match parse_entry_be(&extra) {
+            Err(e) => assert!(e.contains("consumed"), "{e}"),
+            Ok(_) => panic!("a trailing byte must be rejected"),
+        }
+        assert_eq!(parse_entry_be(&[0, 0, 0, 0, 0, 0, 0, 0]).unwrap().len(), 0);
     }
 
     /// ★ The regression the old value-based classifier could not survive: an object with exactly

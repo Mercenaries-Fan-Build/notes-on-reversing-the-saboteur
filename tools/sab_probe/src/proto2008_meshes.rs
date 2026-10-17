@@ -3,8 +3,9 @@
 //! ones, parse each with `sab_formats::proto2008::mesh::parse_record`, and tally the facts
 //! `docs/2008_msh4_format.md` cites: record kinds and magics, failures, stream formats, prim and bone
 //! fields, tails, which half4 position streams are normalised to [0,1], the `UBYTE4N` tangent's byte
-//! order against the `DEC3N` normal, and how the pack's `wsd` placement nodes relate to the bounds of
-//! the meshes they name.
+//! order against the `DEC3N` normal, each stream's model-space box (`Mesh::positions`) against its
+//! bone's box, skin index ranges, whether each remap inverts its bone's bind transform, and how the
+//! pack's `wsd` placement nodes relate to the bounds of the meshes they name.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -98,6 +99,79 @@ fn survey_mesh(m: &Mesh, at: &str, t: &mut Tally) {
             t.note(format!("half4 positions all in [0,1]: {unit} ({kind})"), &format!("{at} {}", m.name));
             t.note(format!("half4 positions all in [0,1]: {unit}, stream has a normal: {}", l.normal.is_some()), &format!("{at} {} {:08X}", m.name, s.format));
         }
+        if let (Some(b), Ok(ps)) = (m.bones.get(s.bone as usize), m.positions(s)) {
+            let class = match l.position {
+                Some((Element::UShort2, _)) => "terrain",
+                Some((Element::Half4, _)) if l.normal.is_none() => "normalised",
+                _ if l.skin.is_some() => "skinned",
+                _ => "rigid",
+            };
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for p in &ps {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+            let tol = |x: f32| 2e-3 + 2e-3 * x.abs();
+            let axis = |k: usize| {
+                let (bl, bh) = (b.centre[k] - b.half[k], b.centre[k] + b.half[k]);
+                (lo[k] - bl).abs() <= tol(bl) && (hi[k] - bh).abs() <= tol(bh)
+            };
+            let fits = |k: usize| lo[k] >= b.centre[k] - b.half[k] - tol(b.centre[k] - b.half[k]) && hi[k] <= b.centre[k] + b.half[k] + tol(b.centre[k] + b.half[k]);
+            let verdict = if (0..3).all(axis) {
+                "equals the bone's box"
+            } else if (0..3).all(fits) {
+                "inside the bone's box"
+            } else {
+                "outside the bone's box"
+            };
+            if !ps.is_empty() {
+                t.note(format!("model-space vertex box {verdict} ({class})"), &format!("{at} {} bone {} [{lo:?}..{hi:?}] box c {:?} h {:?}", m.name, s.bone, b.centre, &b.half[..3]));
+                if verdict.starts_with("outside") {
+                    if let Some((e, o)) = l.position.filter(|(e, _)| matches!(e, Element::Half4 | Element::Float3)) {
+                        let (mut rlo, mut rhi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                        for v in s.vertices.chunks_exact(s.stride as usize) {
+                            let p = mesh::floats(e, v, o);
+                            for k in 0..3 {
+                                rlo[k] = rlo[k].min(p[k]);
+                                rhi[k] = rhi[k].max(p[k]);
+                            }
+                        }
+                        let rfits = (0..3).all(|k| rlo[k] >= b.centre[k] - b.half[k] - tol(b.centre[k] - b.half[k]) && rhi[k] <= b.centre[k] + b.half[k] + tol(b.centre[k] + b.half[k]));
+                        let excess: f32 = (0..3)
+                            .map(|k| ((b.centre[k] - b.half[k]) - lo[k]).max(0.0).max(hi[k] - (b.centre[k] + b.half[k])))
+                            .fold(0.0, f32::max);
+                        let ex = if excess < 0.05 { "< 5 cm" } else if excess < 0.5 { "< 50 cm" } else { ">= 50 cm" };
+                        t.note(
+                            format!("outside ({class}): raw positions fit the box: {rfits}; largest excess {ex}; bones {}", if m.bones.len() > 1 { ">1" } else { "1" }),
+                            &format!("{at} {} bone {}", m.name, s.bone),
+                        );
+                    }
+                }
+            }
+        }
+        if let Some((wo, io)) = l.skin {
+            let (mut max_idx, mut wsum_ok) = (0u8, true);
+            for v in s.vertices.chunks_exact(s.stride as usize) {
+                let w = mesh::bytes4(v, wo);
+                let i = mesh::bytes4(v, io);
+                let sum: u32 = w.iter().map(|&x| x as u32).sum();
+                if !(250..=260).contains(&sum) {
+                    wsum_ok = false;
+                }
+                for k in 0..4 {
+                    if w[k] != 0 {
+                        max_idx = max_idx.max(i[k]);
+                    }
+                }
+            }
+            let rel = |x: usize| if (max_idx as usize) < x { "<" } else { ">=" };
+            t.note(
+                format!("skinned stream: weights sum to 255: {wsum_ok}; max weighted index {} remap count, {} bone count", rel(m.remaps.len()), rel(m.bones.len())),
+                &format!("{at} {} max {max_idx} remaps {} bones {}", m.name, m.remaps.len(), m.bones.len()),
+            );
+        }
         if let Some((fwd, rev)) = tangent_orders(s, &l) {
             let better = if fwd < rev { "stored order" } else { "reversed order" };
             t.note(format!("tangent more perpendicular to the normal in {better}"), &format!("{at} {} mean|dot| {fwd:.3} vs {rev:.3}", m.name));
@@ -108,6 +182,29 @@ fn survey_mesh(m: &Mesh, at: &str, t: &mut Tally) {
     }
     for b in &m.bones {
         t.note(format!("bone export_flags {} ({kind})", b.export_flags), &format!("{at} {}", m.name));
+    }
+    for r in &m.remaps {
+        let Some(_) = m.bones.get(r.bone as usize) else {
+            t.note("remap bone index past the bone list".into(), &format!("{at} {}", m.name));
+            continue;
+        };
+        let o = m.bone_to_model(r.bone as usize, [0.0; 3]);
+        let ex = m.bone_to_model(r.bone as usize, [1.0, 0.0, 0.0]);
+        let ey = m.bone_to_model(r.bone as usize, [0.0, 1.0, 0.0]);
+        let ez = m.bone_to_model(r.bone as usize, [0.0, 0.0, 1.0]);
+        let mm = r.matrix;
+        let apply_rows = |p: [f32; 3]| [0, 1, 2].map(|i| mm[4 * i] * p[0] + mm[4 * i + 1] * p[1] + mm[4 * i + 2] * p[2] + mm[4 * i + 3]);
+        let apply_cols = |p: [f32; 3]| [0, 1, 2].map(|i| mm[i] * p[0] + mm[4 + i] * p[1] + mm[8 + i] * p[2] + mm[12 + i]);
+        let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 2e-3);
+        let as_rows = close(apply_rows(o), [0.0; 3]) && close(apply_rows(ex), [1.0, 0.0, 0.0]) && close(apply_rows(ey), [0.0, 1.0, 0.0]) && close(apply_rows(ez), [0.0, 0.0, 1.0]);
+        let as_cols = close(apply_cols(o), [0.0; 3]) && close(apply_cols(ex), [1.0, 0.0, 0.0]) && close(apply_cols(ey), [0.0, 1.0, 0.0]) && close(apply_cols(ez), [0.0, 0.0, 1.0]);
+        let verdict = match (as_rows, as_cols) {
+            (true, true) => "both orders (identity-like)",
+            (true, false) => "row-vector order m[4r+c] with translation in m[3,7,11]",
+            (false, true) => "column order with translation in m[12..15]",
+            (false, false) => "neither order",
+        };
+        t.note(format!("remap matrix inverts the bone's bind world: {verdict} ({kind})"), &format!("{at} {} bone {} {:?}", m.name, r.bone, mm));
     }
 }
 

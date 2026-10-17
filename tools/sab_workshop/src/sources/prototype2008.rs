@@ -8,8 +8,8 @@
 //! `materials` slots. Every pack of the build parses (the `sab_formats` game gate), so a pack that
 //! does not fails the open with its path: that copy of the build is damaged.
 //!
-//! `MP00` archives are not indexed: every entry is a byte copy of a loose file. `Animations.pack`
-//! (`AP04`) belongs to the animation catalog.
+//! `MP00` archives are not indexed: every entry is a byte copy of a loose file. `ANM0` clips and
+//! `Animations.pack` (`AP04`) belong to the animation catalog, `prototype2008_anim::Catalog`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,7 +25,7 @@ use sab_formats::{dds, names, pandemic_hash, pixels, zlib};
 use crate::dtex::CpuTexture;
 use crate::formats::{Bone, Prim, Smsh};
 use crate::source::{AssetHandle, AssetKind, GameSource, GameVersion, SourceFingerprint};
-use crate::sources::prototype2008_anim::Anim2008Catalog;
+use crate::sources::prototype2008_anim::Catalog;
 
 /// A texture handle's key: the texture hash for a slot texture; this bit plus an index for a loose
 /// `.dds` file.
@@ -130,7 +130,7 @@ pub struct Prototype2008Source {
     textures: HashMap<u32, Vec<TexRef>>,
     loose_dds: Vec<LooseDds>,
     tex_cache: Mutex<HashMap<u64, CpuTexture>>,
-    anim_catalog: Anim2008Catalog,
+    animations: Catalog,
 }
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -255,13 +255,9 @@ impl Prototype2008Source {
         fingerprint.matched(format!(
             "not indexed: {mega} MP00 archives (byte copies of loose files), {anim_packs} AP04 animation pack, {empty} empty .pack files"
         ));
-        let anim_catalog = Anim2008Catalog::open(&bin360);
-        fingerprint.matched(format!(
-            "animations: {} clips ({} loose + {} pack)",
-            anim_catalog.clips.len(),
-            anim_catalog.loose_count,
-            anim_catalog.pack_count
-        ));
+        let animations = Catalog::open(&bin360, &all)?;
+        let (loose_clips, pack_records) = animations.counts();
+        fingerprint.matched(format!("animations: {loose_clips} loose ANM0 clips, {pack_records} pack records"));
         Ok(Self {
             bin360,
             fingerprint,
@@ -270,7 +266,7 @@ impl Prototype2008Source {
             textures,
             loose_dds,
             tex_cache: Mutex::new(HashMap::new()),
-            anim_catalog,
+            animations,
         })
     }
 
@@ -695,7 +691,7 @@ impl GameSource for Prototype2008Source {
     }
 
     fn list_animations(&self) -> Vec<AssetHandle> {
-        self.anim_catalog.handles()
+        self.animations.handles()
     }
 
     fn load_texture(&self, hash: u32) -> Result<CpuTexture, String> {
@@ -774,13 +770,14 @@ impl GameSource for Prototype2008Source {
                     kv.push((format!("sampler {i}"), format!("{name} ({kind})")));
                 }
             }
+            AssetKind::Animation => kv.extend(self.animations.describe(handle)?),
             other => kv.push(("kind".into(), format!("{other:?}"))),
         }
         Ok(kv)
     }
 
     fn load_animation_clip(&self, handle: &AssetHandle) -> Result<Box<dyn crate::clip::AnimClip>, String> {
-        Ok(Box::new(self.anim_catalog.load_clip(handle.key as u32)?))
+        Ok(Box::new(self.animations.load(handle)?))
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

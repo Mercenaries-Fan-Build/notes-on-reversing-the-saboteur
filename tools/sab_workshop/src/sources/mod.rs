@@ -5,8 +5,4 @@
 pub mod prototype2008;
 pub mod prototype2008_anim;
 pub mod prototype2008_anim_havok46;
-pub mod prototype2008_material;
-pub mod prototype2008_mesh;
-pub mod prototype2008_subpack;
-pub mod prototype2008_texture;
 pub mod retail_pc;

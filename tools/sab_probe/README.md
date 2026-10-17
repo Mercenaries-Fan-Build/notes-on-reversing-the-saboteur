@@ -30,6 +30,8 @@ sab_probe proto2008-binaries <Bin360>      container/mesh magics each 2008 binar
 sab_probe proto2008-packs    <Bin360>      every .pack, MP00 entry and slot directory; docs/2008_subpack_format.md
 sab_probe proto2008-meshes   <Bin360>      every meshes record; formats, prims, bones, placement;
                                            docs/2008_msh4_format.md
+sab_probe proto2008-textures <Bin360>      every textures record and loose .dds; formats, sRGB, slot words,
+                                           mip layout vs unpacked, mips vs base; docs/2008_texture_format.md
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

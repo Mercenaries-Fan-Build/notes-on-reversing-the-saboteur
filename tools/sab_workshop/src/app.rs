@@ -326,15 +326,13 @@ pub fn run(mut cfg: Config) {
     // they're set).
     let mut pending_2008_clip: Option<usize> = None;
     // 2008-side mesh click. Same shape as `pending_2008_clip` — the Nav Models tab writes
-    // an index into `source_handles`, the event loop drains it, decodes the MSH4, binds
-    // materials/textures, and flips `has_2008_mesh` on so `draw_scene` can be enabled.
+    // an index into `source_handles`, the event loop drains it, decodes the record, binds
+    // materials/textures, and sets `loaded_2008_mesh` so `draw_scene` can be enabled.
     let mut pending_2008_mesh: Option<usize> = None;
-    // True once a 2008 mesh has been successfully uploaded to the renderer at least once.
-    // Gates `renderer.draw_scene` on 2008 — before this, the placeholder triangle stub
-    // would draw an "app is broken" one-poly cube; after this, the actual character mesh
-    // sits in the viewport. Persists across nav clicks (a later mesh swap replaces the
-    // geometry but the flag stays set).
-    let mut has_2008_mesh: bool = false;
+    // The `source_handles` index of the 2008 mesh in the renderer. Gates `renderer.draw_scene`
+    // on 2008 — before a mesh is loaded only the placeholder triangle exists — and names what a
+    // bundle export writes. Cleared when the source's handles are rebuilt.
+    let mut loaded_2008_mesh: Option<usize> = None;
     // Materials picker request: (submesh, Some(asset) | None to unassign), applied after the UI runs.
     // Materials-panel picker signals a per-slot rebind: (submesh index, slot 0..=3, asset index).
     let mut pending_tex: Option<(usize, u8, Option<usize>)> = None;
@@ -531,6 +529,7 @@ pub fn run(mut cfg: Config) {
                         let new_ver = crate::source::detect_version(std::path::Path::new(&cfg.game_dir))
                             .map(|(v, _fp)| v);
                         source_handles.clear();
+                        loaded_2008_mesh = None;
                         sel_source_handle = None;
                         // Re-open the source unconditionally — retail or 2008, this is what the
                         // browser/materials panels read through.
@@ -907,7 +906,18 @@ pub fn run(mut cfg: Config) {
                     // Handing this to a WORKER is the whole point: assembling the character,
                     // BC-decoding its skins to PNG and writing the raw records takes seconds, and
                     // doing it inline painted the window "Not Responding" until it finished.
-                    if export_req && exporter.is_none() {
+                    if export_req && exporter.is_none() && loaded_2008_mesh.is_some() {
+                        let src2008 = source.as_ref().and_then(|s| s.as_any()).and_then(|a| {
+                            a.downcast_ref::<crate::sources::prototype2008::Prototype2008Source>()
+                        });
+                        match (src2008, loaded_2008_mesh.and_then(|i| source_handles.get(i))) {
+                            (Some(src), Some(handle)) => match src.bundle_job(handle, bundle_root(&settings_ctx.s)) {
+                                Ok(job) => exporter = Some(spawn_bundle_export_2008(job)),
+                                Err(e) => load_status = Some((format!("export: {e}"), true)),
+                            },
+                            _ => load_status = Some(("export: the loaded 2008 mesh is no longer in the source".into(), true)),
+                        }
+                    } else if export_req && exporter.is_none() {
                         if current_parts.is_empty() || megapack.is_none() {
                             load_status = Some(("open a character from the browser first".into(), true));
                         } else {
@@ -1176,10 +1186,9 @@ pub fn run(mut cfg: Config) {
                         }
                     }
                     // --- act on a 2008 mesh request (Nav Models click through the trait) ---
-                    // Decode MSH4 → Smsh → renderer.set_mesh + identity skeleton + per-submesh
-                    // material→texture resolve. All wgpu work happens on the main thread; the
-                    // decode is fast enough (~a few MB inflate + parse) that a worker isn't
-                    // warranted yet. Set draw_scene ON once the upload succeeds.
+                    // Decode the record → bind-space geometry + rig → renderer, then each submesh's
+                    // material textures. All wgpu work happens on the main thread. Set draw_scene
+                    // ON once the upload succeeds.
                     if let Some(hi) = pending_2008_mesh.take() {
                         if let (Some(src), Some(handle)) =
                             (source.as_ref(), source_handles.get(hi))
@@ -1196,7 +1205,7 @@ pub fn run(mut cfg: Config) {
                                 &mut camera,
                             ) {
                                 Ok(msg) => {
-                                    has_2008_mesh = true;
+                                    loaded_2008_mesh = Some(hi);
                                     // Clear the previous model's per-submesh state so stale
                                     // sidecar bindings / assets don't survive across a click.
                                     current_parts.clear();
@@ -1229,7 +1238,7 @@ pub fn run(mut cfg: Config) {
                     // show the real MSH4 body in bind pose.
                     let is_2008 = source.as_ref().map(|s| s.version())
                         == Some(crate::source::GameVersion::Prototype2008Xbox360);
-                    let scene_has_geometry = !is_2008 || has_2008_mesh;
+                    let scene_has_geometry = !is_2008 || loaded_2008_mesh.is_some();
                     renderer.draw_scene = page.editor().is_none() && scene_has_geometry;
                     match renderer.render(&mut gui) {
                         Ok(()) => {}
@@ -1358,6 +1367,16 @@ fn spawn_bundle_export(job: bundle::Job) -> Exporter {
     let label = job.label.clone();
     std::thread::spawn(move || {
         let _ = tx.send(bundle::run(&job));
+    });
+    Exporter { rx, label }
+}
+
+/// Write a 2008 bundle off the UI thread; the job is already decoded.
+fn spawn_bundle_export_2008(job: bundle::Job2008) -> Exporter {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let label = job.label.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(bundle::run_2008(&job));
     });
     Exporter { rx, label }
 }
@@ -2234,23 +2253,19 @@ fn load_source_clip(
     })
 }
 
-/// Resolve a per-track bone-hash list against a `Bone` array whose `name` fields are
-/// hex-encoded pandemic_hashes (`bone_HHHHHHHH`, the format the 2008 mesh loader
-/// emits from `Msh4Bone::name_hash`). Bones whose name doesn't match that pattern
-/// contribute nothing to the map; a track hash absent from the map lands as `-1`
-/// (unbound — `skinning::posed` leaves that bone at bind pose).
-///
-/// Cheap: one hashmap build sized to the rig, then one lookup per track. Called
-/// once per clip load, never per frame.
+/// Resolve a per-track bone-hash list against a 2008 rig. The 2008 mesh loader names each bone by
+/// its hash's entry in the name table, whose names hash back to it, or `bone_HHHHHHHH` when the
+/// table has none. A track hash absent from the rig lands as `-1` (unbound — `skinning::posed`
+/// leaves that bone at bind pose).
 fn resolve_hashes_against_bones(hashes: &[u32], skel: &[Bone]) -> Vec<i32> {
     let mut by_hash: std::collections::HashMap<u32, i32> =
         std::collections::HashMap::with_capacity(skel.len());
     for (i, b) in skel.iter().enumerate() {
-        if let Some(rest) = b.name.strip_prefix("bone_") {
-            if let Ok(h) = u32::from_str_radix(rest, 16) {
-                by_hash.entry(h).or_insert(i as i32);
-            }
-        }
+        let h = match b.name.strip_prefix("bone_").map(|rest| u32::from_str_radix(rest, 16)) {
+            Some(Ok(h)) => h,
+            _ => sab_formats::pandemic_hash(&b.name),
+        };
+        by_hash.entry(h).or_insert(i as i32);
     }
     if by_hash.is_empty() {
         return Vec::new();
@@ -2261,17 +2276,15 @@ fn resolve_hashes_against_bones(hashes: &[u32], skel: &[Bone]) -> Vec<i32> {
         .collect()
 }
 
-/// Load a 2008-prototype mesh + its materials + textures into the renderer.
+/// Load a 2008-prototype mesh, its rig and its materials' textures into the renderer.
 ///
-/// Chain: mesh handle → `Prototype2008Source::read_mesh_smsh` (MSH4 → Smsh) → `renderer.set_mesh`
-/// → for each submesh, look up `materials[0]` (or subsequent candidates) in the source's
-/// material index, decode each slot's texture via `GameSource::load_texture`, and bind to the
-/// renderer. The skeleton is an identity stub sized to cover every joint index the mesh
-/// references — the shader still runs its skinning path, but every `jointMatrix[i] * pos`
-/// resolves to `identity * pos`, i.e. bind-pose vertices unchanged.
+/// `Prototype2008Source::load_mesh` gives bind-space geometry, the rig and, per material uid of the
+/// mesh's pack, its `Color-Pass` colour and normal textures (`docs/2008_materials_format.md`). Each
+/// submesh binds its first material's: the colour map as diffuse and the normal map as normal. A
+/// submesh whose index range lies in a stream without texture coordinates is drawn untextured.
 ///
-/// Returns a human-readable status message on success (verts/tris/textures counts) and an
-/// error string on any failure that keeps the scene in its previous state.
+/// Returns a status message (counts, including every texture that failed to decode) on success,
+/// and an error that leaves the scene as it was on failure.
 fn load_2008_mesh_into_renderer(
     src: &dyn crate::source::GameSource,
     handle: &crate::source::AssetHandle,
@@ -2292,75 +2305,13 @@ fn load_2008_mesh_into_renderer(
         .as_any()
         .and_then(|a| a.downcast_ref::<crate::sources::prototype2008::Prototype2008Source>())
         .ok_or("source is not the 2008 prototype")?;
-    let body = src2008.read_mesh_body(handle)?;
-    let smsh = crate::sources::prototype2008_mesh::to_smsh(&body);
-    let name = if handle.name.is_empty() {
-        format!("{:08X}", handle.key as u32)
-    } else {
-        handle.name.clone()
-    };
-
-    // Prefer the real parsed skeleton (bones + parents + bind-pose TRS + inverse-bind
-    // matrices, joined by pandemic_hash) when the mesh ships one. Fall back to an identity
-    // skeleton sized to the palette-local joint range only when the trailing region didn't
-    // decode into a skeleton — small props, cloth-only meshes, and anything the parser
-    // returned `Ok(None)` on. Once the track_to_bone resolver lands, the real skeleton
-    // is what makes posed 2008 animation actually pose the character.
-    let rig: Vec<Bone> = if let Some(skel_data) = body.skeleton.as_ref() {
-        // Build a name-hash -> bone-index side table so remaps (keyed by hash in retail
-        // convention, keyed by bone_index in 2008) can find their target bone.
-        use std::collections::HashMap;
-        let mut ibm_by_index: HashMap<u32, [f32; 16]> =
-            HashMap::with_capacity(skel_data.remaps.len());
-        for r in &skel_data.remaps {
-            ibm_by_index.insert(r.bone_index, r.matrix);
-        }
-        skel_data
-            .bones
-            .iter()
-            .enumerate()
-            .map(|(i, b)| Bone {
-                parent: b.parent,
-                name: format!("bone_{:08X}", b.name_hash),
-                t: b.translation,
-                r: b.rotation,
-                s: b.scale,
-                inv_bind: ibm_by_index.get(&(i as u32)).copied(),
-                local_m: None,
-            })
-            .collect()
-    } else {
-        let max_joint = smsh
-            .joints
-            .iter()
-            .flatten()
-            .copied()
-            .max()
-            .unwrap_or(0);
-        let bone_count = (max_joint as usize + 1).max(1).min(256);
-        let identity_inv_bind = {
-            let mut m = [0f32; 16];
-            m[0] = 1.0;
-            m[5] = 1.0;
-            m[10] = 1.0;
-            m[15] = 1.0;
-            Some(m)
-        };
-        (0..bone_count)
-            .map(|i| Bone {
-                parent: -1,
-                name: format!("bone_{i}"),
-                t: [0.0, 0.0, 0.0],
-                r: [0.0, 0.0, 0.0, 1.0],
-                s: [1.0, 1.0, 1.0],
-                inv_bind: identity_inv_bind,
-                local_m: None,
-            })
-            .collect()
-    };
+    let loaded = src2008.load_mesh(handle)?;
+    let smsh = &loaded.smsh;
+    let rig = loaded.rig.clone();
+    let name = loaded.name.clone();
 
     // Upload geometry + rig, then let the renderer recompute its submesh cover.
-    renderer.set_mesh(&smsh, rig.len());
+    renderer.set_mesh(smsh, rig.len());
     renderer.update_joints(&skinning::bind_pose(&rig));
     *submeshes = renderer.submeshes().to_vec();
     *mesh_stats = (
@@ -2375,88 +2326,46 @@ fn load_2008_mesh_into_renderer(
     // Frame the camera on the fresh geometry — the retail path does the same after every
     // click-swap, so 2008 mode's newly-loaded mesh shows up centred rather than at whatever
     // orbit the previous model's bounds put us in.
-    let (c, r) = bounds(&smsh);
+    let (c, r) = bounds(smsh);
     *camera = OrbitCamera::framing(c, r);
 
     // ── Materials + textures per submesh ─────────────────────────────────────────────────
-    // For each submesh's candidate material hashes (24-bit, from MSH4 prims), resolve to a
-    // full MTLD uid, look up its [d,s,n,wm] slot vector, decode each populated slot's
-    // texture via the trait's `load_texture` and bind. Missing slots fall back to the
-    // renderer's shared defaults (1×1 white / flat normal / black) exactly like retail.
-    let mut n_diffuse = 0usize;
-    let mut n_spec = 0usize;
-    let mut n_normal = 0usize;
-    let mut n_no_material = 0usize;
+    use crate::sources::prototype2008::TextureKind;
+    let (mut n_colour, mut n_normal, mut n_uvless) = (0usize, 0usize, 0usize);
+    let mut failed: Vec<String> = Vec::new();
     for (i, sm) in submeshes.iter().enumerate() {
-        let mut resolved_slots: Option<[Option<u32>; 4]> = None;
-        for &mat_hash_24 in &sm.materials {
-            if let Some(uid) = src2008.resolve_material_hash_24(mat_hash_24) {
-                if let Some(slots) = src.textures_for_material(uid) {
-                    resolved_slots = Some(slots);
-                    break;
-                }
-            }
+        let (s0, s1) = (sm.index_start, sm.index_start + sm.index_count);
+        if loaded.uvless.iter().any(|&(a, n)| a < s1 && s0 < a + n) {
+            n_uvless += 1;
+            continue;
         }
-        let Some(slots) = resolved_slots else {
-            n_no_material += 1;
+        let Some(view) = sm.materials.first().and_then(|uid| loaded.materials.get(uid)) else {
             continue;
         };
-        // Slot order per docs/2008_materials_format.md: [diffuse, spec, normal, wm].
-        // The renderer samples the first three; wm is carried in bundle export only.
-        if let Some(h) = slots[0] {
-            match src.load_texture(h) {
-                Ok(t) => {
+        for (hash, role) in [(view.colour, TextureKind::Colour), (view.normal, TextureKind::Normal)] {
+            let Some(h) = hash else { continue };
+            match src2008.load_mesh_texture(&loaded, h, role) {
+                Ok(t) if role == TextureKind::Colour => {
                     renderer.set_submesh_texture(i, &t);
-                    n_diffuse += 1;
+                    n_colour += 1;
                 }
-                Err(e) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[sab_workshop] 2008 submesh {i} diffuse {h:08X}: {e}");
-                    let _ = e;
-                }
-            }
-        }
-        if let Some(h) = slots[1] {
-            match src.load_texture(h) {
-                Ok(t) => {
-                    renderer.set_submesh_spec(i, &t);
-                    n_spec += 1;
-                }
-                Err(e) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[sab_workshop] 2008 submesh {i} spec {h:08X}: {e}");
-                    let _ = e;
-                }
-            }
-        }
-        if let Some(h) = slots[2] {
-            match src.load_texture(h) {
                 Ok(t) => {
                     renderer.set_submesh_normal(i, &t);
                     n_normal += 1;
                 }
-                Err(e) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[sab_workshop] 2008 submesh {i} normal {h:08X}: {e}");
-                    let _ = e;
-                }
+                Err(e) => failed.push(format!("submesh {i} {role:?} {h:08X}: {e}")),
             }
         }
     }
-
-    println!(
-        "[sab_workshop] 2008 mesh loaded: {} — {} verts, {} tris, {} submeshes, \
-         {n_diffuse}/{n_spec}/{n_normal} d/s/n textures, {n_no_material} submeshes without a \
-         resolvable material",
+    for f in &failed {
+        eprintln!("[sab_workshop] 2008 mesh {model_name}: texture failed: {f}");
+    }
+    Ok(format!(
+        "{}: {} tris, {} submeshes, {n_colour} colour + {n_normal} normal maps bound, {n_uvless} without texture coordinates{}",
         model_name,
-        mesh_stats.0,
         mesh_stats.1,
         submeshes.len(),
-    );
-
-    Ok(format!(
-        "{}: {} tris, {} submeshes, {} diffuse textures",
-        model_name, mesh_stats.1, submeshes.len(), n_diffuse
+        if failed.is_empty() { String::new() } else { format!(", {} TEXTURES FAILED (see log)", failed.len()) }
     ))
 }
 
@@ -2703,8 +2612,8 @@ struct NavCtx<'a> {
     pending_2008_clip: &'a mut Option<usize>,
     /// Click-to-load out-param for the 2008 Nav Models tab: an index into `source_handles`
     /// pointing at an `AssetKind::Mesh` row. The event loop drains it, calls
-    /// `Prototype2008Source::read_mesh_smsh`, uploads the mesh + resolved textures to the
-    /// renderer, and flips `has_2008_mesh` so `draw_scene` can be enabled. Same shape as
+    /// `Prototype2008Source::load_mesh`, uploads the mesh + resolved textures to the
+    /// renderer, and sets `loaded_2008_mesh` so `draw_scene` can be enabled. Same shape as
     /// `pending_2008_clip` — one indirection through the source, no per-version logic in
     /// the renderer.
     pending_2008_mesh: &'a mut Option<usize>,
@@ -3803,13 +3712,22 @@ fn build_ui(
                                 theme::kv(ui, "hash", egui::RichText::new(&badge).monospace());
                             }
                             theme::kv(ui, "source", egui::RichText::new(source.version().label()));
-                            // Per-kind detail. Meshes surface slot metadata + MSH4 magic;
-                            // textures decode via the source (loose DDS today, SBL slot when
-                            // wired) and render a preview; materials show their [d,s,n,wm]
-                            // slot chips resolved through textures_for_material.
+                            // Per-kind detail: the source's own description rows, and for a
+                            // texture a decoded preview.
+                            match source.describe(handle) {
+                                Ok(rows) => {
+                                    for (k, v) in rows {
+                                        theme::kv(ui, &k, egui::RichText::new(v).monospace());
+                                    }
+                                }
+                                Err(e) => {
+                                    ui.label(egui::RichText::new(format!("describe failed: {e}")).color(theme::RED).size(10.5));
+                                }
+                            }
                             if handle.kind == crate::source::AssetKind::Texture {
-                                if let Some(h) = handle.hash {
-                                    match source.load_texture(h) {
+                                {
+                                    let h = handle.key;
+                                    match source.load_texture_handle(handle) {
                                         Ok(t) => {
                                             theme::kv(ui, "size", egui::RichText::new(format!("{}×{}", t.width, t.height)));
                                             theme::kv(ui, "bytes (RGBA)", egui::RichText::new(t.rgba.len().to_string()));
@@ -3820,7 +3738,7 @@ fn build_ui(
                                                 &t.rgba,
                                             );
                                             let tex_handle = ui.ctx().load_texture(
-                                                format!("src_tex_{h:08X}"),
+                                                format!("src_tex_{h:X}"),
                                                 img,
                                                 egui::TextureOptions::LINEAR,
                                             );
@@ -3834,59 +3752,8 @@ fn build_ui(
                                             );
                                         }
                                         Err(e) => {
-                                            ui.label(egui::RichText::new(format!("decode failed: {e}")).color(theme::FAINT).size(10.5));
+                                            ui.label(egui::RichText::new(format!("decode failed: {e}")).color(theme::RED).size(10.5));
                                         }
-                                    }
-                                }
-                            } else if handle.kind == crate::source::AssetKind::Material {
-                                if let Some(uid) = handle.hash {
-                                    match source.textures_for_material(uid) {
-                                        Some(slots) => {
-                                            let names = ["diffuse", "spec", "normal", "mask"];
-                                            for (i, s) in slots.iter().enumerate() {
-                                                let val = match s {
-                                                    Some(h) => {
-                                                        let n = source.name_of_hash(*h).unwrap_or_default();
-                                                        if n.is_empty() {
-                                                            format!("{h:08X}")
-                                                        } else {
-                                                            format!("{n}  {h:08X}")
-                                                        }
-                                                    }
-                                                    None => "—".into(),
-                                                };
-                                                theme::kv(ui, names[i], egui::RichText::new(val).monospace());
-                                            }
-                                        }
-                                        None => {}
-                                    }
-                                }
-                            } else if handle.kind == crate::source::AssetKind::Mesh {
-                                match source.read_mesh_bytes(handle) {
-                                    Ok(bytes) => {
-                                        theme::kv(ui, "slot bytes", egui::RichText::new(bytes.len().to_string()));
-                                        if bytes.len() >= 4 {
-                                            let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                                            theme::kv(ui, "records (BE u32)", egui::RichText::new(n.to_string()));
-                                        }
-                                        // Cheap MSH4 confirmation — inflate the first stream.
-                                        // No need to render the geometry; the presence of the
-                                        // magic proves the slot boundary is right.
-                                        if bytes.len() >= 16 {
-                                            let first_off = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
-                                            let first_comp = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
-                                            if first_off + first_comp <= bytes.len() && first_comp >= 2 && bytes[first_off] == 0x78 {
-                                                use std::io::Read;
-                                                let mut z = flate2::read::ZlibDecoder::new(&bytes[first_off..first_off + first_comp]);
-                                                let mut out = Vec::new();
-                                                if z.read_to_end(&mut out).is_ok() && out.len() >= 4 && &out[0..4] == b"MSH4" {
-                                                    theme::kv(ui, "first record", egui::RichText::new("MSH4 ✓").color(theme::EMBER));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        ui.label(egui::RichText::new(format!("read failed: {e}")).color(theme::RED).size(10.5));
                                     }
                                 }
                             }

@@ -41,11 +41,13 @@ pub mod map6;
 pub mod megapack;
 pub mod mesh;
 pub mod names;
+pub mod pcm;
 pub mod pixels;
 pub mod proto2008;
 pub mod sbla;
 pub mod wwise;
 pub mod xex;
+pub mod xma2;
 pub mod zlib;
 
 /// Saboteur resource-name hash (`Saboteur.exe FUN_00dc1e20`); see [`hash`].

@@ -10,8 +10,8 @@
 //! 3. source id → the streamed `.wem` bytes in the pack (the `1KCP` stream table).
 //!
 //! End-to-end this resolves ~75% of VO/subtitle lines to a real stream (ceiling ~90%, the rest being
-//! cinematic/bark events with other name patterns). Decode of the returned `.wem` (Wwise Vorbis) is a
-//! separate step (vgmstream); this module only resolves and extracts bytes.
+//! cinematic/bark events with other name patterns). [`decode_wem`] turns the returned `.wem` (Wwise
+//! Vorbis) into PCM.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -113,6 +113,13 @@ impl SoundPack {
         (self.streams.len(), self.objs.len())
     }
 
+    /// Every streamed `.wem` id, ascending.
+    pub fn stream_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.streams.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// Resolve a VO/subtitle key to its source `.wem` id, if the event and its Sound resolve.
     pub fn wem_for_key(&self, key: &str) -> Option<u32> {
         self.wem_for_event(&event_name(key))
@@ -179,7 +186,7 @@ impl SoundPack {
         None
     }
 
-    /// Read the raw `.wem` bytes for a stream id from the file (Wwise-Vorbis; decode with vgmstream).
+    /// Read the raw `.wem` bytes for a stream id from the file (Wwise Vorbis; [`decode_wem`]).
     pub fn wem_bytes(&self, wem_id: u32) -> Option<Vec<u8>> {
         let &(off, size) = self.streams.get(&wem_id)?;
         let mut f = File::open(&self.path).ok()?;
@@ -188,6 +195,27 @@ impl SoundPack {
         f.read_exact(&mut buf).ok()?;
         Some(buf)
     }
+}
+
+/// Decode a retail `.wem` to PCM. Every retail `.wem` is Wwise Vorbis with a full setup header and
+/// inline codebooks (`docs/formats/audio_1kcp.md`): `ww2ogg` rebuilds a standard Ogg Vorbis stream
+/// from it and `lewton` decodes that. Samples are the decoder's i16 values over 32768.
+pub fn decode_wem(wem: &[u8]) -> Result<crate::pcm::Pcm, String> {
+    let mut conv = ww2ogg::WwiseRiffVorbis::builder(std::io::Cursor::new(wem), ww2ogg::CodebookLibrary::empty())
+        .inline_codebooks(true)
+        .full_setup(true)
+        .build()
+        .map_err(|e| format!("wem: {e}"))?;
+    let mut ogg = Vec::new();
+    conv.generate_ogg(&mut ogg).map_err(|e| format!("wem to ogg: {e}"))?;
+    let mut r = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(ogg)).map_err(|e| format!("ogg: {e}"))?;
+    let channels = r.ident_hdr.audio_channels as u16;
+    let sample_rate = r.ident_hdr.audio_sample_rate;
+    let mut samples = Vec::new();
+    while let Some(p) = r.read_dec_packet_itl().map_err(|e| format!("vorbis: {e}"))? {
+        samples.extend(p.iter().map(|&s| s as f32 / 32768.0));
+    }
+    Ok(crate::pcm::Pcm { sample_rate, channels, samples })
 }
 
 fn parse_bank_hirc(data: &[u8], start: usize, end: usize, objs: &mut HashMap<u32, (u32, usize, usize)>) {

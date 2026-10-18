@@ -56,7 +56,12 @@ that to PCM. Use the builder with **`full_setup(true)` and `inline_codebooks(tru
 * Not cross-checked: `lewton`'s PCM against libvorbis/vgmstream sample-for-sample — the
   `tools/vgmstream/` copy lacks its DLLs (`libvorbis.dll`, ffmpeg, …) and cannot start.
 
-Method: scratch probe `wem_decode_test` (to move into `tools/sab_probe`).
+Method: scratch probe `wem_decode_test`. The decode now lives in `sab_formats::wwise::decode_wem`
+(builder with `full_setup(true)`, `inline_codebooks(true)`); the game gate
+`retail_wem_streams_decode_to_their_declared_length` (`tools/sab_formats/tests/audio_retail.rs`)
+decodes every 25th stream of every `Sound/*.pck` to exactly the sample count its `vorb` chunk
+declares — 852 streams of `English(US).pck` and `Saboteur.pck` in the Steam install (2026-10-18).
+The workshop plays and exports voice lines through it (no vgmstream).
 
 ## Pack inventory (retail install)
 

@@ -38,10 +38,14 @@ pub struct Prim {
     /// present in SMSH v2; a v1 file reads back 0 and its accessories cannot be placed.
     pub parent_bone: u16,
     /// Which level of detail this range belongs to. `0` is what the engine draws up close. A
-    /// character's `LowDetailModel` parts are assembled in at `1` (see `assets::Asset::assembly`);
-    /// a mesh's own geometry is `0` (formats with no LOD field carry only their drawn geometry, and
-    /// `meshload` refuses a retail drawcall at any other in-mesh level).
+    /// character's `LowDetailModel` parts are assembled in at `1` and its combined model at `2` (see
+    /// `assets::Asset::assembly`); a part assembled at `0` keeps its own drawcalls' in-mesh levels
+    /// (`meshload::merge`).
     pub lod: u8,
+    /// The damage state this range draws in: `Some(s)` when a damage part of the asset's template
+    /// owns its bone (it draws while its group is in state `s`; `0` is intact), `None` when it draws
+    /// in every state (`meshload::apply_damage`).
+    pub damage: Option<i32>,
 }
 
 /// Decoded SMSH geometry.
@@ -63,9 +67,12 @@ pub struct SubMesh {
     pub index_start: u32,
     pub index_count: u32,
     pub materials: Vec<u32>,
-    /// The level of detail of every prim in this range (`Prim::lod`). The viewer draws level 0;
-    /// the bundle writes one mesh object per level.
+    /// The level of detail of every prim in this range (`Prim::lod`). The viewer draws the finest
+    /// level present; the bundle writes one mesh object per level.
     pub lod: u8,
+    /// The damage state it draws in (`Prim::damage`): its prims' when they agree, else `None` (it
+    /// draws in each of their states).
+    pub damage: Option<i32>,
 }
 
 /// Reduce the (possibly overlapping) per-drawcall `prims` to a clean cover of the index buffer.
@@ -83,8 +90,11 @@ pub struct SubMesh {
 /// double-drawing; if the levels themselves do not tile the buffer, each level becomes one
 /// untextured submesh over its own run of the buffer, so levels are never merged.
 pub fn submesh_cover(prims: &[Prim], total_indices: u32) -> Vec<SubMesh> {
+    if total_indices == 0 {
+        return Vec::new(); // no geometry, nothing to draw
+    }
     let whole = || {
-        vec![SubMesh { index_start: 0, index_count: total_indices, materials: Vec::new(), lod: 0 }]
+        vec![SubMesh { index_start: 0, index_count: total_indices, materials: Vec::new(), lod: 0, damage: None }]
     };
     if prims.is_empty() {
         return whole();
@@ -94,27 +104,31 @@ pub fn submesh_cover(prims: &[Prim], total_indices: u32) -> Vec<SubMesh> {
     levels.dedup();
     let mut out: Vec<SubMesh> = Vec::new();
     for lod in levels {
-        // Distinct ranges of this level, first-seen order, accumulating candidate materials.
-        let mut ranges: Vec<(u32, u32, Vec<u32>)> = Vec::new(); // (start, count, materials)
+        // Distinct ranges of this level, first-seen order, accumulating candidate materials and the
+        // damage state they draw in.
+        let mut ranges: Vec<(u32, u32, Vec<u32>, Option<i32>)> = Vec::new(); // (start, count, materials, damage)
         for p in prims.iter().filter(|p| p.lod == lod && p.index_count > 0) {
-            match ranges.iter_mut().find(|(s, c, _)| *s == p.index_start && *c == p.index_count) {
-                Some((_, _, mats)) => {
+            match ranges.iter_mut().find(|(s, c, _, _)| *s == p.index_start && *c == p.index_count) {
+                Some((_, _, mats, damage)) => {
                     if !mats.contains(&p.material_hash) {
                         mats.push(p.material_hash);
                     }
+                    if *damage != p.damage {
+                        *damage = None;
+                    }
                 }
-                None => ranges.push((p.index_start, p.index_count, vec![p.material_hash])),
+                None => ranges.push((p.index_start, p.index_count, vec![p.material_hash], p.damage)),
             }
         }
         // A leaf strictly contains no other distinct range.
-        let contains = |a: &(u32, u32, Vec<u32>), b: &(u32, u32, Vec<u32>)| {
+        let contains = |a: &(u32, u32, Vec<u32>, Option<i32>), b: &(u32, u32, Vec<u32>, Option<i32>)| {
             let (ae, be) = (a.0 + a.1, b.0 + b.1);
             a.0 <= b.0 && ae >= be && (a.0 != b.0 || a.1 != b.1)
         };
         let mut leaves: Vec<SubMesh> = ranges
             .iter()
             .filter(|r| !ranges.iter().any(|o| contains(r, o)))
-            .map(|(s, c, m)| SubMesh { index_start: *s, index_count: *c, materials: m.clone(), lod })
+            .map(|(s, c, m, d)| SubMesh { index_start: *s, index_count: *c, materials: m.clone(), lod, damage: *d })
             .collect();
         leaves.sort_by_key(|s| s.index_start);
         let span_start = ranges.iter().map(|r| r.0).min().unwrap_or(0);
@@ -134,6 +148,7 @@ pub fn submesh_cover(prims: &[Prim], total_indices: u32) -> Vec<SubMesh> {
                 index_count: span_end - span_start,
                 materials: Vec::new(),
                 lod,
+                damage: None,
             });
         }
     }
@@ -171,6 +186,7 @@ pub fn submesh_cover(prims: &[Prim], total_indices: u32) -> Vec<SubMesh> {
                 index_count: end - starts[k].0,
                 materials: Vec::new(),
                 lod: starts[k].1,
+                damage: None,
             }
         })
         .collect()
@@ -263,6 +279,7 @@ pub fn read_smsh(b: &[u8]) -> Result<Smsh, String> {
             parent_bone: if version >= 2 { rd_u16(o + 16) } else { 0 },
             // SMSH has no LOD field: a file holds one mesh's drawn geometry.
             lod: 0,
+            damage: None,
         });
     }
     // NOTE: rigid attachments need the skeleton (bind world), so callers must run

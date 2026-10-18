@@ -4,6 +4,8 @@ The Saboteur's voice/music/SFX ships as **Wwise file-packages** with a custom **
 `0x50434B31`), not stock Wwise AKPK. Confirmed genuine Wwise from the clean decomp
 (`AK::SoundEngine::*` demangled; loader `FUN_0091aad0` @0x0091aad0 checks `!= 0x50434b31`).
 No Mercs 2 analog — this is a from-scratch format for this project (Mercs 2 uses PWS/wavebanks).
+The 2008 Xbox 360 prototype packs its audio differently (`PCK0`, big-endian, `BKHD` v29, XMA2
+media): [`../2008_audio_format.md`](../2008_audio_format.md).
 
 ## `1KCP` layout (little-endian)
 

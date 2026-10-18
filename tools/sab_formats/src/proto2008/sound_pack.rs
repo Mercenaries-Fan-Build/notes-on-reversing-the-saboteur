@@ -197,6 +197,23 @@ pub fn parse_xma2(c: &[u8]) -> Result<Xma2Format, String> {
     })
 }
 
+/// Decode a whole `RIFX` media file (a stream record or a bank's `DIDX` media) to PCM. Every 2008
+/// media is one XMA stream; more streams are an error.
+pub fn decode_media(m: &[u8]) -> Result<crate::pcm::Pcm, String> {
+    let cs = riff_chunks(m)?;
+    let body = |t: &[u8; 4]| {
+        cs.iter()
+            .find(|c| &c.tag == t)
+            .map(|c| &m[c.start..c.start + c.len])
+            .ok_or(format!("no {} chunk", String::from_utf8_lossy(t)))
+    };
+    let x = parse_xma2(body(b"XMA2")?)?;
+    if x.num_streams != 1 {
+        return Err(format!("{} XMA streams in one media", x.num_streams));
+    }
+    crate::xma2::decode(body(b"data")?, x.streams[0].0 as u16, x.sample_rate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

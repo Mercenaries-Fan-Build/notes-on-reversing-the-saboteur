@@ -1,19 +1,46 @@
-//! Where the tests find game data — one place, read from the environment, never a hardcoded path.
-//!
-//! Retail tests already use `SAB_GAME_DIR` (see `settings::detected`). The 2008 prototype tests used
-//! to carry a Windows path to one developer's desktop in eight files, so on any other machine or OS
-//! they could never run and reported a pass while doing nothing. `SAB_2008_DIR` is the prototype's
-//! counterpart: point it at any folder the app itself accepts as the 2008 build
-//! (`sab_formats::game_paths::proto2008_bin360` — the same rule detection and the loader use).
+//! The builds the game-gated tests read, each opened once, from the paths in the repo-root
+//! `.sab-local.toml` (`retail_dir`, `proto2008_dir`).
 
-use std::path::PathBuf;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
-fn sab_2008_dir() -> Option<PathBuf> {
-    std::env::var("SAB_2008_DIR").ok().filter(|d| !d.trim().is_empty()).map(PathBuf::from)
+use crate::source::{GameSource, Overrides};
+use crate::sources::prototype2008::Prototype2008Source;
+use crate::sources::retail_pc::RetailPcSource;
+
+fn here() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// `SAB_2008_DIR` as given, when it is a folder `Prototype2008Source::open` will accept.
-pub fn prototype2008_root() -> Option<PathBuf> {
-    let dir = sab_2008_dir()?;
-    sab_formats::game_paths::proto2008_bin360(&dir).map(|_| dir)
+fn retail_arc() -> &'static Arc<RetailPcSource> {
+    static SRC: OnceLock<Arc<RetailPcSource>> = OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = sab_formats::game_paths::local_config_retail_dir(here()).unwrap_or_else(|e| panic!("{e}"));
+        Arc::new(RetailPcSource::open(&dir, &Overrides::default()).unwrap_or_else(|e| panic!("{}: {e}", dir.display())))
+    })
+}
+
+fn proto2008_arc() -> &'static Arc<Prototype2008Source> {
+    static SRC: OnceLock<Arc<Prototype2008Source>> = OnceLock::new();
+    SRC.get_or_init(|| {
+        let dir = sab_formats::game_paths::local_config_proto2008_bin360(here()).unwrap_or_else(|e| panic!("{e}"));
+        Arc::new(Prototype2008Source::open(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())))
+    })
+}
+
+pub fn retail() -> &'static RetailPcSource {
+    retail_arc()
+}
+
+pub fn proto2008() -> &'static Prototype2008Source {
+    proto2008_arc()
+}
+
+pub fn both_builds() -> [&'static dyn GameSource; 2] {
+    [retail(), proto2008()]
+}
+
+/// Both builds, as the app holds a source.
+pub fn both_shared() -> [Arc<dyn GameSource>; 2] {
+    [retail_arc().clone(), proto2008_arc().clone()]
 }

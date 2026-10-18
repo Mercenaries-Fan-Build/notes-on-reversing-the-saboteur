@@ -13,6 +13,11 @@ impl<'a> Cursor<'a> {
         self.at += 1;
         Ok(v)
     }
+    pub(super) fn u16(&mut self, field: &str) -> Result<u16, String> {
+        let v = bytes::u16_be(self.b, self.at, field)?;
+        self.at += 2;
+        Ok(v)
+    }
     pub(super) fn i16(&mut self, field: &str) -> Result<i16, String> {
         let v = bytes::i16_be(self.b, self.at, field)?;
         self.at += 2;

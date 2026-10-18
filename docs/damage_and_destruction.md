@@ -161,6 +161,31 @@ retail is unknown.
 `CreateDynamicPart`, `DeferReInstance`), `WSDynamicPart`, `WSDynamicProp`, `WSCinemaDamageState`,
 `WSDeferredDamagedGroup`. Struct offsets are 2008 Xbox; do not apply them to PC.
 
+### The 2008 build — the same model, a state number instead of `Pristine`
+
+PROVEN from `WildStar_p.exe` (2008-05 prototype, symbols from its map):
+
+- `WSDamageablePartBlueprint::SetDamageableProperty` @0x82380c48: the blueprint's base is
+  `this − 0x3c`, and it stores `BoneName 0x207fba52` at base `+0x04`, `DamageGroup 0xdd2aa7ab` at
+  `+0x10`, and the unnamed **`0xb7b68d44`** (a u32) at **`+0x14`**; `0x69b58092` and `0xa0e7552d` are
+  bools (`value == 1`) at `+0x18` / `+0x19`. There is no `Pristine` key.
+- `WSDamageableGroup::ActivatePart` @0x823803c8 enables a part's bone when the group's state
+  (`group+0x14`) equals the part's `+0x14`, and unconditionally when that value is negative.
+  `ActivateBone` @0x82380810 recurses into child bones, skipping those another part of the group
+  owns, and calls `OdinMeshInstance::ModifySegmentByBone`.
+- The part blueprint's constructor @0x82381d98 sets `+0x14 = -1`: a part without `0xb7b68d44` draws
+  in every state.
+
+So `0xb7b68d44` is the **group state a part draws in** — `0` intact, `1` damaged, as retail's
+`Pristine` 1 / 0. Example (`VH_CV_CR_Allard_Skylar`, a CAR): each group (`door_l`, `wheel_fl`,
+`Allard_body`, …) pairs a part with state 0 (`wheel_fl_pristine`) and one with state 1.
+
+Counts (`sab_probe template-lod-damage`): retail — 6,316 parts on asset templates, every one with
+`Pristine` (the 6,317th `BoneName` is `BT_F_Tall_Skinny`, a `HumanSkeletonScale`, not a damage part).
+2008 — 4,769 parts on asset templates: 2,463 state `0xb7b68d44` (TRUCK 341/341, APC 110/110, CAR
+623/631, …) and 2,306 state nothing, so draw in every state (Prop 1,971 of 2,788, TrainCarriage 118 of
+294, …); no 2008 part carries `Pristine`.
+
 ---
 
 ## 4. Vehicles
@@ -267,10 +292,12 @@ containers and offsets are not. Recorded in [`lineage_and_divergence.md`](lineag
 
 ## 9. Tooling consequences
 
-- `sab_workshop` cannot load these meshes today (unskinned, multi-bone). Loading one as-is would draw
-  the intact and damaged pieces on top of each other — the damage analogue of stacked LODs. The faithful
-  export is one object (or glTF scene) per damage state per group, built from the parts' `Pristine`
-  flags; bit 0x10 gives the same split for meshes without a template.
+- `sab_workshop` draws one damage state at a time (intact, `0`, by default) and exports one glTF
+  object per level of detail and damage state (`<name>_LOD0_state0`, `_state1`, …). Each drawcall's
+  state comes from the asset template's parts — the nearest part bone at or above the drawcall's bone
+  — not from bit 0x10 (`meshload::apply_damage`, `assets::damage_parts`). Without that split a car
+  drew its intact and damaged pieces on top of each other (reported on the 2008
+  `VH_CV_CR_Allard_Skylar`). World blocks carry no template and are drawn whole.
 - An edited damageable mesh must keep its bone names (the parts address them by hash) and its
   per-bone drawcall split.
 
@@ -299,5 +326,6 @@ containers and offsets are not. Recorded in [`lineage_and_divergence.md`](lineag
   `sab_workshop::meshload::parse_mesh`, without its skinned-only gate).
 - **Cross-check:** subtree of each part bone, not entering other parts' bones; tally drawcall bit 0x10
   by the part's `Pristine`.
+- **Part states per build:** `sab_probe template-lod-damage <loosefiles_BinPC.pack | GameTemplates.wsd>`.
 - **Code:** compare chains via `objdump -d --no-show-raw-insn` of the GOG exe where Ghidra dropped the
   function; 2008 names/layouts from the prototype's `WildStar_d.map` + PDB (a Rust `pdb`-crate dump).

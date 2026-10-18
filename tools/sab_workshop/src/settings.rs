@@ -206,6 +206,18 @@ impl Settings {
                         required: true,
                     },
                     Check {
+                        label: "Game templates",
+                        rel: p("GameTemplates.wsd"),
+                        ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("GameTemplates.wsd"))).exists(),
+                        required: true,
+                    },
+                    Check {
+                        label: "UI text",
+                        rel: p("Cinematics/Dialog/English/GameText.dlg"),
+                        ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("Cinematics/Dialog/English/GameText.dlg"))).exists(),
+                        required: false,
+                    },
+                    Check {
                         label: "Engine PDB",
                         rel: p("WildStar_d.pdb"),
                         ok: std::path::Path::new(&format!("{}/{}", self.game_dir, p("WildStar_d.pdb"))).exists(),
@@ -229,9 +241,9 @@ impl Settings {
                 one("Model + texture pack", "Global/Dynamic0.megapack", true),
                 one("Shared palette pack", "Global/Palettes0.megapack", true),
                 one("Material library", "France.materials", true),
-                one("Animations", "Animations.pack", false),
+                one("Game templates", "France/loosefiles_BinPC.pack", true),
+                one("Animations", "Animations.pack", true),
                 one("UI text", "Cinematics/Dialog/English/GameText.dlg", false),
-                one("Game templates", "DLC/01/GameTemplates.wsd", false),
             ],
         }
     }

@@ -1,54 +1,63 @@
 # sab_workshop
 
-A native **wgpu + egui** modding workshop for *The Saboteur*. It has two halves:
+A native **wgpu + egui** workbench for *The Saboteur*'s assets. It reads **two builds the same way**:
+the retail PC release (GOG / Steam) and the 2008-05 Xbox 360 prototype. Point it at either folder and
+every page behaves identically — the differences between the builds live in one file each under
+[`src/sources/`](src/sources/), behind one interface ([`src/source.rs`](src/source.rs)).
 
-- **Inspect** (page 1) — the character/animation viewer: a merged skinned mesh + skeleton, textures
-  resolved straight out of the megapack, every clip searchable, decoded on demand from
-  `Animations.pack` and played back **textured** with real-time GPU skinning under an orbit camera.
-- **Templates · GameText · Icons** (pages 2–4) — the mod editor, built on the byte-verified
-  `sab_formats` codecs. See [The mod-editor pages](#the-mod-editor-pages) below.
-
-## The mod-editor pages
-
-Pages 2–4 replace the old Textures/Materials/Rig tabs with a data editor over the game's own files:
-
-- **Templates** — load a `GameTemplates.wsd` (AULB), search templates by name/type, and edit any
-  property pair. A 4-byte value shows as int / float / hash; known property names (`Name`, `Model`,
-  `Texture`, …) are resolved. Set a value as an int, float, raw hash, or **texture name** (which is
-  hashed with `pandemic_hash` — that is exactly how a template references a texture). Save writes the
-  file byte-faithfully.
-- **GameText** — load a `Cinematics/Dialog/<Lang>/GameText.dlg`, browse/search all UI strings and VO
-  subtitles, edit any string (any length), and **add a brand-new UI id** (keyed by
-  `pandemic_hash("File_Text.Key")` — no Lua registration needed). Save re-emits the container and
-  rebases its trailing `DNEC` section automatically.
-- **Icons** — scan a megapack for its DTEX texture names and their `pandemic_hash`, and hash any name
-  you plan to pack, so you can wire a custom icon into a template's texture value. (Packing the DTEX
-  itself is done with `sab_dtex` / `sab_pack`; the format chain is documented in
-  `../../docs/formats/gametext.md` and `../../docs/formats/gametemplates.md`.)
-
-The original character/animation viewer is unchanged and is page 1.
-
-![pipeline: load → resolve textures → decode-on-select → skin → render]
+- **Inspect** (page 1) — models assembled from the build's own templates, textured from its own
+  material data, every animation clip searchable and played on the loaded rig with GPU skinning, the
+  rig as a tree, the model's texture pool as a contact sheet, a Materials panel to rebind any slot,
+  and a lossless **export bundle** of what is on screen.
+- **Strings · Objects · Icons** (pages 2–4) — the game's text, template table and texture pool. On
+  retail they are also the mod editor (stage edits, publish to a DLC slot); the prototype is browsed
+  and exported only (see [The editor pages](#the-editor-pages)).
 
 ## Run
 
-> **Use `--release`.** A debug build is far too slow for the 715 MB megapack sweep + BC decode
-> (minutes vs ~1.4 s).
+> **Use `--release`.** A debug build is far too slow for the pack sweeps and BC decoding.
 
-**A game install is the only input.** No generated files, no repo checkout — the startup character,
-its rig, its textures and the whole clip list are read out of the packs. The install location is
-**never guessed**: set it once on the **Settings** page (or pass `--game`). It is saved in
-`settings.json` under `%APPDATA%\sab_workshop\` on Windows and `$XDG_CONFIG_HOME/sab_workshop/`
-(else `~/.config/sab_workshop/`) on macOS and Linux.
+**A game folder is the only input.** No generated files, no repo checkout. The folder is **never
+guessed**: set it once on the **Settings** page (or pass `--game`). Either build qualifies —
+the retail install (it holds `Global/`, `France.materials`, `Saboteur.exe`) or the 2008 prototype
+(the folder holding `Bin360/`, or `Bin360` itself under any name). It is saved in `settings.json`
+under `%APPDATA%\sab_workshop\` on Windows and `$XDG_CONFIG_HOME/sab_workshop/` (else
+`~/.config/sab_workshop/`) on macOS and Linux.
 
 ```
 cd tools/sab_workshop
 cargo run --release
 ```
 
+Opening runs on a worker: the window is up at once, the browser shows a spinner until the build's
+assets are listed, and the startup model appears as soon as it is assembled.
+
+Overrides (none is required):
+
 ```
-sab_workshop        # the built binary (sab_workshop.exe on Windows), run from anywhere
+sab_workshop --game "D:/Games/The Saboteur"    # a build in an unusual place
+sab_workshop --boot Mattias                    # open on an asset other than the build's player
+sab_workshop --mesh <ported>.smsh              # inspect a loose SMSH, rigged on the player's rig
+sab_workshop --mesh <m>.smsh --skel <r>.skel   # ...and with its own rig file
 ```
+
+- `--boot <token>` — the first asset whose name contains the token (case-insensitive). Without it the
+  app opens on the build's player: the one `Player` template's `FxBodySetup` (`FBS_RS_Sean` in both
+  builds).
+- Retail file overrides: `--megapack`, `--palettes`, `--wsao`, `--pack` (Animations.pack), `--index`
+  (a generated `anim_bone_map.json` catalog), `--dtexdir` (loose `<hash>.dtex` textures, consulted
+  before the packs). They name retail files, so opening the prototype with any of them is an error.
+
+Headless commands (no window):
+
+- `--export <asset> <out>` — write the asset's bundle, textured from the build's material data.
+- `--selftest [N]` — open the build, boot its player, play the N-th clip on its rig, resolve its
+  textures. Exits non-zero when anything fails, including an untextured boot model.
+- `--texcheck [name]` — assemble and texture every asset whose name contains `name`; per-submesh
+  bindings and a coverage tally. Exits non-zero when any asset fails to assemble or resolve.
+- `--anim-sweep [N]` — decode N clips on the player's rig and flag any that pose a non-root bone
+  implausibly. Exits non-zero when one is flagged or fails to load.
+- `--source-info <dir>` — what the folder fingerprints as, and what opening it finds.
 
 ### Platforms
 
@@ -58,7 +67,7 @@ file read in `pack.rs` (a `cfg(unix)` / `cfg(windows)` pair; any other target is
 | | compiles (`cargo check --all-targets`) | runs |
 |---|---|---|
 | Windows x86_64 (MSVC) | ✅ | the original development platform |
-| macOS (Apple Silicon, Intel) | ✅ | ✅ Apple Silicon: `--selftest` + the GUI (Metal) |
+| macOS (Apple Silicon, Intel) | ✅ | ✅ Apple Silicon: the GUI (Metal) and every headless command |
 | Linux x86_64 | ✅ | not yet run on a Linux machine |
 
 Off Windows the UI uses egui's bundled faces instead of Segoe UI / Courier New, which are read from
@@ -66,38 +75,17 @@ Off Windows the UI uses egui's bundled faces instead of Segoe UI / Courier New, 
 
 ### Tests that read game data
 
-`cargo test` runs the data-backed tests only when told where the data is — no path is hardcoded:
-
-- `SAB_GAME_DIR` — a retail install (the folder holding `Global/`, `France.materials`).
-- `SAB_2008_DIR` — the 2008 Xbox 360 prototype: the `Bin360` contents under any folder name (it
-  holds `Saboteur.xex`), or a folder that contains `Bin360/` — the same rule the app applies when
-  you pick the folder on the Settings page (`source::prototype2008_bin360`).
-
-Without them those tests print `skip:` and **still report as passed** — read the output with
-`-- --nocapture` before trusting a green run.
-
-Everything below is an override, not a requirement:
+They are built only with the `retail` feature and read both builds from the repo-root
+`.sab-local.toml` (`retail_dir`, `proto2008_dir`), failing with the missing key or path:
 
 ```
-sab_workshop --game "D:/Games/The Saboteur"    # an install in an unusual place
-sab_workshop --boot Mattias                    # open on someone other than Sean
-sab_workshop --mesh <ported>.smsh              # inspect a loose SMSH, rigged from the install
-sab_workshop --mesh <m>.smsh --skel <r>.skel   # ...and with its own rig file
-sab_workshop --index anim_bone_map.json        # a generated clip catalog instead of the pack's
+cargo test --release --features retail
 ```
 
-- `--boot <token>` — case-insensitive mesh-name token picking the startup character.
-- `--megapack <path>` / `--pack <path>` — point at a single archive directly.
-- `--char <token>` — which DTEX bundles are this character's (the `--mesh` texture path only).
-
-Other flags:
-
-- `--help` — usage + controls.
-- `--selftest [N]` — **headless** verification (no window): assembles the startup model, decodes the
-  N-th playable clip, runs skinning over several frames, resolves textures + prints the
-  per-submesh assignment, and prints sanity stats. Useful on a machine with no display / GPU.
-- `--texcheck [name]` — headless: bind every assembled asset's textures and report coverage.
-- `--anim-sweep [N]` — headless: decode N clips and flag any that pose a limb implausibly.
+Each game-gated test runs on **both builds** where the behaviour is shared: every character
+assembles one variation per setup slot, the player boots as `FBS_RS_Sean`, every clip loads (2008:
+all but the 30 loose clips `LoadAnimFile` rejects), clips bind to the player's rig by bone hash, a
+character's bundle round-trips with its textures, every template pair round-trips through its editor.
 
 ## Controls
 
@@ -108,248 +96,148 @@ Other flags:
 | mouse wheel      | zoom                            |
 | Space            | play / pause                    |
 | F10              | export the loaded asset as a bundle |
+| 1–5              | switch page                     |
 | Esc              | quit                            |
-| Navigator (left) | search box + click a clip to play |
-| Inspector (right)| Character stats · **Materials** (per-submesh texture picker) · Clip details |
+| Navigator (left) | `models` · `anims` · `textures` (the loaded model's pool) · `rig` (its bone tree), with a filter |
+| Inspector (right)| Model card · Parts (click one to load it alone; its record is described) · Clip · the selected texture or bone · **Materials** |
 | Verb bar (bottom) | **Export bundle** + the destination it writes to |
-| Transport (bottom)| play/pause, loop, speed, time scrubber, grid + textures toggles |
+| Transport (bottom)| play/pause, loop, speed, time scrubber, grid / textures / lock-root toggles |
+
+## How a model is made
+
+1. **Assets come from the build's templates** ([`assets.rs`](src/assets.rs)). An
+   `FxHumanBodySetup` lists slots of weighted variations of `FxHumanBodyPart` / `FxHumanHead`
+   templates; each part names its `HighDetailModel` (level 0) and `LowDetailModel` (level 1), and the
+   setup's combined model is level 2 (the first of slots 0–4 whose shown part names a
+   `CombinedLODModel`, else the setup's own — [gametemplates.md](../../docs/formats/gametemplates.md)).
+   Vehicles, weapons and props name their meshes directly. Meshes no template claims are `Ungrouped`;
+   the prototype's world packs are listed under `World`, one asset per pack.
+2. **A template's reference to a mesh resolves the build's way** (`GameSource::find_mesh`). Retail
+   stores 6,807 mesh records under 1,559 names and every record of a name is a byte-identical copy
+   (`retail_pc::tests::repeated_mesh_names_are_identical_copies`), so a name has one answer. The
+   prototype loads a template's meshes from the pack named after it
+   ([2008_templates_and_text.md](../../docs/2008_templates_and_text.md)): its own pack first, else the
+   only copy in `Global/`; differing copies with none in the template's pack are reported, not picked.
+3. **Parts merge onto one rig keyed by bone name hash** ([`meshload.rs`](src/meshload.rs) `merge`),
+   the bind pose corrected from the parts' own inverse binds. Each level of detail is one contiguous
+   span of the index buffer: a prim's level is its part's assembly level, or for a part at level 0
+   its own drawcall's in-mesh level (retail `DrawCall +0xe & 7`, 2008 `OdinSegment` lod). A part at
+   level 1 or 2 that also carries in-mesh levels is an error, not a guess. The viewport draws the
+   finest level the model has; the bundle writes every level.
+4. **Textures bind from the build's material data** (`GameSource::resolve_textures`). Retail: each
+   submesh's drawcall material → its WSMA record in `France.materials` → `[diffuse, spec, normal,
+   mask]` DTEX name hashes, found in the parts' own bundles, then every bundle of `Dynamic0` and
+   `Palettes0`; a texture's role is the slot it is bound in. 2008: the material's `Color-Pass` —
+   sampler 0 is the diffuse, the first normal-kind sampler the normal
+   ([2008_materials_format.md](../../docs/2008_materials_format.md)); its other textures join the pool
+   for the picker. Nothing is bound by name.
+5. **Damage states come from the template's damage parts** ([damage_and_destruction.md](../../docs/damage_and_destruction.md)).
+   A destructible's mesh holds its intact and its damaged pieces; each part names a bone and the
+   group state it draws in (retail `Pristine`, 2008 `0xb7b68d44`, default every state), and a
+   drawcall belongs to the nearest part bone at or above its bone. The viewer draws one state —
+   intact first; the Model card switches states — and the bundle writes one object per state.
+6. **Clips bind by bone name hash** ([`clip.rs`](src/clip.rs) `bind_to_rig`), as the engine's
+   `FindBoneIndex` does. A retail clip whose `ANIM` record stores bone indices (every bound value below
+   the biped's bone count) has them turned into the player rig's bone hashes when the build opens;
+   exotic-skeleton clips already store hashes. A clip is listed as on the rig when every bound track
+   names one of the loaded model's bones; *show all* lists the rest, which play with their unmatched
+   tracks at bind pose. Changing the model rebinds the playing clip.
+
+Retail has 984 assets and the prototype 3,381; every one of them assembles and resolves
+(`--texcheck`). Two mesh shapes besides the skinned one load: a record with `numBones0 <= 1` has no
+skeleton block and its tail follows the 244-byte header (SaboteurToolset `mesh_to_gltf.cpp`
+`AppProcessFile`), and a record with no streams and an empty `.dat` is a bare rig (`ragdoll_b`,
+`saboteur_fm`). Every MESH tail must end exactly at the end of its body.
+
+## Materials: the build's own binding, with a picker over it
+
+The Materials panel lists every submesh with its drawcall material hashes, its level, how its binding
+was arrived at (`bound` by the material data or by you, `seeded` for a saved binding not marked a
+decision, `unresolved`), and one picker per slot (diffuse / spec / normal / mask) over the model's
+whole pool, role-matching entries first. A pick re-renders at once and is saved — beside the mesh for
+a `--mesh` file, else in `materials/<model>.materials.json` next to `settings.json`, prototype models
+filed under `proto2008_<model>` — and on the next load it outranks what the material data answered.
 
 ## Export bundles
 
-`Export bundle` (verb bar, `F10`, or right-click an asset in the browser) writes the loaded character
-to `<export dir>/<name>/` — the same lossless shape `mercs2_workshop` settled on, because the reason
-for it is the same: **an editable format can only carry what it understands**, and the Saboteur MESH
-record still holds things we have not reversed. So the bundle keeps both halves.
+`Export bundle` (verb bar, `F10`, or right-click an asset in the browser) writes the loaded model to
+`<export dir>/<name>/`, re-assembled from the same build parts. **An editable format can only carry
+what it understands**, so the bundle keeps both halves:
 
 ```
-workshop_export/CH_AL_SeanDevlin_01_FX/
-  model.glb        skinned bind pose, ONE MESH OBJECT PER LEVEL OF DETAIL (<name>_LOD0,
-                   <name>_LOD1) on one shared skin, ONE PRIMITIVE PER SUBMESH, each bound to its
-                   material
-  textures/*.png   every bound slot (diffuse / normal / spec / mask) BC-decoded and editable
-  raw/*.msha       every source part's original on-disk record, byte-exact (the guarantee)
-  manifest.json    the reassembly map: submesh → level + material hashes → per-slot texture → how
-                   we knew, the bone table with name hashes, the source parts with their level,
-                   `lods` (object name, triangles, parts per level), `lod_notes` (model
-                   references this install does not ship), and the FULL texture pool the
-                   character offered (exported or not)
+workshop_export/FBS_RS_Sean/
+  model.glb        skinned bind pose, ONE MESH OBJECT PER LEVEL OF DETAIL (<name>_LOD0, _LOD1, …)
+                   — and per damage state for a destructible (<name>_LOD0_state0, _state1) — on one
+                   shared skin, ONE PRIMITIVE PER SUBMESH, each bound to its material
+  textures/*.png   every bound slot (diffuse / normal / spec / mask) decoded and editable
+  raw/             every source part's record exactly as the build stores it (retail `.msha`;
+                   2008 `.zlib` or `.variant`) — the preservation guarantee
+  manifest.json    the reassembly map: build and per-part location, submesh → level + material
+                   hashes → per-slot texture → how we knew, the bone table with name hashes, `lods`,
+                   `lod_notes` (references the build does not ship, parts that did not decode), and
+                   the model's whole texture pool
 ```
 
-**Levels of detail.** A character clicked in the browser is assembled from its `GameTemplates`
-setup ([gametemplates.md](../../docs/formats/gametemplates.md#characters-body-setups-slots-and-lod)):
-one variation per setup slot — the first the setup lists — and, for each, the part template's
-`HighDetailModel` at LOD0 and its `LowDetailModel` at LOD1. Each level is its own glTF scene
-(`LOD0`, `LOD1`; LOD0 is the default) holding the skeleton and that level's object. Blender 5.2's
-importer makes them two collections by default — toggle one off to see the other — or, with
-**Scene as Collection** unticked in the import options, two Blender scenes, the armature shared by
-both. Where a template names the same mesh for both
-(Sean's parts), LOD1 is a copy of LOD0 — that is what the game draws. Later variations stay listed in
-the parts panel as `· alt N`. The viewport draws LOD0 only. Bundle version 2 (`bundle_version`) adds
-`lod` to `source.parts` and `submeshes`, plus `lods` and `lod_notes`.
+- Bundle version 3: `source` names the build and each part's location, one entry per part and level;
+  `lods[]` and `submeshes[]` carry `damage_state`, and `damage_parts` lists the template's parts.
+- Each level is its own glTF scene (`LOD0` is the default) holding the skeleton and that level's
+  object. Blender's importer makes them collections; toggle one off to see another.
+- Textures are referenced by relative `uri`, not embedded — repainting a skin is editing a PNG.
+- Bind pose only; no animation channels. A bare rig exports its bone hierarchy with no mesh.
+- Runs on a **worker**; the viewport stays live and a progress card shows what is in flight.
+- The bundle carries the bindings on screen. Right-clicking an unloaded asset loads it, then exports
+  once its textures land. A `--mesh` model has no build parts to re-assemble and is not exportable.
+- The destination is a click on the verb bar's `→ path`; it persists in `settings.json`.
 
 Blender's importer reports fewer triangles than `lods[].triangles` for some characters: the game
 ships double-sided triangles as a back face that reuses the front face's three vertices, and a
-Blender mesh cannot hold two faces on the same vertices, so it keeps one (Francine LOD0: 142 of
-9,176). The `.glb` carries every triangle.
+Blender mesh cannot hold two faces on the same vertices. The `.glb` carries every triangle.
 
-- Textures are referenced by relative `uri`, not embedded — repainting a skin is editing a PNG in
-  place, not a re-export round trip.
-- Bind pose only; no animation channels. The clip set is a separate axis (see the transport).
-- Runs on a **worker**: assembling + BC-decoding takes seconds and used to freeze the window. The
-  viewport stays live; a progress card shows what is in flight.
-- Exports **what is on screen**, because the bundle carries the material bindings and those only
-  exist for the loaded model. Right-clicking an unloaded asset loads it first, then exports once its
-  texture resolve lands — the verb bar says so while that is pending.
-- The destination is a click on the verb bar's `→ path`; it persists in `settings.json`. Empty means
-  `workshop_export/` beside the working directory — no machine path is baked in.
+## The editor pages
 
-## Inspecting an exported asset's normal maps
+All three read the open build through the same interface: the language files it ships
+(`GameText.dlg`, version 5 on retail and version 3 on the prototype — the prototype ships English
+only), its template table (`AULB` / `BLU2`, values shown in the file's own byte order), and
+its texture pool (retail: `Palettes0`; prototype: every texture of every pack plus the loose `.dds`
+files). Every page searches and exports (strings and templates on screen, textures as PNG or DDS).
 
-The exporter now walks the WSMA slot vector — `[diffuse, spec, normal, mask]` per material — so
-every bound slot lands in `textures/` and rides into the glTF material. There are three ways to look
-at a `_NM` texture from a bundle, from lightweight to heavyweight:
-
-**1. Direct — open the PNG.** The `textures/` folder is just files. A Saboteur normal map file is
-named after its DTEX record, e.g. `CH_MB_SeanDevlinn_Head_NM.png`. Any image viewer works. Real
-tangent-space normals show the classic lavender-blue (R≈G≈128, B≈250) — see the [normalmap.rs
-guard test](src/normalmap.rs). If a `_NM` file looks *grey* rather than lavender you'd have a
-height-map (Mercs 2 ships those; measured Sab does not — the guard test asserts this).
-
-**2. In Blender — the glTF import already wires them up.** File → Import → glTF 2.0 → point at
-`model.glb`. The `normalTexture` reference in each material is resolved automatically and shows in
-Shader Editor as an Image Texture → Normal Map node driving the Principled BSDF's Normal input.
-Toggle Viewport Shading to Material Preview to see it lit; the `_NM` files load with **Non-Color**
-colorspace (glTF sets this) so no gamma is applied — that is what a tangent-space normal needs.
-Spec and mask ride in `extras.specularTexture` / `extras.maskTexture`; Blender's importer ignores
-`extras`, so if you need spec too, drop the file onto a fresh Image Texture and wire it into
-Specular by hand.
-
-**3. In the workshop itself — normal maps now shade the 3D viewer.** Load the character (from the
-navigator, or via boot), open the Materials panel: each submesh now has four combo boxes
-(`diffuse` / `spec` / `normal` / `mask`). Pick any `_NM` texture from the normal combo and the 3D
-viewport re-renders with tangent-space normal mapping via a screen-space cotangent-frame TBN
-(no per-vertex tangents required — Sab meshes don't carry them). A submesh with no `_NM` bound
-falls back to a flat (0.5, 0.5, 1.0) texel and lights exactly as before.
-
-To confirm what's actually bound: the exported `manifest.json` shows per-slot bindings under
-`submeshes[i].slots`, e.g.:
-
-```json
-"slots": {
-  "diffuse": { "texture": "CH_MB_SeanDevlinn_Head_D",  "file": "textures/CH_MB_SeanDevlinn_Head_D.png"  },
-  "spec":    { "texture": null,                        "file": null },
-  "normal":  { "texture": "CH_MB_SeanDevlinn_Head_NM", "file": "textures/CH_MB_SeanDevlinn_Head_NM.png" },
-  "mask":    { "texture": null,                        "file": null }
-}
-```
-
-If a material has no `_NM` (some props don't), the slot is `null` — nothing is invented.
-
-## What it does
-
-1. **Assemble** the startup character from `Dynamic0.megapack`: pick its parts (one per body slot,
-   no LODs, head variants collapsed), inflate each `MSHA` → MESH, merge the geometry and build ONE
-   union rig keyed by bone name-hash, with the bind pose corrected from the parts' own inverse-bind
-   matrices. Same code path a click in the model browser takes — [`boot.rs`](src/boot.rs). (Boot
-   groups parts by name before `GameTemplates` is loaded, so the startup character is LOD0 only;
-   a click assembles from the templates, both levels included.)
-2. **Cover** the index buffer with a non-overlapping per-material draw list. `sab_mesh` emits one
-   prim per *drawcall*, so ranges overlap (a coarse "whole" primitive plus its split children, and
-   several materials/passes on one range). `formats::submesh_cover` keeps only **leaf** ranges and
-   collapses duplicates — for Sean that's 34 prims → **14 submeshes** tiling all 114,402 indices.
-3. **Resolve textures** the way the engine does: each submesh's drawcall material hash → its WSMA
-   record in `France.materials` → the colour texture's name-hash → the DTEX record carrying it, found
-   in the parts' own bundles first and then across the packs. Where the table has no answer, fall
-   back to the name-suffix seed (HD→head, UB→jacket, LB→pants, GR→hand, HAT→hat). Decoding is lazy —
-   only bound textures are BC-decoded. A saved pick overrides both (see below).
-4. **List** every clip from the `ANIM` block at the front of `Animations.pack` — name, duration and
-   the ordered per-track bone list, straight out of the install. By default only clips authored on
-   this rig are shown (per-track values that are bone INDICES into it, 2155 of 2214); tick *show all*
-   to include the rest (59 exotic-skeleton clips store bone name-HASHES). Searchable by name.
-5. **Play** the selected clip: on click, the packfile is re-parsed and the clip's
-   `hkaSplineCompressedAnimation` (the N-th spline anim in file order, where N is the clip's
-   `index`) is decoded into a self-contained `SplineAnim`. Each frame it is sampled at the
-   current time to per-track local transforms.
-6. **Skin** on the GPU: the CPU composes `world[i] = world[parent] * local[i]` and uploads
-   `jointMatrix[i] = world[i] * inv_bind[i]` (191 mat4) to a storage buffer; the vertex shader
-   does `skinnedPos = Σ weightₖ · jointMatrix[jointₖ] · pos`.
-7. **Render** one draw per submesh, each binding its own diffuse + tangent-space normal (a shared
-   1×1 white / flat-normal texel when a slot is unassigned). Fragment reconstructs a per-pixel TBN
-   from `dpdx`/`dpdy` of world position and UV (no per-vertex tangents — Sab meshes don't carry
-   them) and does a two-sided lambert against the sampled normal, with a ground grid, under an
-   orbit camera.
-
-## Materials: the engine's own binding, with a picker over it
-
-A prim carries a `materialHash` — a `pandemic_hash` of a name in the **WSAO** material library, which
-names that material's textures. That library IS in the retail PC install, as the loose file
-`France.materials` at the game root (an earlier note here said it was absent; it was looked for
-inside the archives, and it is not in them). So the binding is the game's own:
-
-`drawcall materialHash` → WSMA record → WSTX slice `[diffuse, spec, normal, mask]` → four DTEX
-records by name-hash. All four are resolved and pooled — the picker + bundle export see every slot.
-
-That covers every submesh of every assembled character (`--texcheck FBS_RS_Sean`: 186/186 bound).
-Two things sit on top of it:
-
-- a **name-suffix auto-seed**, used ONLY where WSAO cannot answer (a submesh with no material, or a
-  material absent from the table) — a heuristic, diffuse-only, and wrong wherever one part uses
-  several textures.
-- the **Materials picker** in the inspector: reassign any of a submesh's four slots (diffuse / spec
-  / normal / mask) to any texture in the character's bundles (accessories like `CH_AC_Eyes_*` /
-  `CH_AC_Mouth` included). Each slot has its own combo, role-filtered but with a fallback to the
-  whole pool so a misclassified name stays reachable. A pick is a decision, so it outranks both of
-  the above and persists — beside the mesh for a `--mesh` file, else in
-  `materials/<model>.materials.json` next to `settings.json` (see *Run*), keyed by model so one character's
-  edits never land on another's. Legacy diffuse-only sidecars round-trip cleanly (migrate on load).
+**Retail** is also the mod editor: the changelist records every edit with what it was, and Publish
+writes a DLC overlay (edits of existing strings patch the base `GameText.dlg`, keeping retail as
+`.sabbak`; see [`editor.rs`](src/editor.rs) for why). **The prototype is read-only**: its side panel
+says so where the changelist would be, and an attempt to stage an edit is refused with a note. Its
+template values are read by width alone, since the property types were measured on retail.
 
 ## Architecture
 
 ```
-main.rs        CLI / config (--game/--boot/--mesh overrides), --selftest, --help
-boot.rs        the startup model: a character assembled from the install, or a loose --mesh file
-bone_names.rs  bone name-hash -> name (a MESH stores only the hash)
-app.rs         winit event loop; owns all state; load → resolve textures → decode-on-select →
-               skin → render; the egui shell (command bar, navigator, inspector, status,
-               transport); the Materials picker + sidecar persistence; mouse camera control
-render.rs      wgpu 0.20: surface/device, depth, skinned-mesh pipeline (WGSL skinning in the
-               vertex shader, diffuse sampled over UV), per-submesh texture bind groups + white
-               fallback, grid pipeline, camera uniform + joint storage buffer
-skinning.rs    pose composition: bind/anim locals → world matrices → jointMatrix = world·inv_bind
-camera.rs      orbit camera (yaw/pitch/distance, look_at_rh + perspective_rh)
-gui.rs         hand-rolled winit-0.29 → egui-0.28 event bridge (+ OS clipboard & cursor delivery)
-               + egui-wgpu paint; `theme` — the shared visual system (palette, fonts, widgets)
-havok.rs       COPIED from tools/sab_havok65: AP0L + Havok 6.5 packfile parse, spline decoder
-               (Packfile, parse_ap0l, read_spline_anim, SplineAnim::sample_at → QsTransform)
-formats.rs     COPIED from tools/sab_havok65: read_smsh, read_skel, Bone, Smsh; + the prims block
-               (Prim) and `submesh_cover` (the non-overlapping per-material draw list)
-dtex.rs        COPIED from tools/sab_dtex (parse/payload/mips/find_records) + BC1/BC2/BC3 and
-               uncompressed decoders (BC1/BC3 from the Mercs2 workshop's texpng) → CpuTexture
-editor.rs      the mod-editor pages (Templates / GameText / Icons) over the sab_formats codecs;
-               each is a self-contained CentralPanel with a path field, Load/Save, and edit forms
-pack.rs        COPIED from tools/sab_pack: megapack index reader + pandemic_hash
-resolve.rs     character texture resolution: bundle sweep → DTEX records → role classify →
-               body-part auto-seed → materials sidecar load/save (per model)
-anim_index.rs  the clip catalog: the pack's own ANIM block (or a generated anim_bone_map.json)
+main.rs        CLI / config (--game/--boot/--mesh and the retail overrides), headless commands
+source.rs      GameSource: the one interface every page talks to; version detection
+sources/       retail_pc.rs, prototype2008.rs (+ prototype2008_anim.rs): one build each
+assets.rs      template-assembled assets; the build's player
+boot.rs        assembling a model; the startup model; a loose --mesh model
+meshload.rs    retail MESH decoding; merge (one rig by bone hash, levels of detail laid out)
+clip.rs        AnimClip, and binding a clip's tracks to a rig by bone hash
+anim_index.rs  the retail clip catalog: Animations.pack's ANIM block (or a generated JSON)
+resolve.rs     texture pools, per-slot bindings, the materials sidecar
+bundle.rs      the export bundle (glTF writer + raw records + manifest)
+app.rs         winit event loop; workers for open / assemble / textures / export; the egui shell
+editor.rs      the Strings / Objects / Icons pages
+render.rs      wgpu 0.20: skinned-mesh pipeline, per-submesh texture bind groups, grid
+skinning.rs    pose composition: locals → world → jointMatrix = world · inv_bind
+havok.rs       Havok 6.5 packfile + spline decoder (retail clips)
+formats.rs     Bone, Smsh, Prim, submesh_cover
+dtex.rs        retail DTEX decode;  pack.rs  megapack index reader;  wsao.rs  France.materials
+gui.rs         winit-0.29 → egui-0.28 event bridge + egui-wgpu paint; `theme`
 ```
 
 Data is right-handed, +Y up, metres (Havok/glTF) — the camera matches (`look_at_rh` +
 `perspective_rh`).
 
-### Known gaps / shortcuts
-
-- **Materials resolve through WSAO** (`France.materials`) — see *Materials* above. The name-suffix
-  heuristic only fills in where the table has no answer, and any slot can be fixed by hand.
-- **Diffuse only.** The resolved `_N`/`_S`/`_WM` maps are listed and pickable but not yet used by
-  the shader (no normal/spec lighting); textures are uploaded as `Rgba8Unorm` (no sRGB decode), to
-  stay consistent with the flat/grid passes.
-- **Startup is non-blocking and progressive.** The megapacks are **memory-mapped** (`open` is instant —
-  no 715 MB read, only touched pages fault in), and the heavy work runs on a **worker thread**
-  (`background_load`) that **streams results in stages** (`BgMsg`): clip list → model list → character
-  textures → megapacks (click-to-load) → `Animations.pack` (playback). The window is interactive at once
-  and each section fills in as it lands.
-- **The model list is near-instant.** `list_meshes` walks the **MSHA chain** — the mesh headers in a
-  bundle are contiguous (`next = pos + 276 + compSize0 + compSize1`), so it reads only the 276-byte
-  headers (~2 MB for all 6807 meshes) and skips every compressed blob. Verified bit-for-bit against the
-  old full-file scan (6807 == 6807 across 759 bundles).
-- **The character texture scan won't freeze the UI.** Finding the boot character's textures needs a
-  full-content token scan (the name lives deep in its bundle), so it can't be windowed — but it now
-  reads each sub-pack via a **buffered, reused-buffer file read** (`Megapack::read_into`) instead of
-  mmap-faulting all 714 MB into the working set, and **yields** periodically. It runs as the last
-  background stage. **Clicking a model** in the browser is the same: the mesh loads and shows instantly
-  (untextured), and its texture resolve — which for a character is that same whole-pack token scan —
-  runs on a worker (`resolve_model_textures`) and streams in, so a click never blocks the UI. Debug
-  builds are far slower at BC decode — use `--release`.
-
-## The model browser (assembled assets, from the game's own data)
-
-The Inspect navigator lists **assembled assets**, not raw mesh parts — and the grouping is the game's,
-not a heuristic. `src/assets.rs` reads `GameTemplates` and follows the real references:
-`FxHumanBodySetup` (a character) → `FxHumanHead` + `FxHumanBodyPart` → mesh; `Weapon` / `CAR` / `Prop` /
-`Ammo` reference their meshes directly. So the 6807 mesh parts fold into **979 assets** — Characters
-(268), Props (225), Weapons (155), Vehicles (100) — plus **Ungrouped** (231 meshes no template claims;
-never hidden). Proven: `FBS_RS_Sean` → FX, FM, HD, UB, LB, HAT, GR, Hair.
-
-- **Click an asset** → loads its primary part into the viewer and fills the right inspector's **Parts**
-  panel with every part; **click a part** to load/inspect it individually.
-- **Right-click an asset → Move to group** to override its category; saved to
-  `sab_workshop_model_groups.json` next to the game, winning over the template default on later runs.
-- The clip list re-parses the Havok packfile on each *selection* (cheap; it only resolves the
-  object's `hkArray`s). Per-frame sampling does not re-parse.
-- The Havok decoder's multi-block path and non-THREECOMP40 rotation quantizations are present
-  but untested — the Saboteur corpus is uniform single-block THREECOMP40 (see `havok.rs`).
-- No animation blending / no playback of multiple clips at once.
-
 ## Provenance
 
-The format code in `havok.rs` and `formats.rs` is copied verbatim (CLI/diagnostics stripped)
-from `tools/sab_havok65` — the validated decoder + readers; `dtex.rs` and `pack.rs` likewise from
-`tools/sab_dtex` and `tools/sab_pack`. The egui↔winit bridge in `gui.rs` mirrors the Mercs2
-workshop's hand-rolled bridge (egui-winit 0.28 pins winit 0.30, which conflicts with winit 0.29),
-including its clipboard/cursor delivery; `gui::theme` and the command-bar / navigator / inspector /
-status / transport shell are adapted from the Mercs2 workshop's rewrite; `bundle.rs` and the
-verb-bar / background-worker / progress-card export flow are ported from that workshop's `bundle.rs`
-and `Exporter` (its glTF is a `model.gltf` + `model.bin` directory and carries animation channels —
-here it is a single `model.glb` at bind pose, so the existing port pipeline keeps reading one file) (its 4-way activity rail and
-Unreal-style Details vec3 scrub widgets are omitted — sab is a single character/anim view). The
-BC1/BC3 block decoders come from that workshop's `texpng.rs`.
+`havok.rs` and `formats.rs` are copied from `tools/sab_havok65`; `dtex.rs` and `pack.rs` from
+`tools/sab_dtex` and `tools/sab_pack`; the 2008 formats come from `sab_formats::proto2008`. The
+egui↔winit bridge in `gui.rs` mirrors the Mercs2 workshop's hand-rolled bridge (egui-winit 0.28 pins
+winit 0.30, which conflicts with winit 0.29); `gui::theme`, the shell and `bundle.rs` with its
+verb-bar / worker / progress-card flow are adapted from that workshop. The BC1/BC3 block decoders
+come from its `texpng.rs`.

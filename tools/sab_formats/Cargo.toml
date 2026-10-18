@@ -3,7 +3,8 @@ name = "sab_formats"
 version = "0.1.0"
 edition = "2021"
 description = "The Saboteur (2009) asset-format library: readers and writers for the game's containers and assets."
-license = "MIT"
+# src/xma2/ is a port of FFmpeg's XMA2 decoder, LGPL-2.1-or-later (src/xma2/COPYING.LGPLv2.1).
+license = "MIT AND LGPL-2.1-or-later"
 
 [dependencies]
 # SGES block decompression and SafeSlice (SGES is byte-identical between the two games,
@@ -11,6 +12,9 @@ license = "MIT"
 mercs2_formats = "4.0"
 # zlib streams inside SBLA sub-packs (DTEX mip payloads, MSHA blobs: raw 78 01 zlib).
 flate2 = "1"
+# Retail `.wem` (Wwise Vorbis) to standard Ogg Vorbis, then to PCM; docs/formats/audio_1kcp.md.
+ww2ogg = "0.1"
+lewton = "0.10"
 
 [profile.release]
 opt-level = 3
@@ -38,4 +42,8 @@ required-features = ["retail"]
 
 [[test]]
 name = "proto2008_retail"
+required-features = ["retail"]
+
+[[test]]
+name = "audio_retail"
 required-features = ["retail"]

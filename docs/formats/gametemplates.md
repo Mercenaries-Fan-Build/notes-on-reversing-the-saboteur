@@ -14,6 +14,9 @@ Two files were used as ground truth:
 
 Both parse with **exact byte consumption** and re-emit **byte-identical** (SHA-256 match).
 
+The 2008 Xbox 360 prototype's `GameTemplates.wsd` is the same layout big-endian, magic `BLU2`:
+[2008_templates_and_text.md](../2008_templates_and_text.md).
+
 ---
 
 ## Loader (decomp oracle)

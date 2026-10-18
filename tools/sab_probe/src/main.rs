@@ -966,6 +966,7 @@ mod hash_names;
 mod megapack_layout;
 mod proto2008_anims;
 mod proto2008_audio;
+mod xma2_oracle;
 mod proto2008_binaries;
 mod proto2008_materials;
 mod proto2008_meshes;
@@ -1045,6 +1046,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "proto2008-audio" {
         proto2008_audio::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "xma2-oracle" {
+        xma2_oracle::run(&args[2..]);
         return;
     }
     if args.len() > 1 && args[1] == "template-lod-damage" {

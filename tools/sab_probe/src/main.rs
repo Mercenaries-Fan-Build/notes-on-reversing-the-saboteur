@@ -972,6 +972,7 @@ mod proto2008_packs;
 mod proto2008_shaders;
 mod proto2008_templates;
 mod proto2008_textures;
+mod template_lod_damage;
 mod texbind;
 
 fn main() {
@@ -1039,6 +1040,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "proto2008-templates" {
         proto2008_templates::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "template-lod-damage" {
+        template_lod_damage::run(&args[2..]);
         return;
     }
     if args.len() < 4 {

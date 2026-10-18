@@ -19,6 +19,7 @@
 //!   layouts.
 //! * [`sound_ids`] — `sound/WWiseIDTable.bin`: game-side keys to Wwise event, state, switch,
 //!   trigger and RTPC ids.
+//! * [`sound_voice`] — a `GameText` key's voice line: event → Play action → sound → media.
 
 pub mod anim;
 pub mod anim_pack;
@@ -33,4 +34,5 @@ pub mod slot_dir;
 pub mod sound_bank;
 pub mod sound_ids;
 pub mod sound_pack;
+pub mod sound_voice;
 pub mod texture;

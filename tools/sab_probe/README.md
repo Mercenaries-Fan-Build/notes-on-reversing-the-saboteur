@@ -46,6 +46,9 @@ sab_probe template-lod-damage <templates>  retail loosefiles_BinPC.pack or 2008 
 sab_probe proto2008-anims <Bin360>         every ANM0 clip and Animations.pack, decoded; codecs, loader
                                            rejections, header values, rotation norms, pack sections;
                                            docs/2008_animations_format.md
+sab_probe proto2008-audio <Bin360>         sound/Saboteur.pck: banks, HIRC objects, sounds, XMA2 streams,
+                                           bank media, sound/X360 vs the pack, WWiseIDTable.bin, and how
+                                           each voice line resolves; docs/2008_audio_format.md
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

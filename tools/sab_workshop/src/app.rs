@@ -1442,32 +1442,6 @@ fn settings_page(ctx: &egui::Context, sx: &mut SettingsCtx) {
             });
             ui.label(theme::data_text("Scales every voice together, so the hierarchy between them is preserved.", 10.0, theme::FAINT));
 
-            ui.add_space(12.0);
-            theme::eyebrow(ui, "Voice audio");
-            ui.horizontal(|ui| {
-                ui.label(theme::data_text("vgmstream-cli", 11.0, theme::DIM));
-                ui.add(egui::TextEdit::singleline(&mut sx.s.vgmstream_path).desired_width(320.0).hint_text("path to vgmstream-cli"));
-                if ui.button("Browse…").clicked() {
-                    let mut dlg = rfd::FileDialog::new().set_title("Select vgmstream-cli");
-                    if cfg!(windows) {
-                        dlg = dlg.add_filter("executable", &["exe"]);
-                    }
-                    if let Some(f) = dlg.pick_file() {
-                        sx.s.vgmstream_path = f.to_string_lossy().replace('\\', "/");
-                    }
-                }
-            });
-            {
-                let (msg, col) = if sx.s.vgmstream_path.trim().is_empty() {
-                    ("Optional — lets the Strings page play a line's voice. vgmstream is a separate tool (not bundled); point here or put vgmstream-cli on PATH.", theme::FAINT)
-                } else if sx.s.vgmstream().is_some() {
-                    ("Found — VO playback enabled on the Strings page.", theme::COLD)
-                } else {
-                    ("Not found at that path.", theme::RED)
-                };
-                ui.label(theme::data_text(msg, 10.0, col));
-            }
-
             ui.add_space(16.0);
             ui.separator();
             ui.add_space(8.0);

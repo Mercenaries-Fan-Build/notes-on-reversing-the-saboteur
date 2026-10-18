@@ -12,17 +12,21 @@
 //!
 //! Every pack of the build parses (the `sab_formats` game gate), so a pack that does not fails the
 //! open with its path: that copy of the build is damaged.
+//!
+//! Voice: English lines play from `sound/Saboteur.pck` (`sab_formats::proto2008::sound_voice`, XMA2
+//! decoded by `sab_formats::xma2`; `docs/2008_audio_format.md`), opened on first use.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use glam::{Mat3, Mat4, Quat, Vec3};
 use memmap2::Mmap;
 use sab_formats::gametemplates::GameTemplates;
 use sab_formats::proto2008::material::{self, Material};
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{mesh, slot_dir, texture};
+use sab_formats::proto2008::sound_voice::{MediaRef, Voice, VoicePack};
+use sab_formats::proto2008::{mesh, slot_dir, sound_pack, texture};
 use sab_formats::{dds, pandemic_hash, pixels, zlib};
 
 use crate::clip::AnimClip;
@@ -30,7 +34,7 @@ use crate::dtex::CpuTexture;
 use crate::formats::{Bone, Prim, Smsh, SubMesh};
 use crate::meshload::LoadedMesh;
 use crate::resolve::{ModelTex, Prov, Role, SubmeshBinding, TexAsset};
-use crate::source::{ClipRow, GameSource, GameVersion, IconRow, MeshFind, MeshItem, PartRange, RawRecord, SourceFingerprint};
+use crate::source::{ClipRow, GameSource, GameVersion, IconRow, MeshFind, MeshItem, PartRange, RawRecord, SourceFingerprint, VoiceLine};
 use crate::sources::prototype2008_anim::Catalog;
 
 /// The folder of the packs that hold dynamic objects; every other folder's packs are world blocks.
@@ -122,6 +126,20 @@ pub struct Prototype2008Source {
     loose_dds: Vec<LooseDds>,
     templates: GameTemplates,
     animations: Catalog,
+    /// `sound/Saboteur.pck` opened for voice lines, or why it could not be.
+    voice: OnceLock<Result<VoicePack, String>>,
+}
+
+/// Where a resolved line's media is, for the UI.
+fn describe_voice(v: &Voice) -> String {
+    let media = match v.media {
+        MediaRef::Stream(id) => format!("stream 0x{id:08X}"),
+        MediaRef::Bank { bank, media } => format!("media 0x{media:08X} in bank 0x{bank:08X}"),
+    };
+    match v.container {
+        Some((c, n)) => format!("{media}, entry 1 of {n} of container 0x{c:08X}"),
+        None => media,
+    }
 }
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -335,7 +353,22 @@ impl Prototype2008Source {
             loose_dds,
             templates,
             animations,
+            voice: OnceLock::new(),
         })
+    }
+
+    /// The voice package, for `lang`; the build records English only.
+    fn voice_pack(&self, lang: &str) -> Result<&VoicePack, String> {
+        if lang != "English" {
+            return Err(format!("the 2008 build records English voice only, not {lang}"));
+        }
+        self.voice
+            .get_or_init(|| {
+                let path = self.bin360.join("sound/Saboteur.pck");
+                VoicePack::open(&path)
+            })
+            .as_ref()
+            .map_err(|e| e.clone())
     }
 
     fn record(&self, item: usize) -> Result<&MeshRec, String> {
@@ -751,6 +784,18 @@ impl GameSource for Prototype2008Source {
             .collect();
         out.sort();
         out
+    }
+
+    fn voice_source(&self, lang: &str, key: &str) -> Result<Option<String>, String> {
+        Ok(self.voice_pack(lang)?.resolve(key)?.as_ref().map(describe_voice))
+    }
+
+    fn voice_line(&self, lang: &str, key: &str) -> Result<Option<VoiceLine>, String> {
+        let vp = self.voice_pack(lang)?;
+        let Some(v) = vp.resolve(key)? else { return Ok(None) };
+        let source = describe_voice(&v);
+        let pcm = vp.media(v.media).and_then(|m| sound_pack::decode_media(&m)).map_err(|e| format!("{source}: {e}"))?;
+        Ok(Some(VoiceLine { source, pcm }))
     }
 
     fn icon_textures(&self, progress: &dyn Fn(usize, usize)) -> Result<Vec<IconRow>, String> {

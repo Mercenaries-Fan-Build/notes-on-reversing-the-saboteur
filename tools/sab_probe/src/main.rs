@@ -970,6 +970,7 @@ mod proto2008_materials;
 mod proto2008_meshes;
 mod proto2008_packs;
 mod proto2008_shaders;
+mod proto2008_templates;
 mod proto2008_textures;
 mod texbind;
 
@@ -1034,6 +1035,10 @@ fn main() {
     }
     if args.len() > 1 && args[1] == "proto2008-anims" {
         proto2008_anims::run(&args[2..]);
+        return;
+    }
+    if args.len() > 1 && args[1] == "proto2008-templates" {
+        proto2008_templates::run(&args[2..]);
         return;
     }
     if args.len() < 4 {

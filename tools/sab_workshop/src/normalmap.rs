@@ -102,31 +102,26 @@ mod tests {
     /// exporter decodes them straight through instead of running [`height_to_normal`] — running
     /// that on real tangent normals would treat the red channel as a height field and produce
     /// garbage. If a future patch changes the convention (perhaps a modder ships DXT5nm), this
-    /// test fails and the exporter needs to grow a per-texture gate. Skips when no install.
+    /// test fails and the exporter needs to grow a per-texture gate.
     ///
     /// Measured over Sean / Bishop / Georgia's `_NM` textures on the retail build: every sampled
-    /// record showed meanB > 240 and zero B==G==R pixels — pure tangent-space normals.
+    /// record showed meanB > 240 and zero B==G==R pixels — pure tangent-space normals. Checked here
+    /// on the normal maps France.materials binds to the retail player.
+    #[cfg(feature = "retail")]
     #[test]
     fn saboteur_normalmaps_are_tangent_space() {
-        use crate::{pack::Megapack, resolve};
-        let Some(s) = crate::settings::detected_retail() else {
-            eprintln!("skip: no Saboteur install detected");
-            return;
-        };
-        let Ok(mp) = Megapack::open(&s.megapack()) else {
-            eprintln!("skip: megapack unavailable");
-            return;
-        };
-        let assets = resolve::textures_in(&mp, "SeanDevlin").expect("scan the megapack");
-        let normals: Vec<&resolve::TexAsset> =
-            assets.iter().filter(|a| a.role == resolve::Role::Normal).take(6).collect();
-        if normals.is_empty() {
-            eprintln!("skip: no `_NM` textures found for token 'SeanDevlin'");
-            return;
-        }
+        use crate::source::GameSource;
+        let src = crate::testenv::retail();
+        let all = crate::assets::build(src);
+        let p = crate::assets::player(src.templates(), &all).expect("player");
+        let model = crate::boot::assemble(src, &all[p].name, &all[p].assembly()).expect("assemble the player");
+        let submeshes = crate::formats::submesh_cover(&model.lm.mesh.prims, model.lm.mesh.indices.len() as u32);
+        let mt = src.resolve_textures(&model.lm.part_ranges, &submeshes, &model.lm.uvless).expect("resolve");
+        let normals: Vec<&crate::resolve::TexAsset> = mt.assets.iter().filter(|a| a.role == crate::resolve::Role::Normal).collect();
+        assert!(!normals.is_empty(), "France.materials binds no normal map to {}", all[p].name);
         let mut checked = 0;
         for a in &normals {
-            let Ok(t) = a.decode() else { continue };
+            let t = a.decode().unwrap_or_else(|e| panic!("{}: {e}", a.name));
             let mb = mean_blue(&t.rgba);
             assert!(
                 mb >= HEIGHT_MEAN_BLUE,

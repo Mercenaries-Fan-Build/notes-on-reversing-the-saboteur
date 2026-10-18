@@ -17,7 +17,7 @@ use sab_formats::game_paths::local_config_proto2008_bin360;
 use sab_formats::proto2008::anim::{self, Codec};
 use sab_formats::proto2008::sbl::{self, SlotKind};
 use sab_formats::proto2008::{anim_pack, material, mesh, mp00, shaders, slot_dir, texture};
-use sab_formats::{editnodes, pandemic_hash, xex, zlib};
+use sab_formats::{editnodes, gametemplates, gametext, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
     local_config_proto2008_bin360(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap_or_else(|e| panic!("{e}"))
@@ -366,4 +366,27 @@ fn every_2008_animation_parses_and_decodes() {
     assert_eq!([Codec::Wavelet, Codec::Delta, Codec::Uncompressed].map(|c| count("pack", c)), [1501, 6, 98]);
     assert_eq!(twins, 1601);
     assert_eq!((pack.intervals.len(), pack.sequences.len(), transitions, pack.banks.len()), (3, 1944, 286, 24));
+}
+
+/// `GameTemplates.wsd` (`BLU2`) and `Cinematics/Dialog/English/GameText.dlg` (version 3) parse to their
+/// last byte and write back byte-identical.
+#[test]
+fn templates_and_game_text_read_and_round_trip() {
+    let root = bin360();
+    let path = root.join("GameTemplates.wsd");
+    let b = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let (gt, used) = gametemplates::GameTemplates::parse(&b).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!((gt.order, used), (gametemplates::ByteOrder::Big, b.len()));
+    assert_eq!((gt.entries.len(), gt.templates().count()), (5998, 5803));
+    assert!(gt.write() == b, "GameTemplates.wsd does not write back byte-identical");
+
+    let path = root.join("Cinematics/Dialog/English/GameText.dlg");
+    let b = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let text = gametext::GameText::parse(&b).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(text.version, gametext::VERSION_2008);
+    let ui = text.records.iter().filter(|r| r.is_ui()).count();
+    let wide = text.records.iter().flat_map(|r| &r.text).filter(|&&u| u > 0x7F).count();
+    eprintln!("GameText v3: {} records, {ui} UI, {wide} text bytes above 0x7F", text.records.len());
+    assert_eq!((text.records.len(), ui), (5434, 1531));
+    assert!(text.write() == b, "GameText.dlg does not write back byte-identical");
 }

@@ -1,17 +1,18 @@
-//! LOSSLESS model-export bundle — the community-editable interchange for a Saboteur asset.
+//! LOSSLESS model-export bundle — the community-editable interchange for a Saboteur asset, the same
+//! for every build the workshop reads.
 //!
 //! Ported from `mercs2_workshop`'s `src/bundle.rs`, which solved this problem first; the rule it
 //! encodes is the reason to take it wholesale rather than grow another one-button `.glb` writer.
 //!
 //! **The preservation rule: nothing is discarded.** An editable format can only carry what it
-//! understands, and we have NOT fully reversed everything a Saboteur MESH record holds (the SMSH
-//! stream/format table beyond the vertex semantics we decode, `parentBone` rigid attachments on
-//! pre-v2 files, per-drawcall LOD/damage material passes, the material hashes we cannot resolve to
-//! a name). So the bundle keeps BOTH:
+//! understands, and we have NOT fully reversed everything a mesh record holds (stream/format tables
+//! beyond the vertex semantics we decode, per-drawcall damage material passes, the material hashes we
+//! cannot resolve to a name). So the bundle keeps BOTH:
 //!
-//!   * `raw/*.msha`    — each source part's ORIGINAL on-disk record, verbatim (the 276-byte header
-//!                       plus both still-deflated blobs). This is the guarantee: whatever we failed
-//!                       to understand is still here, byte-exact.
+//!   * `raw/`          — each source part's ORIGINAL record, verbatim, as the build stores it (retail:
+//!                       `.msha`, the 276-byte header plus both still-deflated blobs; 2008: `.zlib` or
+//!                       `.variant`). This is the guarantee: whatever we failed to understand is still
+//!                       here, byte-exact.
 //!   * `model.glb`     — the EDITABLE view: geometry + the real bone hierarchy + skin, one mesh
 //!                       object per level of detail, one primitive per submesh, each bound to its
 //!                       material. Every DCC reads glTF 2.0.
@@ -27,27 +28,29 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::formats::SubMesh;
-use crate::meshload::{self, LoadedMesh, PartPick};
+use crate::meshload::LoadedMesh;
 use crate::resolve::{Prov, SubmeshBinding, TexAsset};
+use crate::source::GameSource;
 
 /// Everything an export needs, OWNED — so it can be handed to a worker thread.
 ///
-/// The worker opens its OWN megapack mmap (mirroring `spawn_tex_resolve`) instead of borrowing the
-/// app's, so the export touches neither the live pack handle nor the GPU. The texture pool and the
-/// submesh bindings are cloned rather than re-resolved because the user may have hand-bound slots on
-/// the Materials page: the bundle has to reflect what is on screen, not what the auto-seed would
-/// have guessed.
+/// The worker re-assembles the parts from the source and touches no GPU state. The texture pool and
+/// the submesh bindings are cloned rather than re-resolved because the user may have hand-bound
+/// slots on the Materials panel: the bundle has to reflect what is on screen.
 pub struct Job {
-    pub megapack: String,
+    pub source: Arc<dyn GameSource>,
     /// Asset name — the bundle directory and the glTF mesh name.
     pub label: String,
-    /// The meshes assembled, each at its level of detail (`assets::Asset::assembly`).
-    pub parts: Vec<PartPick>,
-    /// What the assembly could not include — a template naming a mesh that is not in this install —
-    /// written to the manifest so a bundle missing a low-detail part says so.
+    /// The mesh items assembled, each at its level of detail (`assets::Asset::assembly`).
+    pub picks: Vec<(usize, u8)>,
+    /// What the assembly could not include, written to the manifest so a bundle missing a part says
+    /// so.
     pub lod_notes: Vec<String>,
+    /// The asset's damage parts (`assets::Asset::damage`).
+    pub damage: Vec<(u32, i32)>,
     /// The submesh cover as the renderer built it, so `submesh_tex` indexes line up exactly.
     pub submeshes: Vec<SubMesh>,
     pub assets: Vec<TexAsset>,
@@ -78,52 +81,55 @@ fn to_colmajor(m: &[f32; 16]) -> [f32; 16] {
     ]
 }
 
-/// The stem a texture's variants share — `Sean_Head_D` / `Sean_Head_N` -> `Sean_Head`.
-///
-/// Used to pull a bound diffuse's normal/spec/mask siblings into the bundle. Decoding the WHOLE pool
-/// would be hundreds of MB of RGBA for a couple hundred records (see `TexAsset`'s note on why decode
-/// is lazy); decoding the siblings of what is actually bound is the targeted version of the same
-/// preservation intent, and those maps are half the look of these assets.
-fn stem(name: &str) -> String {
-    let n = name.trim_end_matches(|c: char| c == '\0');
-    let lower = n.to_ascii_lowercase();
-    for suf in ["_d", "_n", "_nm", "_s", "_sm", "_m", "_mask"] {
-        if let Some(base) = lower.strip_suffix(suf) {
-            return base.to_string();
-        }
-    }
-    lower
-}
-
 /// The submesh cover the GLB is written from: the renderer's, or — when the caller passed none —
-/// one untextured submesh per level, from the assembly's own part ranges.
+/// the model's own.
 fn cover(submeshes: &[SubMesh], lm: &LoadedMesh) -> Vec<SubMesh> {
     if !submeshes.is_empty() {
         return submeshes.to_vec();
     }
-    let mut out: Vec<SubMesh> = Vec::new();
-    for (_, s, c, lod) in &lm.part_ranges {
-        match out.iter_mut().find(|m| m.lod == *lod) {
-            // `assemble` lays each level out contiguously, so a level's parts extend one run.
-            Some(m) => m.index_count = s + c - m.index_start,
-            None => out.push(SubMesh { index_start: *s, index_count: *c, materials: Vec::new(), lod: *lod }),
+    crate::formats::submesh_cover(&lm.mesh.prims, lm.mesh.indices.len() as u32)
+}
+
+/// One glTF object: a level of detail, in one damage state when the model has damage states.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct View {
+    lod: u8,
+    damage: Option<i32>,
+}
+
+impl View {
+    /// Whether a submesh draws in this view: its level, and either no damage state or this one.
+    fn shows(self, s: &SubMesh) -> bool {
+        s.lod == self.lod && (s.damage.is_none() || s.damage == self.damage)
+    }
+}
+
+/// The views, ascending: per level, one per damage state its submeshes draw in, else one.
+fn views_of(cover: &[SubMesh]) -> Vec<View> {
+    let mut levels: Vec<u8> = cover.iter().map(|s| s.lod).collect();
+    levels.sort_unstable();
+    levels.dedup();
+    let mut out = Vec::new();
+    for lod in levels {
+        let mut states: Vec<i32> = cover.iter().filter(|s| s.lod == lod).filter_map(|s| s.damage).collect();
+        states.sort_unstable();
+        states.dedup();
+        if states.is_empty() {
+            out.push(View { lod, damage: None });
         }
+        out.extend(states.into_iter().map(|d| View { lod, damage: Some(d) }));
     }
     out
 }
 
-/// The levels of detail present, ascending.
-fn lod_levels(submeshes: &[SubMesh], lm: &LoadedMesh) -> Vec<u8> {
-    let mut l: Vec<u8> = cover(submeshes, lm).iter().map(|s| s.lod).collect();
-    l.sort_unstable();
-    l.dedup();
-    l
-}
-
-/// The glTF node + mesh name for one level — `<label>_LOD0`, `<label>_LOD1`. Every level is a
-/// separate object on the same skin, so a DCC shows them as siblings under one armature.
-fn lod_object_name(label: &str, lod: u8) -> String {
-    format!("{label}_LOD{lod}")
+/// The glTF node + mesh name for one view — `<label>_LOD0`, or `<label>_LOD0_state1` for a model
+/// with damage states. Every view is a separate object on the same skin, so a DCC shows them as
+/// siblings under one armature.
+fn object_name(label: &str, v: View) -> String {
+    match v.damage {
+        None => format!("{label}_LOD{}", v.lod),
+        Some(d) => format!("{label}_LOD{}_state{d}", v.lod),
+    }
 }
 
 /// A texture that made it into `textures/`.
@@ -143,12 +149,24 @@ fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
     wr.write_image_data(rgba).map_err(|e| e.to_string())
 }
 
+/// One `raw/` file: the part it holds, its path in the bundle, its size and where the build stores it.
+struct RawFile {
+    mesh: usize,
+    file: String,
+    bytes: usize,
+    location: String,
+}
+
 /// Run a full bundle export. Returns the directory written.
 ///
-/// Safe to call from a worker thread: it opens its own megapack and touches no GPU state.
+/// Safe to call from a worker thread: it re-assembles from the source and touches no GPU state.
 pub fn run(job: &Job) -> Result<String, String> {
-    let mp = crate::pack::Megapack::open(&job.megapack)?;
-    let lm = meshload::assemble(mp.raw(), &job.parts)?;
+    let src = job.source.as_ref();
+    // The same assembly the viewer shows: a part that does not decode is missing from both, and the
+    // manifest names it.
+    let asm = crate::assets::Assembly { picks: job.picks.clone(), notes: job.lod_notes.clone(), damage: job.damage.clone() };
+    let model = crate::boot::assemble(src, &job.label, &asm)?;
+    let (lm, notes) = (model.lm, model.notes);
 
     let dir = job.outroot.join(sanitize(&job.label));
     std::fs::create_dir_all(dir.join("raw")).map_err(|e| e.to_string())?;
@@ -157,31 +175,20 @@ pub fn run(job: &Job) -> Result<String, String> {
     // ---- raw/ : the byte-exact source records ----
     // One file per MESH: a template whose `LowDetailModel` is its `HighDetailModel` (Sean's) picks
     // the same record at both levels, and it is the same bytes either way.
-    let mut raw_files: Vec<(String, String, usize)> = Vec::new(); // (part, file, bytes)
-    for p in &job.parts {
-        if raw_files.iter().any(|(n, _, _)| n == &p.entry.name) {
+    let mut raw_files: Vec<RawFile> = Vec::new();
+    for &(mesh, _) in &job.picks {
+        if raw_files.iter().any(|r| r.mesh == mesh) {
             continue;
         }
-        let Some(bytes) = meshload::raw_record(mp.raw(), &p.entry) else { continue };
-        let file = format!("{}.msha", sanitize(&p.entry.name));
-        std::fs::write(dir.join("raw").join(&file), bytes).map_err(|e| e.to_string())?;
-        raw_files.push((p.entry.name.clone(), format!("raw/{file}"), bytes.len()));
+        let rec = src.raw_part(mesh)?;
+        let file = sanitize(&rec.file);
+        std::fs::write(dir.join("raw").join(&file), &rec.bytes).map_err(|e| e.to_string())?;
+        raw_files.push(RawFile { mesh, file: format!("raw/{file}"), bytes: rec.bytes.len(), location: rec.location });
     }
 
-    // ---- textures/ : every asset bound to any slot, plus name-stem siblings ----
-    // The picker/WSAO path fills all four slots when it can, so this iterates the FULL binding, not
-    // just the diffuse. The stem-sibling pull-in below is kept as a fallback for the name-suffix
-    // heuristic path (`_D` has no WSMA record and its `_NM`/`_MASK` siblings would otherwise miss).
+    // ---- textures/ : every asset bound to any slot ----
     let mut want: Vec<usize> =
         job.submesh_tex.iter().flat_map(|b| b.iter_bound().map(|(_, a)| a)).collect();
-    want.sort_unstable();
-    want.dedup();
-    let bound_stems: Vec<String> = want.iter().filter_map(|i| job.assets.get(*i)).map(|a| stem(&a.name)).collect();
-    for (i, a) in job.assets.iter().enumerate() {
-        if !want.contains(&i) && bound_stems.contains(&stem(&a.name)) {
-            want.push(i);
-        }
-    }
     want.sort_unstable();
     want.dedup();
 
@@ -191,7 +198,10 @@ pub fn run(job: &Job) -> Result<String, String> {
         let Some(a) = job.assets.get(i) else { continue };
         match a.decode() {
             Ok(t) => {
-                let file = format!("{}.png", sanitize(&a.name));
+                // Two different records can share a name (2008: copies of a name in different
+                // packs); the second is filed under its pool index too.
+                let stem = sanitize(&a.name);
+                let file = if written.iter().any(|w| w.file == format!("{stem}.png")) { format!("{stem}~{i}.png") } else { format!("{stem}.png") };
                 match write_png(&dir.join("textures").join(&file), t.width, t.height, &t.rgba) {
                     Ok(()) => written.push(WrittenTex { asset: i, file }),
                     Err(e) => tex_errs.push(format!("{}: {e}", a.name)),
@@ -208,7 +218,7 @@ pub fn run(job: &Job) -> Result<String, String> {
     std::fs::write(dir.join("model.glb"), &glb).map_err(|e| e.to_string())?;
 
     // ---- manifest.json ----
-    let manifest = manifest(job, &lm, &written, &raw_files, &tex_errs, glb.len());
+    let manifest = manifest(job, &lm, &written, &raw_files, &tex_errs, &notes, glb.len());
     std::fs::write(
         dir.join("manifest.json"),
         serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?,
@@ -218,99 +228,42 @@ pub fn run(job: &Job) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
-/// A 2008-prototype mesh record's export, decoded up front so the writer needs no source.
-pub struct Job2008 {
-    pub label: String,
-    /// The record as stored in its pack: a zlib stream, or a raw variant record.
-    pub raw: Vec<u8>,
-    pub raw_file: String,
-    pub mesh: LoadedMesh,
-    pub submeshes: Vec<SubMesh>,
-    /// Decoded textures with their names; `submesh_tex` slots index this.
-    pub textures: Vec<(String, crate::dtex::CpuTexture)>,
-    pub submesh_tex: Vec<SubmeshBinding>,
-    /// What the glTF cannot carry: the record, its pack, each submesh's materials and samplers,
-    /// texture failures.
-    pub manifest: serde_json::Value,
-    pub outroot: PathBuf,
-}
-
-/// Write a 2008 bundle: `raw/` (the stored record, byte-exact), `textures/`, `model.glb` (the same
-/// writer as retail's) and `manifest.json`.
-pub fn run_2008(job: &Job2008) -> Result<String, String> {
-    let dir = job.outroot.join(sanitize(&job.label));
-    std::fs::create_dir_all(dir.join("raw")).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(dir.join("textures")).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("raw").join(&job.raw_file), &job.raw).map_err(|e| e.to_string())?;
-    let mut written = Vec::new();
-    let mut files = Vec::new();
-    for (i, (name, t)) in job.textures.iter().enumerate() {
-        let file = format!("{}.png", sanitize(name));
-        write_png(&dir.join("textures").join(&file), t.width, t.height, &t.rgba)?;
-        files.push(format!("textures/{file}"));
-        written.push(WrittenTex { asset: i, file });
-    }
-    let glb = write_glb(&job.mesh, &job.label, &job.submeshes, &job.submesh_tex, &written);
-    std::fs::write(dir.join("model.glb"), &glb).map_err(|e| e.to_string())?;
-    let mut manifest = serde_json::json!({
-        "generator": "sab_workshop",
-        "bundle_version": 2,
-        "label": job.label,
-        "raw": format!("raw/{}", job.raw_file),
-        "model": "model.glb",
-        "textures": files,
-        "counts": {
-            "vertices": job.mesh.mesh.positions.len(),
-            "triangles": job.mesh.mesh.indices.len() / 3,
-            "bones": job.mesh.bones.len(),
-            "submeshes": job.submeshes.len(),
-            "glb_bytes": glb.len(),
-        },
-    });
-    if let (Some(m), Some(extra)) = (manifest.as_object_mut(), job.manifest.as_object()) {
-        for (k, v) in extra {
-            m.insert(k.clone(), v.clone());
-        }
-    }
-    std::fs::write(dir.join("manifest.json"), serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    Ok(dir.to_string_lossy().into_owned())
-}
-
 /// The reassembly map. Everything the glTF cannot say, said here.
 fn manifest(
     job: &Job,
     lm: &LoadedMesh,
     written: &[WrittenTex],
-    raw_files: &[(String, String, usize)],
+    raw_files: &[RawFile],
     tex_errs: &[String],
+    notes: &[String],
     glb_len: usize,
 ) -> serde_json::Value {
     let file_of: BTreeMap<usize, &str> = written.iter().map(|w| (w.asset, w.file.as_str())).collect();
 
-    // One entry per part AS ASSEMBLED — a mesh used at two levels is listed twice, once per range.
+    // One entry per part AS ASSEMBLED — a mesh used at two levels is listed once per range.
     let parts: Vec<_> = lm
         .part_ranges
         .iter()
-        .map(|(name, s, c, lod)| {
-            let raw = raw_files.iter().find(|(n, _, _)| n == name);
+        .map(|r| {
+            let raw = raw_files.iter().find(|f| f.mesh == r.mesh);
             serde_json::json!({
-                "name": name, "lod": lod,
-                "raw": raw.map(|r| r.1.clone()), "raw_bytes": raw.map(|r| r.2),
-                "index_start": s, "index_count": c,
+                "name": r.name, "lod": r.lod,
+                "location": raw.map(|f| f.location.clone()),
+                "raw": raw.map(|f| f.file.clone()), "raw_bytes": raw.map(|f| f.bytes),
+                "index_start": r.index_start, "index_count": r.index_count,
             })
         })
         .collect();
 
-    // Per level: the glTF mesh object it became and its size.
+    // Per level and damage state: the glTF mesh object it became and its size.
+    let cov = cover(&job.submeshes, lm);
     let mut lods: Vec<_> = Vec::new();
-    for lod in lod_levels(&job.submeshes, lm) {
-        let tris: u32 =
-            lm.part_ranges.iter().filter(|r| r.3 == lod).map(|r| r.2).sum::<u32>() / 3;
+    for v in views_of(&cov) {
+        let tris: u32 = cov.iter().filter(|s| v.shows(s)).map(|s| s.index_count).sum::<u32>() / 3;
         let names: Vec<&str> =
-            lm.part_ranges.iter().filter(|r| r.3 == lod).map(|r| r.0.as_str()).collect();
+            lm.part_ranges.iter().filter(|r| r.lod == v.lod).map(|r| r.name.as_str()).collect();
         lods.push(serde_json::json!({
-            "lod": lod, "object": lod_object_name(&job.label, lod), "triangles": tris, "parts": names,
+            "lod": v.lod, "damage_state": v.damage, "object": object_name(&job.label, v), "triangles": tris, "parts": names,
         }));
     }
 
@@ -348,6 +301,7 @@ fn manifest(
             serde_json::json!({
                 "index": i,
                 "lod": s.lod,
+                "damage_state": s.damage,
                 "index_start": s.index_start,
                 "index_count": s.index_count,
                 "material_hashes": s.materials.iter().map(|m| format!("0x{m:08X}")).collect::<Vec<_>>(),
@@ -387,12 +341,13 @@ fn manifest(
 
     serde_json::json!({
         "generator": "sab_workshop",
-        // 2: `source.parts` is one entry per assembled range (with `lod`), plus `lods`/`lod_notes`.
-        "bundle_version": 2,
+        // 3: `source` names the build and each part's location, one entry per part and level.
+        "bundle_version": 3,
         "label": job.label,
-        "source": { "megapack": job.megapack, "parts": parts },
+        "source": { "build": job.source.version().label(), "root": job.source.label(), "parts": parts },
         "lods": lods,
-        "lod_notes": job.lod_notes,
+        "lod_notes": notes,
+        "damage_parts": job.damage.iter().map(|(b, s)| serde_json::json!({ "bone": format!("0x{b:08X}"), "state": s })).collect::<Vec<_>>(),
         "counts": {
             "vertices": lm.mesh.positions.len(),
             "triangles": lm.mesh.indices.len() / 3,
@@ -431,6 +386,28 @@ fn write_glb(
     let ni = g.indices.len();
     let nb = lm.bones.len();
     let has_skin = nb > 0 && g.joints.len() == nv && g.weights.len() == nv;
+    if nv == 0 {
+        // A skeleton-only record: the bone hierarchy and no mesh (glTF has no empty buffer views).
+        let roots: Vec<usize> = (0..nb).filter(|&b| lm.bones[b].parent < 0).collect();
+        let nodes: Vec<serde_json::Value> = (0..nb)
+            .map(|b| {
+                let bone = &lm.bones[b];
+                let children: Vec<usize> = (0..nb).filter(|&c| lm.bones[c].parent == b as i32).collect();
+                let mut n = serde_json::json!({ "name": bone.name, "translation": bone.t.to_vec(), "rotation": bone.r.to_vec(), "scale": bone.s.to_vec() });
+                if !children.is_empty() {
+                    n["children"] = serde_json::json!(children);
+                }
+                n
+            })
+            .collect();
+        let root = serde_json::json!({
+            "asset": { "version": "2.0", "generator": "sab_workshop" },
+            "scene": 0,
+            "scenes": [{ "name": label, "nodes": roots }],
+            "nodes": nodes,
+        });
+        return container(&root, Vec::new());
+    }
 
     // ---- BIN chunk ----
     let mut bin: Vec<u8> = Vec::new();
@@ -593,17 +570,17 @@ fn write_glb(
         materials.push(mat);
     }
 
-    // ---- meshes: one per level of detail; primitives: one per submesh of that level ----
+    // ---- meshes: one per view (level of detail, damage state); primitives: one per submesh ----
     //
-    // All levels share the vertex accessors (each level indexes only its own parts' vertices), but
-    // a level's primitives go in ITS mesh, so LOD1 is a separate object rather than a second skin
-    // drawn over LOD0.
-    let levels = lod_levels(submeshes, lm);
+    // All views share the vertex accessors, but a view's primitives go in ITS mesh, so LOD1 is a
+    // separate object rather than a second skin drawn over LOD0, and a damaged state is a separate
+    // object rather than wreckage drawn over the intact model.
+    let levels = views_of(&cover);
     let mut meshes: Vec<serde_json::Value> = Vec::new();
-    for &lod in &levels {
+    for &v in &levels {
         let mut prims: Vec<serde_json::Value> = Vec::new();
         for (i, s) in cover.iter().enumerate() {
-            if s.index_count == 0 || s.lod != lod {
+            if s.index_count == 0 || !v.shows(s) {
                 continue;
             }
             let a_idx = acc(v_idx, 5125, s.index_count as usize, "SCALAR", s.index_start as usize * 4);
@@ -618,7 +595,7 @@ fn write_glb(
             }
             prims.push(p);
         }
-        meshes.push(serde_json::json!({ "name": lod_object_name(label, lod), "primitives": prims }));
+        meshes.push(serde_json::json!({ "name": object_name(label, v), "primitives": prims }));
     }
 
     // ---- nodes: the bone hierarchy, then one mesh node per level ----
@@ -644,18 +621,22 @@ fn write_glb(
         }
         nodes.push(n);
     }
-    // ---- scenes: one per level, each the skeleton's roots + that level's mesh node; scene 0 (LOD0)
-    // is the default ----
+    // ---- scenes: one per view, each the skeleton's roots + that view's mesh node; scene 0 (LOD0,
+    // intact) is the default ----
     let mut scenes: Vec<serde_json::Value> = Vec::new();
-    for (m, &lod) in levels.iter().enumerate() {
-        let mut mn = serde_json::json!({ "name": lod_object_name(label, lod), "mesh": m });
+    for (m, &v) in levels.iter().enumerate() {
+        let mut mn = serde_json::json!({ "name": object_name(label, v), "mesh": m });
         if has_skin {
             mn["skin"] = serde_json::json!(0);
         }
         let mut scene_nodes: Vec<usize> = roots.clone();
         scene_nodes.push(nodes.len());
         nodes.push(mn);
-        scenes.push(serde_json::json!({ "name": format!("LOD{lod}"), "nodes": scene_nodes }));
+        let name = match v.damage {
+            None => format!("LOD{}", v.lod),
+            Some(d) => format!("LOD{} state {d}", v.lod),
+        };
+        scenes.push(serde_json::json!({ "name": name, "nodes": scene_nodes }));
     }
 
     let mut root = serde_json::json!({
@@ -685,7 +666,11 @@ fn write_glb(
         }
     }
 
-    // ---- GLB container ----
+    container(&root, bin)
+}
+
+/// The GLB container: the JSON chunk, then the BIN chunk when there is one.
+fn container(root: &serde_json::Value, mut bin: Vec<u8>) -> Vec<u8> {
     let mut json_bytes = root.to_string().into_bytes();
     while json_bytes.len() % 4 != 0 {
         json_bytes.push(b' ');
@@ -693,7 +678,8 @@ fn write_glb(
     while bin.len() % 4 != 0 {
         bin.push(0);
     }
-    let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
+    let bin_chunk = if bin.is_empty() { 0 } else { 8 + bin.len() };
+    let total = 12 + 8 + json_bytes.len() + bin_chunk;
     let mut glb = Vec::with_capacity(total);
     glb.extend_from_slice(&0x4654_6C67u32.to_le_bytes()); // "glTF"
     glb.extend_from_slice(&2u32.to_le_bytes());
@@ -701,9 +687,11 @@ fn write_glb(
     glb.extend_from_slice(&(json_bytes.len() as u32).to_le_bytes());
     glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes()); // "JSON"
     glb.extend_from_slice(&json_bytes);
-    glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-    glb.extend_from_slice(&0x004E_4942u32.to_le_bytes()); // "BIN\0"
-    glb.extend_from_slice(&bin);
+    if !bin.is_empty() {
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x004E_4942u32.to_le_bytes()); // "BIN\0"
+        glb.extend_from_slice(&bin);
+    }
     glb
 }
 
@@ -742,8 +730,13 @@ mod tests {
             prim_parent_bone: Vec::new(),
             bone_hashes: vec![1, 2],
             stored_ibm: Default::default(),
-            part_ranges: vec![("T".into(), 0, 6, 0)],
+            part_ranges: vec![range("T", 0, 6, 0)],
+            uvless: Vec::new(),
         }
+    }
+
+    fn range(name: &str, index_start: u32, index_count: u32, lod: u8) -> crate::source::PartRange {
+        crate::source::PartRange { mesh: 0, name: name.into(), index_start, index_count, lod }
     }
 
     /// Parse the GLB chunk framing back out — the container has to be readable before any of the
@@ -776,12 +769,12 @@ mod tests {
     fn one_primitive_per_submesh_with_its_material() {
         let lm = demo();
         let cover = vec![
-            SubMesh { index_start: 0, index_count: 3, materials: vec![0xAA], lod: 0 },
-            SubMesh { index_start: 3, index_count: 3, materials: vec![0xBB], lod: 0 },
+            SubMesh { index_start: 0, index_count: 3, materials: vec![0xAA], lod: 0, damage: None },
+            SubMesh { index_start: 3, index_count: 3, materials: vec![0xBB], lod: 0, damage: None },
         ];
         // Submesh 0 binds asset 7 (diffuse only), submesh 1 binds nothing.
         let written = vec![WrittenTex { asset: 7, file: "skin.png".into() }];
-        let bindings = [SubmeshBinding::diffuse_only(7), SubmeshBinding::default()];
+        let bindings = [SubmeshBinding { slots: [Some(7), None, None, None] }, SubmeshBinding::default()];
         let glb = write_glb(&lm, "T", &cover, &bindings, &written);
         let (json, _) = chunks(&glb);
         let prims = json["meshes"][0]["primitives"].as_array().unwrap();
@@ -798,24 +791,27 @@ mod tests {
         assert_eq!(json["images"][0]["uri"].as_str(), Some("textures/skin.png"));
     }
 
-    /// End-to-end against the installed game: export a real character, both levels of detail, and
-    /// read the bundle back.
+    /// End-to-end on both builds: export a real character with both levels of detail and its bound
+    /// textures, and read the bundle back.
     ///
     /// The unit tests above prove the writer's shape from synthetic input; only this proves the
     /// thing a modder actually receives — that the parts assemble, the raw records round-trip, the
-    /// glTF's accessors stay inside the buffer they point at, and each level is its own object. The
-    /// character is the first one whose templates name a separate `LowDetailModel` mesh, assembled
-    /// exactly as a click assembles it. Skips when no install is present.
+    /// textures land, the glTF's accessors stay inside the buffer they point at, and each level is
+    /// its own object. The character is the first one whose templates name a separate
+    /// `LowDetailModel` mesh, assembled exactly as a click assembles it.
+    #[cfg(feature = "retail")]
     #[test]
-    fn real_character_bundle_round_trips() {
-        let Some(s) = crate::settings::detected_retail() else {
-            eprintln!("skip: no Saboteur install detected");
-            return;
-        };
-        let pack = crate::pack::Megapack::open(&s.megapack()).expect("megapack");
-        let list = crate::meshload::list_meshes(&pack);
-        let gt = crate::assets::load_gametemplates(&s.game_dir).expect("GameTemplates");
-        let assets = crate::assets::build(&gt, &list);
+    fn a_character_bundle_round_trips_on_both_builds() {
+        for src in crate::testenv::both_shared() {
+            character_bundle_round_trips(src);
+        }
+    }
+
+    #[cfg(feature = "retail")]
+    fn character_bundle_round_trips(source: Arc<dyn GameSource>) {
+        let src = source.as_ref();
+        let build = src.label();
+        let assets = crate::assets::build(src);
         let (name, asm) = assets
             .iter()
             .filter(|a| a.category == "Characters")
@@ -823,39 +819,50 @@ mod tests {
             .find(|(_, asm)| {
                 asm.picks.iter().any(|&(i, l)| l == 1 && !asm.picks.contains(&(i, 0)))
             })
-            .expect("a character whose LowDetailModel is a separate mesh");
-        let parts: Vec<PartPick> = asm
-            .picks
-            .iter()
-            .map(|&(i, lod)| PartPick { entry: list[i].clone(), lod })
-            .collect();
+            .unwrap_or_else(|| panic!("{build}: a character whose LowDetailModel is a separate mesh"));
+        let model = crate::boot::assemble(src, &name, &asm).unwrap_or_else(|e| panic!("{build} {name}: {e}"));
+        let submeshes = crate::formats::submesh_cover(&model.lm.mesh.prims, model.lm.mesh.indices.len() as u32);
+        let mt = src.resolve_textures(&model.lm.part_ranges, &submeshes, &model.lm.uvless).unwrap_or_else(|e| panic!("{build} {name}: {e}"));
+        assert!(mt.submesh_tex.iter().any(|b| b.diffuse().is_some()), "{build} {name}: no submesh binds a diffuse");
 
-        let out = std::env::temp_dir().join("sab_workshop_bundle_test");
+        let out = std::env::temp_dir().join(format!("sab_workshop_bundle_test_{:?}", src.version()));
         let _ = std::fs::remove_dir_all(&out);
         let job = Job {
-            megapack: s.megapack(),
+            source: source.clone(),
             label: "LodTest".into(),
-            parts: parts.clone(),
+            picks: asm.picks.clone(),
             lod_notes: asm.notes.clone(),
-            submeshes: Vec::new(),
-            assets: Vec::new(),
-            submesh_tex: Vec::new(),
-            submesh_prov: Vec::new(),
+            damage: asm.damage.clone(),
+            submeshes: submeshes.clone(),
+            assets: mt.assets.clone(),
+            submesh_tex: mt.submesh_tex.clone(),
+            submesh_prov: mt.submesh_prov.clone(),
             outroot: out.clone(),
         };
-        let dir = PathBuf::from(run(&job).unwrap_or_else(|e| panic!("export {name}: {e}")));
+        let dir = PathBuf::from(run(&job).unwrap_or_else(|e| panic!("{build}: export {name}: {e}")));
 
-        // The raw records are the preservation promise: byte-identical to the pack.
-        for p in &parts {
-            let want = meshload::raw_record(pack.raw(), &p.entry).expect("raw slice");
-            let got = std::fs::read(dir.join("raw").join(format!("{}.msha", sanitize(&p.entry.name))))
-                .expect("raw file");
-            assert_eq!(got, want, "raw/{} is not byte-exact", p.entry.name);
+        // The raw records are the preservation promise: byte-identical to the build.
+        for &(mesh, _) in &asm.picks {
+            let want = src.raw_part(mesh).expect("raw record");
+            let got = std::fs::read(dir.join("raw").join(sanitize(&want.file))).expect("raw file");
+            assert!(got == want.bytes, "{build}: raw/{} is not byte-exact", want.file);
         }
+        // Every bound texture is a PNG in textures/.
+        let man: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(man["texture_errors"].as_array().map(Vec::len), Some(0), "{build}: {}", man["texture_errors"]);
+        let bound: std::collections::BTreeSet<usize> = mt.submesh_tex.iter().flat_map(|b| b.iter_bound().map(|(_, a)| a)).collect();
+        let pngs = std::fs::read_dir(dir.join("textures")).expect("textures dir").count();
+        assert_eq!(pngs, bound.len(), "{build}: one PNG per bound texture");
 
         // The GLB parses, and every accessor lands inside the BIN chunk it indexes.
         let glb = std::fs::read(dir.join("model.glb")).expect("model.glb");
         let (json, blen) = chunks(&glb);
+        // A bound normal map reaches the glTF material.
+        if mt.submesh_tex.iter().any(|b| b.normal().is_some()) {
+            let mats = json["materials"].as_array().cloned().unwrap_or_default();
+            assert!(mats.iter().any(|m| m.get("normalTexture").is_some()), "{build}: no glTF material carries the bound normal map");
+        }
         let views = json["bufferViews"].as_array().unwrap();
         for v in views {
             let off = v["byteOffset"].as_u64().unwrap() as usize;
@@ -863,17 +870,15 @@ mod tests {
             assert!(off + len <= blen, "bufferView {off}+{len} overruns BIN ({blen})");
         }
 
-        let man: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(man["source"]["parts"].as_array().unwrap().len(), parts.len(), "{name}");
+        assert_eq!(man["source"]["parts"].as_array().unwrap().len(), model.lm.part_ranges.len(), "{build} {name}");
         assert!(man["counts"]["vertices"].as_u64().unwrap() > 0);
 
         // One skinned mesh object per level, named for it, and each holding exactly its level's
         // triangles — LOD1 is beside LOD0, not inside it.
         let meshes = json["meshes"].as_array().unwrap();
         let lods = man["lods"].as_array().unwrap();
-        assert_eq!(meshes.len(), 2, "{name}: expected LOD0 and LOD1 objects");
-        assert_eq!(lods.len(), 2);
+        assert!(meshes.len() >= 2, "{build} {name}: expected at least LOD0 and LOD1 objects");
+        assert_eq!(meshes.len(), lods.len(), "{build} {name}: one object per level");
         let nodes = json["nodes"].as_array().unwrap();
         for (m, lod) in meshes.iter().zip(lods) {
             let obj = lod["object"].as_str().unwrap();
@@ -900,14 +905,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
     }
 
+    /// A model with damage states becomes one object per state, each holding the geometry that draws
+    /// in every state plus its own state's — never the other state's.
+    #[test]
+    fn each_damage_state_is_its_own_mesh_object() {
+        let mut lm = demo();
+        lm.mesh.indices = vec![0, 1, 2, 1, 3, 2, 0, 1, 3];
+        let cover = vec![
+            SubMesh { index_start: 0, index_count: 3, materials: vec![0xAA], lod: 0, damage: None },
+            SubMesh { index_start: 3, index_count: 3, materials: vec![0xBB], lod: 0, damage: Some(0) },
+            SubMesh { index_start: 6, index_count: 3, materials: vec![0xCC], lod: 0, damage: Some(1) },
+        ];
+        let glb = write_glb(&lm, "T", &cover, &[], &[]);
+        let (json, _) = chunks(&glb);
+        let meshes = json["meshes"].as_array().unwrap();
+        assert_eq!(meshes.len(), 2);
+        assert_eq!(meshes[0]["name"].as_str(), Some("T_LOD0_state0"));
+        assert_eq!(meshes[1]["name"].as_str(), Some("T_LOD0_state1"));
+        for (m, own) in meshes.iter().zip([3u64, 6]) {
+            let offs: Vec<u64> = m["primitives"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| json["accessors"][p["indices"].as_u64().unwrap() as usize]["byteOffset"].as_u64().unwrap() / 4)
+                .collect();
+            assert_eq!(offs, [0, own], "{}", m["name"]);
+        }
+    }
+
     /// Two levels in one assembly become two mesh objects, and neither draws the other's indices.
     #[test]
     fn each_level_is_its_own_mesh_object() {
         let mut lm = demo();
-        lm.part_ranges = vec![("T".into(), 0, 3, 0), ("T_LOD".into(), 3, 3, 1)];
+        lm.part_ranges = vec![range("T", 0, 3, 0), range("T_LOD", 3, 3, 1)];
         let cover = vec![
-            SubMesh { index_start: 0, index_count: 3, materials: vec![0xAA], lod: 0 },
-            SubMesh { index_start: 3, index_count: 3, materials: vec![0xBB], lod: 1 },
+            SubMesh { index_start: 0, index_count: 3, materials: vec![0xAA], lod: 0, damage: None },
+            SubMesh { index_start: 3, index_count: 3, materials: vec![0xBB], lod: 1, damage: None },
         ];
         let glb = write_glb(&lm, "T", &cover, &[], &[]);
         let (json, _) = chunks(&glb);
@@ -939,248 +972,4 @@ mod tests {
         }
     }
 
-    /// Mimic a user clicking a SINGLE Sean part in the Parts panel: load one MSHA, resolve
-    /// its per-submesh WSMA bindings, and report which slots (diffuse/spec/normal/mask) got
-    /// filled with a real asset index. This is the empirical test for the user's complaint
-    /// that the 3D viewer doesn't shade normal maps for a selected part.
-    #[test]
-    fn single_part_click_resolves_all_slots() {
-        let Some(s) = crate::settings::detected_retail() else {
-            eprintln!("skip: no Saboteur install detected");
-            return;
-        };
-        let Ok(mp) = crate::pack::Megapack::open(&s.megapack()) else {
-            eprintln!("skip: megapack unavailable");
-            return;
-        };
-        let Ok(wsao) = crate::wsao::Wsao::open(&s.wsao()) else {
-            eprintln!("skip: France.materials unavailable");
-            return;
-        };
-        // Pick just Sean's UB (upper body) — one part, mirrors a Parts-panel click.
-        let list = crate::meshload::list_meshes(&mp);
-        let Some(part) = list.iter().find(|e| e.name == "CH_AL_SeanDevlin_01_UB").cloned() else {
-            eprintln!("skip: no CH_AL_SeanDevlin_01_UB in this pack");
-            return;
-        };
-        let picked = vec![PartPick { entry: part.clone(), lod: 0 }];
-        let lm = crate::meshload::assemble(mp.raw(), &picked).expect("assemble");
-        let submeshes: Vec<SubMesh> =
-            crate::formats::submesh_cover(&lm.mesh.prims, lm.mesh.indices.len() as u32);
-
-        use std::collections::{HashMap, HashSet};
-        let want: Vec<[Option<u32>; SubmeshBinding::NUM_SLOTS]> = submeshes
-            .iter()
-            .map(|sm| {
-                let mut slots = [None; SubmeshBinding::NUM_SLOTS];
-                if let Some(mat) = sm.materials.first().copied() {
-                    if let Some(hashes) = wsao.textures(mat) {
-                        for (i, h) in hashes.iter().take(SubmeshBinding::NUM_SLOTS).enumerate() {
-                            if *h != 0 {
-                                slots[i] = Some(*h);
-                            }
-                        }
-                    }
-                }
-                slots
-            })
-            .collect();
-        let mut needed: HashSet<u32> =
-            want.iter().flat_map(|s| s.iter().copied()).flatten().collect();
-        let own = mp.entry_containing(part.file_off).map(|e| mp.slice(&e).to_vec()).unwrap_or_default();
-        let mut found: HashMap<u32, TexAsset> = HashMap::new();
-        crate::resolve::take_hashes_from_slices(&[&own], &mut needed, &mut found);
-        let after_own = needed.len();
-        crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found)
-            .expect("whole-pack texture sweep");
-        let after_sweep = needed.len();
-
-        // Now report: how many submeshes had a normal-slot hash requested, and how many got resolved.
-        let normal_requested = want.iter().filter(|s| s[SubmeshBinding::NORMAL].is_some()).count();
-        let normal_hashes: Vec<u32> = want
-            .iter()
-            .filter_map(|s| s[SubmeshBinding::NORMAL])
-            .collect();
-        let normal_resolved =
-            normal_hashes.iter().filter(|h| found.contains_key(h)).count();
-        println!(
-            "\n=== single-part resolve probe (CH_AL_SeanDevlin_01_UB) ===\n\
-             submeshes:            {}\n\
-             normal hashes wanted: {} distinct\n\
-             normal hashes found:  {} / {}\n\
-             hashes unresolved after own-slice:  {}\n\
-             hashes unresolved after pack sweep: {}\n\
-             assets in pool: {}",
-            submeshes.len(),
-            normal_hashes.len(),
-            normal_resolved,
-            normal_hashes.len(),
-            after_own,
-            after_sweep,
-            found.len(),
-        );
-        // The bug the user reports: if normal_requested > 0 and normal_resolved == 0, the shader
-        // never gets a normal-slot upload for a single-part load. Assert one direction of that so
-        // the test fails when a regression sneaks in.
-        if normal_requested > 0 {
-            assert!(
-                normal_resolved > 0,
-                "WSMA asked for {normal_requested} normal-slot textures, but zero resolved — the \
-                 3D viewer can't shade normals it can't find"
-            );
-        }
-    }
-
-    #[test]
-    fn sibling_maps_share_a_stem() {
-        assert_eq!(stem("Sean_Head_D"), stem("Sean_Head_N"));
-        assert_eq!(stem("Sean_Head_D"), stem("SEAN_HEAD_SM"));
-        assert_ne!(stem("Sean_Head_D"), stem("Sean_Hand_D"));
-    }
-
-    /// End-to-end against the installed game: assemble Sean, bind him via WSAO's full slot
-    /// vector, run the bundle export, and prove that normal + spec (when the material has them)
-    /// actually land in `textures/` and are wired into the glTF material as `normalTexture` /
-    /// `extras.specularTexture`. This is the invariant the earlier diffuse-only export missed —
-    /// `_NM` and `_SM` records existed in the pool but never reached the file system.
-    #[test]
-    fn bundle_exports_normal_and_spec_when_material_has_them() {
-        let Some(s) = crate::settings::detected_retail() else {
-            eprintln!("skip: no Saboteur install detected");
-            return;
-        };
-        let Ok(mp) = crate::pack::Megapack::open(&s.megapack()) else {
-            eprintln!("skip: megapack unavailable");
-            return;
-        };
-        let Ok(wsao) = crate::wsao::Wsao::open(&s.wsao()) else {
-            eprintln!("skip: France.materials unavailable");
-            return;
-        };
-        let list = crate::meshload::list_meshes(&mp);
-        let parts: Vec<PartPick> = list
-            .iter()
-            .filter(|e| e.name.to_ascii_lowercase().contains("seandevlin"))
-            .take(3)
-            .map(|e| PartPick { entry: e.clone(), lod: 0 })
-            .collect();
-        if parts.is_empty() {
-            eprintln!("skip: no Sean parts");
-            return;
-        }
-        let lm = crate::meshload::assemble(mp.raw(), &parts).expect("assemble");
-        let submeshes: Vec<SubMesh> =
-            crate::formats::submesh_cover(&lm.mesh.prims, lm.mesh.indices.len() as u32);
-
-        // Resolve every WSMA slot for every submesh (mirrors app::resolve_model_textures).
-        use std::collections::{HashMap, HashSet};
-        let want: Vec<[Option<u32>; SubmeshBinding::NUM_SLOTS]> = submeshes
-            .iter()
-            .map(|sm| {
-                let mut slots = [None; SubmeshBinding::NUM_SLOTS];
-                if let Some(mat) = sm.materials.first().copied() {
-                    if let Some(hashes) = wsao.textures(mat) {
-                        for (i, h) in hashes.iter().take(SubmeshBinding::NUM_SLOTS).enumerate() {
-                            if *h != 0 {
-                                slots[i] = Some(*h);
-                            }
-                        }
-                    }
-                }
-                slots
-            })
-            .collect();
-        let mut needed: HashSet<u32> =
-            want.iter().flat_map(|s| s.iter().copied()).flatten().collect();
-        if needed.is_empty() {
-            eprintln!("skip: Sean's submeshes have no WSMA bindings in this pack");
-            return;
-        }
-        let mut found: HashMap<u32, TexAsset> = HashMap::new();
-        let own: Vec<Vec<u8>> = parts
-            .iter()
-            .filter_map(|p| mp.entry_containing(p.entry.file_off).map(|e| mp.slice(&e).to_vec()))
-            .collect();
-        let own_ref: Vec<&[u8]> = own.iter().map(|v| v.as_slice()).collect();
-        crate::resolve::take_hashes_from_slices(&own_ref, &mut needed, &mut found);
-        if !needed.is_empty() {
-            crate::resolve::take_hashes_from_packs(&[&mp], &mut needed, &mut found)
-                .expect("whole-pack texture sweep");
-        }
-        let mut assets: Vec<TexAsset> = Vec::new();
-        let mut idx: HashMap<u32, usize> = HashMap::new();
-        for (h, a) in found {
-            let ai = assets.len();
-            idx.insert(h, ai);
-            assets.push(a);
-        }
-        let submesh_tex: Vec<SubmeshBinding> = want
-            .iter()
-            .map(|slot_hashes| {
-                let mut b = SubmeshBinding::default();
-                for (s, wh) in slot_hashes.iter().enumerate() {
-                    if let Some(ai) = wh.and_then(|h| idx.get(&h).copied()) {
-                        b.slots[s] = Some(ai);
-                    }
-                }
-                b
-            })
-            .collect();
-
-        // Only bother if the pool actually contains a normal or spec — some outfits may not.
-        let any_normal =
-            submesh_tex.iter().any(|b| b.normal().is_some() || b.spec().is_some());
-        if !any_normal {
-            eprintln!("skip: no submesh in this outfit has a normal/spec binding — cannot verify");
-            return;
-        }
-
-        let out = std::env::temp_dir().join("sab_workshop_bundle_slots_test");
-        let _ = std::fs::remove_dir_all(&out);
-        let submesh_prov = vec![Prov::Bound; submeshes.len()];
-        let job = Job {
-            megapack: s.megapack(),
-            label: "SeanSlotsTest".into(),
-            parts: parts.clone(),
-            lod_notes: Vec::new(),
-            submeshes: submeshes.clone(),
-            assets,
-            submesh_tex: submesh_tex.clone(),
-            submesh_prov,
-            outroot: out.clone(),
-        };
-        let dir = PathBuf::from(run(&job).expect("export"));
-
-        // The textures folder should now hold at least one `_NM` or `_SM` PNG — before the port,
-        // only `_D` files ever appeared here.
-        let tex_dir = dir.join("textures");
-        let files: Vec<String> = std::fs::read_dir(&tex_dir)
-            .expect("textures dir")
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        let has_nm = files.iter().any(|f| f.to_lowercase().contains("_nm"));
-        let has_sm = files.iter().any(|f| f.to_lowercase().contains("_sm") || f.to_lowercase().contains("_s."));
-        assert!(
-            has_nm || has_sm,
-            "textures/ has no _NM or _SM PNG — the slot 1/2 harvest is not reaching disk. Files: {files:?}"
-        );
-
-        // The glTF should carry `normalTexture` OR `extras.specularTexture` on at least one
-        // material — proof the widened material writer is wired up, not just the file writer.
-        let glb = std::fs::read(dir.join("model.glb")).expect("model.glb");
-        let (json, _) = chunks(&glb);
-        let mats = json["materials"].as_array().cloned().unwrap_or_default();
-        let mat_has_normal = mats.iter().any(|m| m.get("normalTexture").is_some());
-        let mat_has_spec = mats
-            .iter()
-            .any(|m| m.get("extras").and_then(|e| e.get("specularTexture")).is_some());
-        assert!(
-            mat_has_normal || mat_has_spec,
-            "no glTF material carries a normalTexture or extras.specularTexture — the slot 1/2 \
-             wiring in write_glb is not hooked up. Materials: {mats:#?}"
-        );
-
-        let _ = std::fs::remove_dir_all(&out);
-    }
 }

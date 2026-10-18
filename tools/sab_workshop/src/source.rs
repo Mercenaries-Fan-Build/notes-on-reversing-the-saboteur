@@ -106,6 +106,13 @@ pub struct IconRow {
     pub key: (usize, usize, usize),
 }
 
+/// A game-text line's recording, decoded.
+pub struct VoiceLine {
+    /// Where the build stores it, for the UI.
+    pub source: String,
+    pub pcm: sab_formats::pcm::Pcm,
+}
+
 /// What a source has been able to figure out about the selected folder. `detect_version` returns
 /// this alongside the version so the UI can show "here's what I found" even when opening fails.
 #[derive(Debug, Default)]
@@ -189,6 +196,11 @@ pub trait GameSource: Send + Sync {
 
     /// The game-text file of each language the build ships: `(label, path)`.
     fn game_text_files(&self) -> Vec<(String, PathBuf)>;
+    /// Where the recording of game-text `key` in language `lang` (a [`GameSource::game_text_files`]
+    /// label) is stored; `Ok(None)` when the build has no recording of that line.
+    fn voice_source(&self, lang: &str, key: &str) -> Result<Option<String>, String>;
+    /// That recording, decoded.
+    fn voice_line(&self, lang: &str, key: &str) -> Result<Option<VoiceLine>, String>;
     /// The textures the Icons page lists; `progress(done, total)` reports a long sweep.
     fn icon_textures(&self, progress: &dyn Fn(usize, usize)) -> Result<Vec<IconRow>, String>;
     /// Decode an Icons-page texture: its finest level, or for `preview` the smallest level at least
@@ -299,6 +311,39 @@ mod tests {
                 GameVersion::Prototype2008Xbox360 => 30,
             };
             assert_eq!(rejected.len(), want, "{}: {}", src.label(), rejected.join("\n"));
+        }
+    }
+
+    /// Every keyed English line of both builds resolves through `voice_source` without error; the
+    /// first 40 with a recording decode through `voice_line` to audio, described the same way. The
+    /// 2008 build voices 1,849 of its 3,903 keyed lines (`docs/2008_audio_format.md`).
+    #[cfg(feature = "retail")]
+    #[test]
+    fn voice_lines_play_from_both_builds() {
+        for src in crate::testenv::both_builds() {
+            let (_, path) = src.game_text_files().into_iter().find(|(l, _)| l == "English").expect("English game text");
+            let gt = sab_formats::gametext::GameText::parse(&std::fs::read(&path).unwrap()).unwrap();
+            let (mut voiced, mut silent, mut decoded) = (0usize, 0usize, 0usize);
+            for r in gt.records.iter().filter(|r| !r.is_ui()) {
+                let key = r.key_str();
+                match src.voice_source("English", &key).unwrap_or_else(|e| panic!("{}: {key}: {e}", src.label())) {
+                    None => silent += 1,
+                    Some(s) => {
+                        voiced += 1;
+                        if decoded < 40 {
+                            let v = src.voice_line("English", &key).unwrap_or_else(|e| panic!("{}: {key}: {e}", src.label())).expect("resolved above");
+                            assert_eq!(v.source, s, "{}: {key}", src.label());
+                            assert!(v.pcm.frames() > 0 && (1..=2).contains(&v.pcm.channels), "{}: {key}", src.label());
+                            decoded += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!("{}: {voiced} lines voiced, {silent} without a recording", src.label());
+            assert_eq!(decoded, 40, "{}", src.label());
+            if src.version() == GameVersion::Prototype2008Xbox360 {
+                assert_eq!((voiced, silent), (1849, 2054));
+            }
         }
     }
 

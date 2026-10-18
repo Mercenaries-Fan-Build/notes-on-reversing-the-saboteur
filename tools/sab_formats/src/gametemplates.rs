@@ -42,7 +42,7 @@ impl ByteOrder {
         [ByteOrder::Little, ByteOrder::Big].into_iter().find(|o| o.magic().as_slice() == m)
     }
 
-    fn u32(self, b: [u8; 4]) -> u32 {
+    pub fn u32(self, b: [u8; 4]) -> u32 {
         match self {
             ByteOrder::Little => u32::from_le_bytes(b),
             ByteOrder::Big => u32::from_be_bytes(b),
@@ -123,6 +123,7 @@ pub enum Entry {
     Template(Template),
 }
 
+#[derive(Clone)]
 pub struct GameTemplates {
     pub entries: Vec<Entry>,
     pub order: ByteOrder,

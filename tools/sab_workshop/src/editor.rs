@@ -301,6 +301,8 @@ enum EdMsg {
     Icons(Result<Vec<IconRec>, String>),
     /// hash, and width, height, RGBA — decoded off-thread; the UI only uploads it.
     Thumb(u32, Result<(usize, usize, Vec<u8>), String>),
+    /// What became of a Play: the note shown beside the button.
+    Audio(String),
 }
 
 /// Identity of a string across the base records AND the DNEC subtitle sub-tables. `scene == None` is a
@@ -606,9 +608,6 @@ pub struct Editor {
     tx: std::sync::mpsc::Sender<EdMsg>,
     rx: std::sync::mpsc::Receiver<EdMsg>,
 
-    /// The Wwise sound pack for one language, cached (opened lazily on first Play). VO/subtitle
-    /// audio resolution; see `sab_formats::wwise`.
-    sound: Option<(usize, sab_formats::wwise::SoundPack)>,
     /// Status/error shown next to the Play button.
     audio_note: String,
     /// Status/error for file exports (textures, meshes).
@@ -618,8 +617,7 @@ pub struct Editor {
 impl Editor {
     /// `lang`, `slot` and `mod_name` come from the user's persisted settings — the Strings page opens
     /// on the configured language (or the build's first, when it does not ship that one), and publish
-    /// targets the chosen DLC slot. (The vgmstream path for voice playback is read live from settings
-    /// at Play time, not cached here.)
+    /// targets the chosen DLC slot.
     pub fn new(src: Arc<dyn GameSource>, game_dir: &str, lang: usize, slot: &str, mod_name: &str) -> Result<Self, String> {
         let mut langs = Vec::new();
         for (folder, path) in src.game_text_files() {
@@ -655,7 +653,6 @@ impl Editor {
             icon_load: Load::Idle,
             tx,
             rx,
-            sound: None,
             audio_note: String::new(),
             io_note: String::new(),
             src,
@@ -786,6 +783,7 @@ impl Editor {
                     self.thumbs.cache.insert(hash, None);
                     self.io_note = format!("thumbnail: {e}");
                 }
+                EdMsg::Audio(note) => self.audio_note = note,
             }
         }
     }
@@ -2035,19 +2033,18 @@ impl Editor {
         });
 
         // Voice: only VO lines and cinematic subtitles carry audio (a non-empty vo key). Gives the
-        // rail per-line content — speaker, Wwise event, and the resolved .wem once a pack is loaded.
+        // rail per-line content — speaker, Wwise event, and where the build stores the recording.
         if let Some((_, key)) = sel_rec.as_ref().filter(|(_, k)| !k.is_empty()) {
+            let lang = LANGS[self.strings.lang].1;
             theme::card(ui, "Voice", None, |ui| {
                 if let Some(spk) = sab_formats::gametext::speaker(key) {
                     ui.label(theme::data_text(format!("speaker · {spk}"), 11.0, theme::TX));
                 }
                 ui.label(theme::data_text(format!("event · Play_{}", trunc(key, 32)), 10.0, theme::FAINT));
-                match self.sound.as_ref().filter(|(l, _)| *l == self.strings.lang) {
-                    Some((_, pack)) => match pack.wem_for_key(key) {
-                        Some(w) => ui.label(theme::data_text(format!("audio · 0x{w:08x}.wem"), 10.5, theme::COLD)),
-                        None => ui.label(theme::data_text("no audio resolved for this line", 10.0, theme::FAINT)),
-                    },
-                    None => ui.label(theme::data_text("press Play line to load the voice pack", 10.0, theme::FAINT)),
+                match self.src.voice_source(lang, key) {
+                    Ok(Some(s)) => ui.label(theme::data_text(format!("audio · {s}"), 10.5, theme::COLD)),
+                    Ok(None) => ui.label(theme::data_text("no recording of this line", 10.0, theme::FAINT)),
+                    Err(e) => ui.label(theme::data_text(e, 10.0, theme::RED)),
                 };
             });
         }
@@ -2072,108 +2069,43 @@ impl Editor {
         }
     }
 
-    /// The `vgmstream-cli` to use: the user's configured path if present, else a `vgmstream-cli` on
-    /// PATH (autodiscovery). Read LIVE from settings so a path chosen in Settings this session takes
-    /// effect immediately — no restart, no cached copy. No hard-coded install locations.
-    fn vgmstream_exe(&self) -> Option<std::path::PathBuf> {
-        if let Some(p) = crate::settings::Settings::load().vgmstream() {
-            return Some(std::path::PathBuf::from(p));
-        }
-        if std::process::Command::new("vgmstream-cli")
-            .arg("-h")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok()
-        {
-            return Some("vgmstream-cli".into());
-        }
-        None
-    }
-
-    /// The Wwise sound-pack path for a language — only EN/FR/DE/IT ship localized VO.
-    fn sound_pck(&self, lang: usize) -> Option<String> {
-        let name = match LANGS.get(lang).map(|l| l.0) {
-            Some("EN") => "English(US)",
-            Some("FR") => "French(Canada)",
-            Some("DE") => "German",
-            Some("IT") => "Italian",
-            _ => return None,
-        };
-        Some(format!("{}/Sound/{name}.pck", self.md.game_dir))
-    }
-
-    /// Shared prep for Play/Export: open the current language's sound pack (cached), resolve the key
-    /// to a `.wem`, extract its bytes, and locate `vgmstream`. Sets `audio_note` and returns `None`
-    /// on any failure so the caller can just `?`-style bail.
-    fn prepare_voice(&mut self, key: &str) -> Option<(std::path::PathBuf, u32, Vec<u8>)> {
-        let lang = self.strings.lang;
-        let Some(pck) = self.sound_pck(lang) else {
-            self.audio_note = format!("no localized VO for {}", LANGS[lang].1);
-            return None;
-        };
-        if self.sound.as_ref().map(|(l, _)| *l) != Some(lang) {
-            match sab_formats::wwise::SoundPack::open(&pck) {
-                Ok(p) => self.sound = Some((lang, p)),
-                Err(e) => {
-                    self.audio_note = format!("open sound pack: {e}");
-                    return None;
-                }
-            }
-        }
-        let pack = &self.sound.as_ref().unwrap().1;
-        let Some(wem) = pack.wem_for_key(key) else {
-            self.audio_note = "no audio resolved for this line".into();
-            return None;
-        };
-        let Some(bytes) = pack.wem_bytes(wem) else {
-            self.audio_note = format!("wem {wem:08x} missing from pack");
-            return None;
-        };
-        let Some(vgm) = self.vgmstream_exe() else {
-            self.audio_note = "set vgmstream-cli in Settings → Voice audio (or put it on PATH)".into();
-            return None;
-        };
-        Some((vgm, wem, bytes))
-    }
-
-    /// Resolve a VO/subtitle line, decode with vgmstream, and play it. The slow decode + playback run
-    /// on a background thread so the UI never blocks.
+    /// Resolve and decode a VO/subtitle line through the build's source and play it on the default
+    /// output device. Decode and playback run on a background thread; the outcome comes back as
+    /// [`EdMsg::Audio`].
     fn play_line(&mut self, key: &str) {
-        let Some((vgm, wem, bytes)) = self.prepare_voice(key) else { return };
-        let dir = std::env::temp_dir();
-        let wem_path = dir.join(format!("sab_vo_{wem:08x}.wem"));
-        let wav_path = dir.join(format!("sab_vo_{wem:08x}.wav"));
-        if let Err(e) = std::fs::write(&wem_path, &bytes) {
-            self.audio_note = format!("temp write: {e}");
-            return;
-        }
-        self.audio_note = format!("playing 0x{wem:08x}");
+        let (src, tx) = (self.src.clone(), self.tx.clone());
+        let (lang, key) = (LANGS[self.strings.lang].1.to_string(), key.to_string());
+        self.audio_note = "decoding…".into();
         std::thread::spawn(move || {
-            let decoded = std::process::Command::new(&vgm)
-                .arg("-o")
-                .arg(&wav_path)
-                .arg(&wem_path)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if decoded {
-                // PowerShell's SoundPlayer plays a PCM WAV with no extra dependencies.
-                let _ = std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command"])
-                    .arg(format!("(New-Object Media.SoundPlayer '{}').PlaySync()", wav_path.display()))
-                    .status();
-            }
-            let _ = std::fs::remove_file(&wem_path);
-            let _ = std::fs::remove_file(&wav_path);
+            let note = match src.voice_line(&lang, &key) {
+                Ok(Some(v)) => {
+                    let _ = tx.send(EdMsg::Audio(format!("playing {}", v.source)));
+                    match play_pcm(&v.pcm) {
+                        Ok(()) => format!("played {}", v.source),
+                        Err(e) => format!("playback: {e}"),
+                    }
+                }
+                Ok(None) => "no recording of this line".into(),
+                Err(e) => e,
+            };
+            let _ = tx.send(EdMsg::Audio(note));
         });
     }
 
-    /// Resolve a VO/subtitle line and export it as a `.wav` to a user-chosen path. Runs
-    /// synchronously (the user asked for a file and a native Save dialog is already blocking), so the
-    /// outcome can be reported directly.
+    /// Resolve and decode a VO/subtitle line, then write it as a 16-bit PCM `.wav` to a user-chosen
+    /// path. Synchronous: the Save dialog already blocks, and the outcome is reported directly.
     fn export_line(&mut self, key: &str) {
-        let Some((vgm, wem, bytes)) = self.prepare_voice(key) else { return };
+        let v = match self.src.voice_line(LANGS[self.strings.lang].1, key) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                self.audio_note = "no recording of this line".into();
+                return;
+            }
+            Err(e) => {
+                self.audio_note = e;
+                return;
+            }
+        };
         let default = format!("{}.wav", sanitize_filename(key));
         let Some(out) = rfd::FileDialog::new()
             .set_title("Export voice line as WAV")
@@ -2183,23 +2115,9 @@ impl Editor {
         else {
             return;
         };
-        let wem_path = std::env::temp_dir().join(format!("sab_vo_{wem:08x}.wem"));
-        if let Err(e) = std::fs::write(&wem_path, &bytes) {
-            self.audio_note = format!("temp write: {e}");
-            return;
-        }
-        let ok = std::process::Command::new(&vgm)
-            .arg("-o")
-            .arg(&out)
-            .arg(&wem_path)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        let _ = std::fs::remove_file(&wem_path);
-        self.audio_note = if ok {
-            format!("exported → {}", out.display())
-        } else {
-            "vgmstream decode failed".into()
+        self.audio_note = match std::fs::write(&out, v.pcm.to_wav16()) {
+            Ok(()) => format!("exported {} → {}", v.source, out.display()),
+            Err(e) => format!("{}: {e}", out.display()),
         };
     }
 
@@ -3195,6 +3113,20 @@ fn trunc(s: &str, n: usize) -> String {
         Some((b, _)) => format!("{}…", &s[..b]),
         None => s.to_string(),
     }
+}
+
+/// Play decoded audio on the default output device and return when it has finished.
+fn play_pcm(p: &sab_formats::pcm::Pcm) -> Result<(), String> {
+    let channels = std::num::NonZero::new(p.channels).ok_or("audio with no channels")?;
+    let rate = std::num::NonZero::new(p.sample_rate).ok_or("audio with a sample rate of 0")?;
+    let mut sink = rodio::DeviceSinkBuilder::from_default_device()
+        .and_then(|b| b.open_stream())
+        .map_err(|e| format!("default output device: {e}"))?;
+    sink.log_on_drop(false);
+    let player = rodio::Player::connect_new(sink.mixer());
+    player.append(rodio::buffer::SamplesBuffer::new(channels, rate, p.samples.clone()));
+    player.sleep_until_end();
+    Ok(())
 }
 
 /// Make a string safe as a filename stem (VO keys already are; this guards odd characters).

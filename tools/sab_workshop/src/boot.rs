@@ -1,202 +1,96 @@
-//! What the app shows on startup, resolved from the game install.
-//!
-//! The workshop used to boot from two files this repo generated — `output/skeletons/sean_full.smsh`
-//! (a merged mesh) and `output/skeletons/CH_AL_SeanDevlin.skel` — and refused to start without them.
-//! That made a released build unusable: it asked for build artefacts nobody downloading it has, to
-//! show a character that is already sitting in `Dynamic0.megapack`. Nothing in either file is
-//! anything but a re-encoding of pack bytes, and the app ALREADY reads those bytes — clicking a model
-//! in the browser assembles it from the pack at runtime, mesh and rig together. So booting is just
-//! that same path, run once before the window opens.
-//!
-//! [`load`] therefore prefers the install and falls back to files only when `--mesh`/`--skel` name
-//! them explicitly (the Mattias/50-Cent port workflow, which inspects a mesh that is not in the pack
-//! yet).
+//! The models the app shows: assembled from a build's parts, the build's player on startup, or a
+//! mesh from loose files (`--mesh`, with `--skel` or rigged on the player).
 
-use crate::formats::{self, Bone, Smsh};
-use crate::meshload::{self, MeshEntry};
-use crate::pack;
+use crate::assets::{self, Asset, Assembly};
+use crate::formats::{self, Bone};
+use crate::meshload::{self, LoadedMesh};
+use crate::source::GameSource;
 use crate::Config;
 
-/// The startup model: geometry, its rig, and — when it came from the pack — the parts it was
-/// assembled from, which is what the WSAO texture resolve keys on.
-pub struct BootModel {
+/// A model ready to show and export.
+pub struct Model {
     pub name: String,
-    pub mesh: Smsh,
-    pub bones: Vec<Bone>,
-    /// The megapack entries this was assembled from, with their levels of detail. Empty for a
-    /// file-loaded mesh, whose textures have to go through the legacy name-token path instead.
-    pub parts: Vec<meshload::PartPick>,
-    /// `(part name, index_start, index_count, lod)` per part, in merge order.
-    pub part_ranges: Vec<(String, u32, u32, u8)>,
+    pub lm: LoadedMesh,
+    /// The mesh items assembled, with their levels of detail; empty for a model from loose files.
+    pub picks: Vec<(usize, u8)>,
+    /// What the assembly could not include: model references the build does not have, and parts that
+    /// did not decode.
+    pub notes: Vec<String>,
+    /// The asset's damage parts, which an export re-applies.
+    pub damage: Vec<(u32, i32)>,
 }
 
-impl BootModel {
-    /// True when this model came out of the game's own packs (so the engine's own material bindings
-    /// can be used to texture it).
-    pub fn from_pack(&self) -> bool {
-        !self.parts.is_empty()
+/// Assemble `asm` from `src`'s parts.
+pub fn assemble(src: &dyn GameSource, name: &str, asm: &Assembly) -> Result<Model, String> {
+    let meshes = src.meshes();
+    let (mut lm, skipped) = meshload::assemble_with(&asm.picks, |i| src.load_part(i), |i| meshes[i].name.clone())?;
+    meshload::apply_damage(&mut lm, &asm.damage);
+    let mut notes = asm.notes.clone();
+    notes.extend(skipped.into_iter().map(|s| format!("part not decoded: {s}")));
+    Ok(Model { name: name.to_string(), lm, picks: asm.picks.clone(), notes, damage: asm.damage.clone() })
+}
+
+/// The bone name hash of a rig bone read from a `.skel`: the hash form `bone_XXXXXXXX` names its hash,
+/// any other name is hashed.
+fn hash_of(name: &str) -> u32 {
+    match name.strip_prefix("bone_").filter(|h| h.len() == 8).map(|h| u32::from_str_radix(h, 16)) {
+        Some(Ok(h)) => h,
+        _ => sab_formats::pandemic_hash(name),
     }
 }
 
-/// The startup model: explicit `--mesh`/`--skel` files if given, else a character from the install.
-pub fn load(cfg: &Config) -> Result<BootModel, String> {
-    match (&cfg.mesh, &cfg.skel) {
-        (Some(mesh), Some(skel)) => from_files(mesh, skel),
-        // A loose mesh with no rig file: rig it from the INSTALL. A ported character (`sab_poc`) is
-        // skinned to the game's own skeleton — that is what makes it a port — so the rig it needs is
-        // already in the megapack, and asking for a generated `.skel` alongside it was asking for a
-        // copy of something the user already has.
-        (Some(mesh), None) => {
-            let mut m = from_file_mesh(mesh)?;
-            let rig = from_game(cfg)?;
-            crate::formats::bind_rigid_attachments(
-                &mut m.mesh,
-                &crate::skinning::bind_world(&rig.bones),
-            );
-            println!("[sab_workshop] {}: rigged on {} from the install", m.name, rig.name);
-            m.bones = rig.bones;
-            Ok(m)
+/// The startup model: `--mesh` (with `--skel`, or rigged on the build's player), else the asset
+/// `--boot` names, else the build's player.
+pub fn load(cfg: &Config, src: &dyn GameSource, all: &[Asset]) -> Result<Model, String> {
+    let character = |want: &str| -> Result<Model, String> {
+        let i = if want.is_empty() {
+            assets::player(src.templates(), all)?
+        } else {
+            let lower = want.to_ascii_lowercase();
+            all.iter()
+                .position(|a| a.name.to_ascii_lowercase().contains(&lower))
+                .ok_or_else(|| format!("--boot {want}: no asset of this build is named like that"))?
+        };
+        assemble(src, &all[i].name, &all[i].assembly())
+    };
+    let Some(mesh_path) = &cfg.mesh else {
+        if cfg.skel.is_some() {
+            return Err("--skel names a rig for --mesh, which was not given".into());
         }
-        (None, Some(_)) => Err("--skel names a rig for --mesh, which was not given".into()),
-        (None, None) => from_game(cfg),
-    }
-}
-
-/// Load an SMSH from disk. The rig is left empty for the caller to supply.
-fn from_file_mesh(mesh_path: &str) -> Result<BootModel, String> {
-    let mesh = std::fs::read(mesh_path)
-        .map_err(|e| format!("read {mesh_path}: {e}"))
-        .and_then(|b| formats::read_smsh(&b))?;
-    let name = std::path::Path::new(mesh_path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "model".into());
-    let n = mesh.indices.len() as u32;
-    Ok(BootModel {
+        return character(&cfg.boot_model);
+    };
+    let mut mesh = std::fs::read(mesh_path).map_err(|e| format!("read {mesh_path}: {e}")).and_then(|b| formats::read_smsh(&b))?;
+    let name = std::path::Path::new(mesh_path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "model".into());
+    let (bones, bone_hashes): (Vec<Bone>, Vec<u32>) = match &cfg.skel {
+        Some(skel_path) => {
+            let text = std::fs::read_to_string(skel_path).map_err(|e| format!("read {skel_path}: {e}"))?;
+            let bones = formats::read_skel(&text);
+            if bones.is_empty() {
+                return Err(format!("{skel_path} parsed to 0 bones"));
+            }
+            let hashes = bones.iter().map(|b| hash_of(&b.name)).collect();
+            (bones, hashes)
+        }
+        // A ported character is skinned to the game's own skeleton, so the player's rig is its rig.
+        None => {
+            let rig = character("")?;
+            println!("[sab_workshop] {name}: rigged on {} from the build", rig.name);
+            (rig.lm.bones, rig.lm.bone_hashes)
+        }
+    };
+    // Accessories are authored at the origin and parented by drawcall; place them on the rig.
+    formats::bind_rigid_attachments(&mut mesh, &crate::skinning::bind_world(&bones));
+    let lm = LoadedMesh {
         name: name.clone(),
+        prim_parent_bone: mesh.prims.iter().map(|p| p.parent_bone).collect(),
         mesh,
-        bones: Vec::new(),
-        parts: Vec::new(),
-        part_ranges: vec![(name, 0, n, 0)],
-    })
-}
-
-/// Load a mesh + rig from loose files (`--mesh` / `--skel`).
-fn from_files(mesh_path: &str, skel_path: &str) -> Result<BootModel, String> {
-    let mut m = from_file_mesh(mesh_path)?;
-    let text = std::fs::read_to_string(skel_path).map_err(|e| format!("read {skel_path}: {e}"))?;
-    let bones = formats::read_skel(&text);
-    if bones.is_empty() {
-        return Err(format!("{skel_path} parsed to 0 bones"));
-    }
-    // Accessories are authored at the origin and parented by drawcall; place them now that the rig
-    // is in hand. (`meshload` does this per part, so the pack path arrives already bound.)
-    formats::bind_rigid_attachments(&mut m.mesh, &crate::skinning::bind_world(&bones));
-    m.bones = bones;
-    Ok(m)
-}
-
-/// Assemble a character straight out of `Dynamic0.megapack`.
-fn from_game(cfg: &Config) -> Result<BootModel, String> {
-    let mp = pack::Megapack::open(&cfg.megapack)?;
-    let list = meshload::list_meshes(&mp);
-    if list.is_empty() {
-        return Err(format!("{}: no models found", cfg.megapack));
-    }
-    let (outfit, picked) = pick_character(&list, &cfg.boot_model)?;
-    let lm = meshload::assemble(mp.raw(), &picked)?;
-    // `assemble` skips parts it cannot decode, so report what actually went in, not what was asked
-    // for — otherwise a silently-dropped part looks like a mesh bug later.
-    let used: Vec<meshload::PartPick> = picked
-        .iter()
-        .filter(|p| lm.part_ranges.iter().any(|(n, _, _, lod)| n == &p.entry.name && *lod == p.lod))
-        .cloned()
-        .collect();
-    println!(
-        "[sab_workshop] boot model {outfit} — {} part(s) from {}: {}",
-        used.len(),
-        cfg.megapack,
-        used.iter().map(|p| p.entry.name.as_str()).collect::<Vec<_>>().join(", ")
-    );
-    Ok(BootModel {
-        // The OUTFIT, not `lm.name` — assembly names itself after whichever part happened to carry
-        // the richest rig (for Sean, the glove), which is a confusing thing to call the whole figure.
-        name: outfit,
-        mesh: lm.mesh,
-        bones: lm.bones,
-        parts: used,
-        part_ranges: lm.part_ranges,
-    })
-}
-
-/// The outfit a part belongs to: everything up to and including the outfit number
-/// (`CH_AL_SeanDevlin_01_UB` → `CH_AL_SeanDevlin_01`, and so does `…_01_GR_2`).
-///
-/// Grouping on "the name minus its last token" instead would split `_GR_2` into its own character and
-/// let a numbered variant look like a whole separate outfit.
-fn outfit_key(name: &str) -> String {
-    let toks: Vec<&str> = name.split('_').collect();
-    // The first all-digit token past the prefix is the outfit index; everything after it is a part.
-    let cut = toks
-        .iter()
-        .position(|t| !t.is_empty() && t.bytes().all(|c| c.is_ascii_digit()))
-        .map(|i| i + 1)
-        .unwrap_or(toks.len().saturating_sub(1).max(1));
-    toks[..cut.min(toks.len())].join("_")
-}
-
-/// Pick one character's parts to boot with.
-///
-/// `want` is a case-insensitive name token (`--boot`), else the game's protagonist. Whichever outfit
-/// is chosen, the parts run through the SAME slot rules the browser uses for a click
-/// ([`crate::assets::Asset::assembly`]): one mesh per body slot, and the head variants
-/// (`_HD`/`_FM`/`_FX`) collapsed to one — stacking those buries three faces in one skull.
-///
-/// Boot groups meshes by NAME, before GameTemplates is loaded, so it has no `HighDetailModel` /
-/// `LowDetailModel` to follow: the boot character is level 0 only. Clicking a character in the
-/// browser assembles it from its templates, both levels included. Returns the outfit name and parts.
-fn pick_character(list: &[MeshEntry], want: &str) -> Result<(String, Vec<meshload::PartPick>), String> {
-    use std::collections::BTreeMap;
-
-    // Group every character-looking mesh by outfit. `CH_` is the game's own character prefix.
-    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, e) in list.iter().enumerate() {
-        if e.name.len() > 3 && e.name[..3].eq_ignore_ascii_case("CH_") {
-            groups.entry(outfit_key(&e.name)).or_default().push(i);
-        }
-    }
-    if groups.is_empty() {
-        return Err("no CH_* character meshes in the megapack".into());
-    }
-    let lower = want.to_ascii_lowercase();
-    let chosen = groups
-        .iter()
-        .filter(|(k, _)| !lower.is_empty() && k.to_ascii_lowercase().contains(&lower))
-        // Among matches, the outfit with the most parts is the assembled figure rather than a
-        // one-off; BTreeMap order makes the tie-break deterministic.
-        .max_by_key(|(_, v)| v.len())
-        // No match (or no token): the richest character in the pack still beats failing to start.
-        .or_else(|| groups.iter().max_by_key(|(_, v)| v.len()))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .ok_or("no character to boot with")?;
-
-    let (key, idxs) = chosen;
-    let parts: Vec<crate::assets::PartRef> = idxs
-        .iter()
-        .map(|&i| crate::assets::PartRef::plain(i, &list[i].name, crate::assets::part_label(&list[i].name)))
-        .collect();
-    let asset =
-        crate::assets::Asset { name: key.clone(), category: "Characters", parts, missing: Vec::new() };
-    let picked: Vec<meshload::PartPick> = asset
-        .assembly()
-        .picks
-        .iter()
-        .filter_map(|&(i, lod)| list.get(i).cloned().map(|entry| meshload::PartPick { entry, lod }))
-        .collect();
-    if picked.is_empty() {
-        return Err(format!("{key}: no loadable parts"));
-    }
-    Ok((key, picked))
+        bones,
+        bone_hashes,
+        stored_ibm: Default::default(),
+        part_ranges: Vec::new(),
+        uvless: Vec::new(),
+    };
+    Ok(Model { name, lm, picks: Vec::new(), notes: Vec::new(), damage: Vec::new() })
 }
 
 #[cfg(test)]
@@ -204,48 +98,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn outfit_key_cuts_at_the_outfit_number() {
-        assert_eq!(outfit_key("CH_AL_SeanDevlin_01_UB"), "CH_AL_SeanDevlin_01");
-        assert_eq!(outfit_key("CH_AL_SeanDevlin_01_GR_2"), "CH_AL_SeanDevlin_01");
-        assert_eq!(outfit_key("CH_AL_SeanDevlin_01_UB_LOD"), "CH_AL_SeanDevlin_01");
-        // No outfit number: fall back to dropping the part token.
-        assert_eq!(outfit_key("CH_MB_Generic_UB"), "CH_MB_Generic");
+    fn a_skel_bone_hashes_by_its_name_or_names_its_hash() {
+        assert_eq!(hash_of("bone_1A2B3C4D"), 0x1A2B_3C4D);
+        assert_eq!(hash_of("Bone_Head"), sab_formats::pandemic_hash("Bone_Head"));
     }
 
-    /// The whole point of this module: with only a game install — no `output/`, no flags — the app
-    /// gets a rigged character. Booting must produce Sean, skinned, on the 191-bone biped rig.
+    /// Both builds boot their player, skinned, with every joint on the rig and every part decoded.
+    #[cfg(feature = "retail")]
     #[test]
-    fn boots_from_a_bare_install() {
-        let Some(s) = crate::settings::detected_retail() else {
-            eprintln!("skip: no Saboteur install detected");
-            return;
-        };
-        let cfg = Config::from_settings(s);
-        let b = match from_game(&cfg) {
-            Ok(b) => b,
-            Err(e) => panic!("boot from install failed: {e}"),
-        };
-        eprintln!(
-            "booted {}: {} verts, {} tris, {} bones, {} parts",
-            b.name,
-            b.mesh.positions.len(),
-            b.mesh.indices.len() / 3,
-            b.bones.len(),
-            b.parts.len()
-        );
-        assert!(b.from_pack(), "boot model must know its pack parts");
-        assert!(b.mesh.positions.len() > 1000, "expected a whole character, got a stub");
-        // The 191-bone biped rig, plus whatever bones only a non-canonical part knows about (see
-        // `meshload::assemble` — they are APPENDED, never interleaved).
-        assert!(b.bones.len() >= 191, "Sean's biped rig, got {} bones", b.bones.len());
-        assert!(
-            b.name.to_ascii_lowercase().contains("sean"),
-            "the protagonist should win the boot pick, got {}",
-            b.name
-        );
-        // Skinned, and every joint index addressable on the rig it shipped with.
-        assert!(b.mesh.weights.iter().any(|w| w[0] + w[1] + w[2] + w[3] > 0.0001), "no skin weights");
-        let max_joint = b.mesh.joints.iter().flat_map(|j| j.iter()).copied().max().unwrap_or(0);
-        assert!((max_joint as usize) < b.bones.len(), "joint {max_joint} off the rig");
+    fn both_builds_boot_their_player() {
+        for src in crate::testenv::both_builds() {
+            let all = assets::build(src);
+            let cfg = Config::from_settings(crate::settings::Settings::default());
+            let b = load(&cfg, src, &all).unwrap_or_else(|e| panic!("{}: {e}", src.label()));
+            assert_eq!(b.name, "FBS_RS_Sean", "{}", src.label());
+            assert!(b.notes.is_empty(), "{}: {:?}", src.label(), b.notes);
+            assert!(b.lm.mesh.positions.len() > 1000, "{}: a whole character, got {} vertices", src.label(), b.lm.mesh.positions.len());
+            assert!(b.lm.mesh.weights.iter().any(|w| w[0] + w[1] + w[2] + w[3] > 0.0001), "{}: no skin weights", src.label());
+            let max_joint = b.lm.mesh.joints.iter().flat_map(|j| j.iter()).copied().max().unwrap_or(0);
+            assert!((max_joint as usize) < b.lm.bones.len(), "{}: joint {max_joint} off the rig", src.label());
+        }
     }
 }

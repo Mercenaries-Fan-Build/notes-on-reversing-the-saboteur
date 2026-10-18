@@ -49,6 +49,9 @@ sab_probe proto2008-anims <Bin360>         every ANM0 clip and Animations.pack, 
 sab_probe proto2008-audio <Bin360>         sound/Saboteur.pck: banks, HIRC objects, sounds, XMA2 streams,
                                            bank media, sound/X360 vs the pack, WWiseIDTable.bin, and how
                                            each voice line resolves; docs/2008_audio_format.md
+sab_probe xma2-oracle <Bin360> <ffmpeg> <work> <c|default> [every-nth]
+                                           every 2008 media decoded by sab_formats::xma2 and by FFmpeg,
+                                           compared sample by sample; docs/formats/xma2_decoder.md
 
 e.g. sab_probe parts "C:/GOG Games/The Saboteur/Global/Dynamic0.megapack" CH_AL_SeanDevlin
 ```

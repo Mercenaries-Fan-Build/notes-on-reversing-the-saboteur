@@ -44,6 +44,12 @@ for `AHSM` byte-wise (headers are not aligned).
 
 ## Skeleton block (present iff `numBones0 > 1`), offset 244
 
+Without it (`numBones0 <= 1`) the MESH tail ([mesh_geometry.md](mesh_geometry.md)) starts at 244 and
+`numBoneRemaps` is 0 (SaboteurToolset `mesh_to_gltf.cpp` `AppProcessFile`). A record whose `.dat` is
+empty has no streams: a bare skeleton (`ragdoll_b`, `saboteur_fm`, `Bird`). `sab_workshop` reads
+every Dynamic0 mesh the retail assets reference both ways, with the tail ending exactly at the end
+of the body (`--texcheck`: 984 of 984 assets).
+
 Header, 11 × u32 @244 (44 bytes):
 
 | idx | field |

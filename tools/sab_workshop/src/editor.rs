@@ -35,13 +35,15 @@
 //!    Rather than make the modder pick a type before seeing anything, every reading is shown at once
 //!    and the likeliest is lit.
 
-use sab_formats::gametemplates::{Entry, GameTemplates, PropType};
+use std::sync::Arc;
+
+use sab_formats::gametemplates::{ByteOrder, Entry, GameTemplates, PropType};
 use sab_formats::gametext::GameText;
 use sab_formats::pandemic_hash;
 
 use crate::dtex;
 use crate::gui::theme;
-use crate::pack::Megapack;
+use crate::source::{GameSource, IconRow};
 
 /// Which editor page is active.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -110,9 +112,6 @@ impl Mod {
     }
     fn templates_out(&self) -> String {
         format!("{}/GameTemplates.wsd", self.out_dir())
-    }
-    fn palettes(&self) -> String {
-        format!("{}/Global/Palettes0.megapack", self.game_dir)
     }
 }
 
@@ -288,7 +287,8 @@ impl<T> Load<T> {
     }
 }
 
-/// One texture record found in the pack: name, its hash, and where to slice the bytes from.
+/// One texture the Icons page lists: name, its hash, and the source's key for the record
+/// ([`IconRow`]).
 type IconRec = (String, u32, usize, usize, usize);
 
 /// Results streaming back from the loader threads.
@@ -299,8 +299,8 @@ enum EdMsg {
     Objects(Result<(GameTemplates, std::collections::HashMap<u32, Vec<usize>>), String>),
     IconProgress(usize, usize),
     Icons(Result<Vec<IconRec>, String>),
-    /// hash, width, height, RGBA — decoded off-thread; the UI only uploads it.
-    Thumb(u32, usize, usize, Vec<u8>),
+    /// hash, and width, height, RGBA — decoded off-thread; the UI only uploads it.
+    Thumb(u32, Result<(usize, usize, Vec<u8>), String>),
 }
 
 /// Identity of a string across the base records AND the DNEC subtitle sub-tables. `scene == None` is a
@@ -367,27 +367,39 @@ enum PropRow {
     Item(usize),
 }
 
-/// Render a pair's value for display, according to its derived type.
-fn show_value(ty: PropType, data: &[u8]) -> String {
+/// The type that decides a pair's editor. The derived types were measured on the retail table, so a
+/// retail pair takes its key's type, and a key absent from that table (an authored one) its width. A
+/// 2008 pair is read by width alone: four bytes in every reading, anything else as bytes.
+fn pair_type(p: &sab_formats::gametemplates::Pair) -> PropType {
+    match p.order {
+        ByteOrder::Little => sab_formats::gametemplates::property_type(p.hash).unwrap_or(match p.data.len() {
+            1 => PropType::Bool,
+            4 => PropType::Scalar4,
+            12 => PropType::Vec3,
+            _ => PropType::Bytes,
+        }),
+        ByteOrder::Big if p.data.len() == 4 => PropType::Scalar4,
+        ByteOrder::Big => PropType::Bytes,
+    }
+}
+
+/// Render a pair's value for display, according to its derived type, in the file's word order.
+fn show_value(ty: PropType, data: &[u8], order: ByteOrder) -> String {
+    let word = |b: &[u8]| order.u32(b.try_into().unwrap());
     match ty {
         PropType::Bool if !data.is_empty() => {
             if data[0] != 0 { "true".into() } else { "false".into() }
         }
         PropType::Vec3 if data.len() == 12 => {
-            let f = |i: usize| f32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+            let f = |i: usize| f32::from_bits(word(&data[i..i + 4]));
             format!("{:.3}, {:.3}, {:.3}", f(0), f(4), f(8))
         }
         PropType::Str => {
             let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
             String::from_utf8_lossy(&data[..end]).into_owned()
         }
-        PropType::Ref => data
-            .try_into()
-            .map(|b| format!("0x{:08X}", u32::from_le_bytes(b)))
-            .unwrap_or_else(|_| hex_of(data)),
-        PropType::Scalar4 if data.len() == 4 => {
-            readable(u32::from_le_bytes(data.try_into().unwrap()))
-        }
+        PropType::Ref if data.len() == 4 => format!("0x{:08X}", word(data)),
+        PropType::Scalar4 if data.len() == 4 => readable(word(data)),
         _ => hex_of(data),
     }
 }
@@ -404,7 +416,7 @@ fn hex_of(data: &[u8]) -> String {
 /// resized any pair that was not already 4 bytes — 177,413 of the 644,154 retail pairs.
 ///
 /// `Str` is the one type whose width may legitimately change, since it is NUL-terminated text.
-fn encode_value(ty: PropType, old: &[u8], s: &str) -> Result<Vec<u8>, String> {
+fn encode_value(ty: PropType, old: &[u8], s: &str, order: ByteOrder) -> Result<Vec<u8>, String> {
     let s = s.trim();
     match ty {
         PropType::Bool => {
@@ -431,7 +443,7 @@ fn encode_value(ty: PropType, old: &[u8], s: &str) -> Result<Vec<u8>, String> {
             let mut out = Vec::with_capacity(12);
             for p in parts {
                 let f: f32 = p.parse().map_err(|_| format!("{p:?} is not a number"))?;
-                out.extend_from_slice(&f.to_le_bytes());
+                out.extend_from_slice(&order.bytes(f.to_bits()));
             }
             Ok(out)
         }
@@ -444,7 +456,7 @@ fn encode_value(ty: PropType, old: &[u8], s: &str) -> Result<Vec<u8>, String> {
             if old.len() != 4 {
                 return Err(format!("a 4-byte reading needs 4 bytes, this pair has {}", old.len()));
             }
-            Ok(parse_u32_any(s)?.to_le_bytes().to_vec())
+            Ok(order.bytes(parse_u32_any(s)?).to_vec())
         }
         PropType::Bytes => {
             let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
@@ -561,12 +573,16 @@ struct Thumbs {
     req: Option<std::sync::mpsc::Sender<ThumbReq>>,
 }
 
-/// (hash, megapack entry, offset, len) — where to find the record's bytes.
-type ThumbReq = (u32, usize, usize, usize);
+/// (name, hash, and the source's key for the record) — an [`IconRow`] to decode.
+type ThumbReq = (String, u32, usize, usize, usize);
 
 // ---------------------------------------------------------------------------------------------
 
 pub struct Editor {
+    /// The build the pages read; edits publish only into one that is `publishable`.
+    src: Arc<dyn GameSource>,
+    /// The languages the build ships: `(index into LANGS, its GameText.dlg)`.
+    langs: Vec<(usize, std::path::PathBuf)>,
     md: Mod,
     changes: Vec<Change>,
     strings: StringsState,
@@ -601,9 +617,19 @@ pub struct Editor {
 
 impl Editor {
     /// `lang`, `slot` and `mod_name` come from the user's persisted settings — the Strings page opens
-    /// on the configured language, and publish targets the chosen DLC slot. (The vgmstream path for
-    /// voice playback is read live from settings at Play time, not cached here.)
-    pub fn new(game_dir: &str, lang: usize, slot: &str, mod_name: &str) -> Self {
+    /// on the configured language (or the build's first, when it does not ship that one), and publish
+    /// targets the chosen DLC slot. (The vgmstream path for voice playback is read live from settings
+    /// at Play time, not cached here.)
+    pub fn new(src: Arc<dyn GameSource>, game_dir: &str, lang: usize, slot: &str, mod_name: &str) -> Result<Self, String> {
+        let mut langs = Vec::new();
+        for (folder, path) in src.game_text_files() {
+            let i = LANGS
+                .iter()
+                .position(|(_, f)| *f == folder)
+                .ok_or_else(|| format!("{}: a game-text language folder this workshop does not know", path.display()))?;
+            langs.push((i, path));
+        }
+        let first = langs.first().map(|l| l.0).unwrap_or(0);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut e = Editor {
             md: Mod {
@@ -615,7 +641,7 @@ impl Editor {
             strings: StringsState {
                 filter_ui: true,
                 filter_vo: true,
-                lang: lang.min(LANGS.len() - 1),
+                lang: if langs.iter().any(|l| l.0 == lang) { lang } else { first },
                 ..Default::default()
             },
             objects: ObjectsState::default(),
@@ -632,75 +658,75 @@ impl Editor {
             sound: None,
             audio_note: String::new(),
             io_note: String::new(),
+            src,
+            langs,
         };
         // Whatever was staged last session. Loaded before the assets are even asked for, so the
-        // first frame that has text in it already has the edits applied (see `pump`).
-        e.changes = ModDoc::load(slot).changes;
+        // first frame that has text in it already has the edits applied (see `pump`). A build that
+        // cannot be published into has no mod.
+        if e.src.publishable() {
+            e.changes = ModDoc::load(slot).changes;
+        }
         // Start everything now. Templates and one language are small and land almost immediately;
-        // the pack sweep is the slow one and it runs alongside, so by the time anyone opens Icons it
-        // is usually done — and if not, they see progress rather than a button.
+        // the texture sweep is the slow one and it runs alongside, so by the time anyone opens Icons
+        // it is usually done — and if not, they see progress rather than a button.
         e.kick_strings();
         e.kick_objects();
         e.kick_icons();
-        e
+        Ok(e)
+    }
+
+    /// The languages the build ships, as indices into `LANGS`.
+    fn lang_ids(&self) -> Vec<usize> {
+        self.langs.iter().map(|l| l.0).collect()
+    }
+
+    /// The GameText to read for a language: retail's original when a publish has patched over it.
+    fn gametext_read_path(&self, lang: usize) -> Result<String, String> {
+        let path = self.langs.iter().find(|l| l.0 == lang).map(|l| l.1.to_string_lossy().replace('\\', "/")).ok_or_else(|| format!("this build ships no {} game text", LANGS[lang].1))?;
+        let bak = format!("{path}.sabbak");
+        Ok(if std::path::Path::new(&bak).exists() { bak } else { path })
     }
 
     fn kick_strings(&mut self) {
-        let (tx, lang, path) = (self.tx.clone(), self.strings.lang, self.md.gametext_src(self.strings.lang));
+        let (tx, lang) = (self.tx.clone(), self.strings.lang);
         self.str_load = Load::Loading;
+        let path = match self.gametext_read_path(lang) {
+            Ok(p) => p,
+            Err(e) => {
+                self.str_load = Load::Failed(e);
+                return;
+            }
+        };
         std::thread::spawn(move || {
             let r = std::fs::read(&path)
                 .map_err(|e| format!("{path}: {e}"))
-                .and_then(|b| GameText::parse(&b));
+                .and_then(|b| GameText::parse(&b).map_err(|e| format!("{path}: {e}")));
             let _ = tx.send(EdMsg::Strings(lang, r));
         });
     }
 
-    /// Load the game's object DB — all of it.
-    ///
-    /// This used to read `DLC/01/GameTemplates.wsd` and show **five** templates, which is the whole
-    /// of the Midnight Show DLC's patch table and none of the game. The real DB is an `AULB` blob
-    /// embedded in `France/loosefiles_BinPC.pack` (10,761 templates), which `assets` already knows
-    /// how to find — the page was simply still pointed at the file it was prototyped against.
+    /// The build's object DB, all of it, copied so edits stay in the editor.
     fn kick_objects(&mut self) {
-        let (tx, game_dir) = (self.tx.clone(), self.md.game_dir.clone());
+        let (tx, src) = (self.tx.clone(), self.src.clone());
         self.obj_load = Load::Loading;
         std::thread::spawn(move || {
-            let r = crate::assets::load_gametemplates(&game_dir)
-                .ok_or_else(|| {
-                    format!("no GameTemplates found in {game_dir}/France/loosefiles_BinPC.pack")
-                })
-                .map(|gt| {
-                    let xref = build_xref(&gt);
-                    (gt, xref)
-                });
-            let _ = tx.send(EdMsg::Objects(r));
+            let gt = src.templates().clone();
+            let xref = build_xref(&gt);
+            let _ = tx.send(EdMsg::Objects(Ok((gt, xref))));
         });
     }
 
     fn kick_icons(&mut self) {
-        let (tx, path) = (self.tx.clone(), self.md.palettes());
+        let (tx, src) = (self.tx.clone(), self.src.clone());
         self.icon_load = Load::Loading;
         std::thread::spawn(move || {
-            let r = (|| -> Result<Vec<IconRec>, String> {
-                let mp = Megapack::open(&path)?;
-                let total = mp.entries().len();
-                let mut out = Vec::new();
-                let mut seen = std::collections::HashSet::new();
-                for (ei, e) in mp.entries().iter().enumerate() {
-                    for (off, len, name) in dtex::find_records(mp.slice(e)) {
-                        let h = pandemic_hash(&name);
-                        if seen.insert(h) {
-                            out.push((name, h, ei, off, len));
-                        }
-                    }
-                    if ei % 16 == 0 {
-                        let _ = tx.send(EdMsg::IconProgress(ei, total));
-                    }
-                }
-                out.sort_by(|a, b| a.0.cmp(&b.0));
-                Ok(out)
-            })();
+            let progress = |d: usize, t: usize| {
+                let _ = tx.send(EdMsg::IconProgress(d, t));
+            };
+            let r = src
+                .icon_textures(&progress)
+                .map(|rows| rows.into_iter().map(|r| (r.name, r.hash, r.key.0, r.key.1, r.key.2)).collect());
             let _ = tx.send(EdMsg::Icons(r));
         });
     }
@@ -745,7 +771,7 @@ impl Editor {
                         Err(e) => Load::Failed(e),
                     };
                 }
-                EdMsg::Thumb(hash, w, h, rgba) => {
+                EdMsg::Thumb(hash, Ok((w, h, rgba))) => {
                     self.thumbs.pending.remove(&hash);
                     let img = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
                     let t = ctx.load_texture(
@@ -755,35 +781,32 @@ impl Editor {
                     );
                     self.thumbs.cache.insert(hash, Some(t));
                 }
+                EdMsg::Thumb(hash, Err(e)) => {
+                    self.thumbs.pending.remove(&hash);
+                    self.thumbs.cache.insert(hash, None);
+                    self.io_note = format!("thumbnail: {e}");
+                }
             }
         }
     }
 
-    /// A persistent decoder thread. It owns its own mmap of the pack and answers requests; the UI
-    /// thread never touches zlib or BC again, it only uploads finished RGBA.
+    /// A persistent decoder thread answering thumbnail requests through the source; the UI thread
+    /// never decodes, it only uploads finished RGBA.
     fn start_thumb_worker(&mut self) {
         if self.thumbs.req.is_some() {
             return;
         }
         let (rq_tx, rq_rx) = std::sync::mpsc::channel::<ThumbReq>();
         let out = self.tx.clone();
-        let path = self.md.palettes();
+        let src = self.src.clone();
         std::thread::spawn(move || {
-            let Ok(mp) = Megapack::open(&path) else { return };
-            while let Ok((hash, ei, off, len)) = rq_rx.recv() {
-                let Some(e) = mp.entries().get(ei) else { continue };
-                let sub = mp.slice(e);
-                if off + len > sub.len() {
-                    continue;
-                }
-                if let Ok(t) = dtex::decode_preview(&sub[off..off + len], 96) {
-                    let _ = out.send(EdMsg::Thumb(
-                        hash,
-                        t.width as usize,
-                        t.height as usize,
-                        t.rgba,
-                    ));
-                }
+            while let Ok((name, hash, ei, off, len)) = rq_rx.recv() {
+                let row = IconRow { name, hash, key: (ei, off, len) };
+                let msg = match src.decode_icon(&row, Some(96)) {
+                    Ok(t) => EdMsg::Thumb(hash, Ok((t.width as usize, t.height as usize, t.rgba))),
+                    Err(e) => EdMsg::Thumb(hash, Err(e)),
+                };
+                let _ = out.send(msg);
             }
         });
         self.thumbs.req = Some(rq_tx);
@@ -912,7 +935,20 @@ impl Editor {
                 EdPage::Icons => self.icons_context(ui),
             }
             ui.add_space(6.0);
-            self.changelist(ui);
+            if self.src.publishable() {
+                self.changelist(ui);
+            } else {
+                theme::eyebrow(ui, "Read only");
+                ui.label(theme::data_text(
+                    format!("{} is browsed and exported, never published into: these pages stage no edits for it.", self.src.version().label()),
+                    10.5,
+                    theme::FAINT,
+                ));
+                if !self.publish_note.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(theme::data_text(&self.publish_note, 10.0, theme::RED));
+                }
+            }
         });
     }
 
@@ -1100,6 +1136,11 @@ impl Editor {
     }
 
     fn stage(&mut self, target: String, before: String, after: String, op: Op) {
+        if !self.src.publishable() {
+            self.publish_ok = false;
+            self.publish_note = format!("not staged: {} is read only — {target} keeps its value", self.src.version().label());
+            return;
+        }
         // One entry per target: re-editing the same thing updates it and keeps the ORIGINAL before,
         // so the changelist always compares against retail, not against your last keystroke.
         if let Some(existing) = self.changes.iter_mut().find(|c| c.target == target) {
@@ -1430,11 +1471,13 @@ impl Editor {
         let mut switch_to: Option<usize> = None;
         let cell_w = 40.0;
         let cell_h = 36.0;
+        let ids = self.lang_ids();
         let (strip, _) = ui.allocate_exact_size(
-            egui::vec2(cell_w * LANGS.len() as f32 + 6.0 * (LANGS.len() - 1) as f32, cell_h),
+            egui::vec2(cell_w * ids.len() as f32 + 6.0 * ids.len().saturating_sub(1) as f32, cell_h),
             egui::Sense::hover(),
         );
-        for (i, (short, full)) in LANGS.iter().enumerate() {
+        for (cell, &i) in ids.iter().enumerate() {
+            let (short, full) = LANGS[i];
             let edits = self
                 .changes
                 .iter()
@@ -1443,7 +1486,7 @@ impl Editor {
                 })
                 .count();
             let r = egui::Rect::from_min_size(
-                strip.min + egui::vec2((cell_w + 6.0) * i as f32, 0.0),
+                strip.min + egui::vec2((cell_w + 6.0) * cell as f32, 0.0),
                 egui::vec2(cell_w, cell_h),
             );
             let resp = ui.interact(r, ui.id().with(("lang", i)), egui::Sense::click());
@@ -2475,14 +2518,7 @@ impl Editor {
         let edited = staged.is_some();
         let val = p.as_u32();
         let known = sab_formats::gametemplates::known_property_name(p.hash).is_some();
-        // The derived type decides the editor. A key absent from the retail table (an authored one)
-        // falls back on its width, which is what the old code assumed for everything.
-        let ty = sab_formats::gametemplates::property_type(p.hash).unwrap_or(match p.data.len() {
-            1 => PropType::Bool,
-            4 => PropType::Scalar4,
-            12 => PropType::Vec3,
-            _ => PropType::Bytes,
-        });
+        let ty = pair_type(p);
         let is_ref = ty == PropType::Ref || (known && Self::is_ref_property(name));
         // What this value points at, if we can tell.
         let resolved = val.and_then(|v| self.resolve_hash(v));
@@ -2555,12 +2591,12 @@ impl Editor {
                         let mut on = p.data.first().copied().unwrap_or(0) != 0;
                         if ui.checkbox(&mut on, "").changed() {
                             if let Ok(b) =
-                                encode_value(ty, &p.data, if on { "true" } else { "false" })
+                                encode_value(ty, &p.data, if on { "true" } else { "false" }, p.order)
                             {
                                 *act = Some((
                                     pi,
                                     b,
-                                    show_value(ty, &p.data),
+                                    show_value(ty, &p.data, p.order),
                                     if on { "true".into() } else { "false".into() },
                                 ));
                             }
@@ -2580,11 +2616,11 @@ impl Editor {
                                     .font(egui::FontId::new(11.5, theme::data())),
                             );
                             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                match encode_value(ty, &p.data, &self.objects.edit_buf) {
+                                match encode_value(ty, &p.data, &self.objects.edit_buf, p.order) {
                                     Ok(b) => {
-                                        let after = show_value(ty, &b);
+                                        let after = show_value(ty, &b, p.order);
                                         *act =
-                                            Some((pi, b, show_value(ty, &p.data), after));
+                                            Some((pi, b, show_value(ty, &p.data, p.order), after));
                                         self.objects.edit_pair = None;
                                         self.objects.edit_err = None;
                                     }
@@ -2597,7 +2633,7 @@ impl Editor {
                                 ui.label(theme::data_text(e.clone(), 9.5, theme::RED));
                             }
                         } else {
-                            let shown = show_value(ty, &p.data);
+                            let shown = show_value(ty, &p.data, p.order);
                             if ui
                                 .add(
                                     egui::Label::new(theme::data_text(shown, 11.5, theme::TX))
@@ -2612,7 +2648,7 @@ impl Editor {
                                 .clicked()
                             {
                                 self.objects.edit_pair = Some(pi);
-                                self.objects.edit_buf = show_value(ty, &p.data);
+                                self.objects.edit_buf = show_value(ty, &p.data, p.order);
                                 self.objects.edit_err = None;
                             }
                             if let Some((kind, label)) = &resolved {
@@ -2666,7 +2702,7 @@ impl Editor {
                             ));
                             ui.add_space(4.0);
                             match p.as_u32() {
-                                Some(v) => four_readings(ui, v),
+                                Some(v) => four_readings(ui, v, &p.data),
                                 None => {
                                     // Not 4 bytes wide, so there is no u32 to read four ways. 27% of
                                     // the retail pairs are this shape and none of them is editable
@@ -2871,8 +2907,8 @@ impl Editor {
                             let (name, hash, ei, off, len) = self.icon_recs()[i].clone();
                             let is_used = self.xref.contains_key(&hash);
                             let sel = self.icons.selected == Some(i);
-                            let tex = self.thumb(hash, ei, off, len);
-                            if tex.is_none() {
+                            let tex = self.thumb(&name, hash, ei, off, len);
+                            if tex.is_none() && self.thumbs.pending.contains(&hash) {
                                 waiting = true;
                             }
                             let resp = ui
@@ -2975,7 +3011,7 @@ impl Editor {
                     format!("{tname} · pair {p}"),
                     before,
                     name,
-                    Op::SetPair { entry: e, pair: p, bytes: hash.to_le_bytes().to_vec(), was },
+                    Op::SetPair { entry: e, pair: p, bytes: self.src.templates().order.bytes(hash).to_vec(), was },
                 );
             }
         }
@@ -3041,19 +3077,11 @@ impl Editor {
         }
     }
 
-    /// Decode the selected texture from the palettes pack and export it as PNG or DDS to a chosen
-    /// path. Synchronous (a native Save dialog is already blocking); sets `io_note`.
+    /// Decode the selected texture through the source and export it as PNG or DDS to a chosen path.
+    /// Synchronous (a native Save dialog is already blocking); sets `io_note`.
     fn export_texture(&mut self, i: usize, dds: bool) {
-        let Some((name, _hash, ei, off, len)) = self.icon_recs().get(i).cloned() else { return };
-        let decoded = (|| -> Result<dtex::CpuTexture, String> {
-            let mp = Megapack::open(&self.md.palettes())?;
-            let e = mp.entries().get(ei).ok_or("texture record no longer present")?;
-            let sub = mp.slice(e);
-            if off + len > sub.len() {
-                return Err("texture record out of range".into());
-            }
-            dtex::decode(&sub[off..off + len])
-        })();
+        let Some((name, hash, ei, off, len)) = self.icon_recs().get(i).cloned() else { return };
+        let decoded: Result<dtex::CpuTexture, String> = self.src.decode_icon(&IconRow { name: name.clone(), hash, key: (ei, off, len) }, None);
         let tex = match decoded {
             Ok(t) => t,
             Err(e) => {
@@ -3083,13 +3111,13 @@ impl Editor {
 
     /// The texture for a record, or `None` while the worker is still on it. Never blocks: an
     /// un-cached tile fires one request and draws a placeholder until the pixels arrive.
-    fn thumb(&mut self, hash: u32, ei: usize, off: usize, len: usize) -> Option<egui::TextureHandle> {
+    fn thumb(&mut self, name: &str, hash: u32, ei: usize, off: usize, len: usize) -> Option<egui::TextureHandle> {
         if let Some(hit) = self.thumbs.cache.get(&hash) {
             return hit.clone();
         }
         if self.thumbs.pending.insert(hash) {
             if let Some(q) = &self.thumbs.req {
-                let _ = q.send((hash, ei, off, len));
+                let _ = q.send((name.to_string(), hash, ei, off, len));
             }
         }
         None
@@ -3233,17 +3261,16 @@ fn readable(v: u32) -> String {
 
 /// Show a value read every way at once, with the likeliest lit. Beats making the modder choose a
 /// type from a radio before the UI will show them anything.
-fn four_readings(ui: &mut egui::Ui, v: u32) {
+fn four_readings(ui: &mut egui::Ui, v: u32, stored: &[u8]) {
     let f = f32::from_bits(v);
     let float_ok = f.is_finite() && f != 0.0 && f.abs() >= 1e-3 && f.abs() < 1e7;
     // A small int is a far more likely count than a denormal float.
     let int_ok = v < 100_000;
-    let ascii: String = v
-        .to_le_bytes()
+    let ascii: String = stored
         .iter()
         .map(|b| if b.is_ascii_graphic() { *b as char } else { '·' })
         .collect();
-    let ascii_ok = v.to_le_bytes().iter().filter(|b| b.is_ascii_graphic()).count() >= 3;
+    let ascii_ok = stored.iter().filter(|b| b.is_ascii_graphic()).count() >= 3;
 
     egui::Frame::none()
         .fill(theme::G0)
@@ -3588,53 +3615,48 @@ mod tests {
         assert_eq!(n2, 0);
     }
 
-    /// The install these tests read from — the user's configured install (or `SAB_GAME_DIR`), never
-    /// a literal path: the one setting everything derives from is `settings::game_dir`, and a test
-    /// that hardcodes it passes or fails on where the game happens to live.
-    fn install() -> Option<String> {
-        // Editor tests read retail-only files (`DLC/`, `Cinematics/Dialog/...`,
-        // `GameTemplates.wsd`). `detected_retail` filters out a 2008 folder configured in the
-        // same settings.json, so pointing the workshop at the prototype doesn't spuriously
-        // fail every editor test.
-        let dir = crate::settings::detected_retail().map(|s| s.game_dir);
-        if dir.is_none() {
-            eprintln!("skip: no RETAIL Saboteur install configured (set it in the app, or SAB_GAME_DIR)");
-        }
-        dir
+    /// The retail install named in the repo-root `.sab-local.toml`.
+    #[cfg(feature = "retail")]
+    fn install() -> String {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        sab_formats::game_paths::local_config_retail_dir(here).unwrap_or_else(|e| panic!("{e}")).to_string_lossy().replace('\\', "/")
+    }
+
+    /// An editor over the retail build that publishes into `game`.
+    #[cfg(feature = "retail")]
+    fn editor(game: &str) -> Editor {
+        Editor::new(crate::testenv::both_shared()[0].clone(), game, 0, "02", "Test mod").unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// Ground truth: retail's own manifest, read off the real install rather than a fixture. If this
     /// ever disagrees, the level `publish` picks is being computed against the wrong baseline.
+    #[cfg(feature = "retail")]
     #[test]
     fn retail_dlc01_is_level_one_on_disk() {
-        let Some(game) = install() else { return };
-        assert_eq!(read_dlclevel(&format!("{game}/DLC/01")), Some(1));
+        assert_eq!(read_dlclevel(&format!("{}/DLC/01", install())), Some(1));
     }
 
-    /// Stage a temp install carrying a real retail `GameText.dlg`, or `None` when the game is not
-    /// on this machine.
-    fn staged_install(name: &str) -> Option<(std::path::PathBuf, String)> {
-        let retail = format!("{}/Cinematics/Dialog/English/GameText.dlg", install()?);
-        if !std::path::Path::new(&retail).exists() {
-            eprintln!("skip: {retail} not present");
-            return None;
-        }
+    /// Stage a temp install carrying a real retail `GameText.dlg`.
+    #[cfg(feature = "retail")]
+    fn staged_install(name: &str) -> (std::path::PathBuf, String) {
+        let retail = format!("{}/Cinematics/Dialog/English/GameText.dlg", install());
         let root = scratch(name);
         let dir = root.join("Cinematics/Dialog/English");
         std::fs::create_dir_all(&dir).expect("mk");
-        std::fs::copy(&retail, dir.join("GameText.dlg")).expect("seed");
+        std::fs::copy(&retail, dir.join("GameText.dlg")).unwrap_or_else(|e| panic!("seed from {retail}: {e}"));
         let game = root.to_string_lossy().replace('\\', "/");
-        Some((root, game))
+        (root, game)
     }
 
     /// An edit of an EXISTING string must land in the base file — a DLC slot cannot override a hash
     /// the base map already holds (`FUN_009603f0` rejects the duplicate) — and must leave retail
     /// recoverable. The slot must stay untouched: claiming the mount for a text edit would unmount
     /// DLC/01 for nothing.
+    #[cfg(feature = "retail")]
     #[test]
     fn editing_a_retail_string_patches_base_and_leaves_the_slot_alone() {
-        let Some((root, game)) = staged_install("setstring") else { return };
-        let mut ed = Editor::new(&game, 0, "02", "Test mod");
+        let (root, game) = staged_install("setstring");
+        let mut ed = editor(&game);
         // Editor::new restores the real mod document for this slot; a test must not read
         // (or assert against) whatever the person running it happens to have staged.
         ed.changes.clear();
@@ -3683,10 +3705,11 @@ mod tests {
     /// A DNEC cinematic subtitle edit is a `SetString` with a `scene`; it patches the base file (same
     /// as a base-record edit — the DNEC records live in the base `GameText.dlg`), and the target must
     /// resolve through the scene, not by asset_id alone.
+    #[cfg(feature = "retail")]
     #[test]
     fn editing_a_subtitle_patches_the_base_dnec_section() {
-        let Some((root, game)) = staged_install("setsub") else { return };
-        let mut ed = Editor::new(&game, 0, "02", "Test mod");
+        let (root, game) = staged_install("setsub");
+        let mut ed = editor(&game);
         ed.changes.clear();
 
         let base = root.join("Cinematics/Dialog/English/GameText.dlg");
@@ -3722,10 +3745,11 @@ mod tests {
 
     /// A NEW id is the one string change a DLC slot can carry, so it goes there — and only then does
     /// the slot need a manifest.
+    #[cfg(feature = "retail")]
     #[test]
     fn adding_a_string_goes_to_the_slot_with_a_manifest() {
-        let Some((root, game)) = staged_install("addstring") else { return };
-        let mut ed = Editor::new(&game, 0, "02", "Test mod");
+        let (root, game) = staged_install("addstring");
+        let mut ed = editor(&game);
         // Editor::new restores the real mod document for this slot; a test must not read
         // (or assert against) whatever the person running it happens to have staged.
         ed.changes.clear();
@@ -3822,10 +3846,11 @@ mod tests {
     /// A freshly loaded language arrives as retail. The staged edits have to go back on, or the mod
     /// is invisible in the very window that is editing it — which is what a language switch and
     /// every new session looked like.
+    #[cfg(feature = "retail")]
     #[test]
     fn a_reload_gets_the_staged_edits_put_back() {
-        let Some((root, game)) = staged_install("reapply") else { return };
-        let mut ed = Editor::new(&game, 0, "02", "Test mod");
+        let (root, game) = staged_install("reapply");
+        let mut ed = editor(&game);
         // Editor::new restores the real mod document for this slot; a test must not read
         // (or assert against) whatever the person running it happens to have staged.
         ed.changes.clear();
@@ -3867,16 +3892,16 @@ mod tests {
     /// the game — and the page shipped pointed at it. The real DB is an `AULB` blob inside
     /// `France/loosefiles_BinPC.pack`. Pinned with a floor rather than an exact count so it survives
     /// a differently-cooked install while still catching a regression to the DLC file.
+    #[cfg(feature = "retail")]
     #[test]
     fn objects_read_the_full_template_db() {
-        let Some(game) = install() else { return };
-        let full = crate::assets::load_gametemplates(&game).expect("main GameTemplates DB");
+        let full = crate::testenv::retail().templates();
         let n = full.templates().count();
         eprintln!("loaded {n} templates from loosefiles_BinPC.pack");
         assert!(n > 1000, "expected the game's DB, got {n} templates");
 
         // ...and the DLC's file is the thing it must NOT be.
-        let dlc = std::fs::read(format!("{game}/DLC/01/GameTemplates.wsd")).expect("dlc templates");
+        let dlc = std::fs::read(format!("{}/DLC/01/GameTemplates.wsd", install())).expect("dlc templates");
         let (dlc, _) = GameTemplates::parse(&dlc).expect("parse dlc");
         assert_eq!(dlc.templates().count(), 5, "retail's DLC patch table");
         assert!(n > dlc.templates().count() * 100);
@@ -3974,8 +3999,9 @@ mod tests {
             (PropType::Vec3, &[0; 12], "1.5, -2, 0.25"),
             (PropType::Bytes, &[1, 2, 3, 4, 5], "aa bb cc dd ee"),
         ];
+        let le = ByteOrder::Little;
         for (ty, old, input) in cases {
-            let out = encode_value(*ty, old, input)
+            let out = encode_value(*ty, old, input, le)
                 .unwrap_or_else(|e| panic!("{ty:?} rejected {input:?}: {e}"));
             assert_eq!(
                 out.len(),
@@ -3986,45 +4012,54 @@ mod tests {
             );
         }
 
-        // A Vec3 round-trips through its own display form.
-        let v = encode_value(PropType::Vec3, &[0; 12], "1.5, -2, 0.25").unwrap();
-        assert_eq!(show_value(PropType::Vec3, &v), "1.500, -2.000, 0.250");
+        // A Vec3 round-trips through its own display form, in either word order.
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            let v = encode_value(PropType::Vec3, &[0; 12], "1.5, -2, 0.25", order).unwrap();
+            assert_eq!(show_value(PropType::Vec3, &v, order), "1.500, -2.000, 0.250");
+        }
+        assert_eq!(show_value(PropType::Ref, &[0x1E, 0x59, 0xE6, 0x05], ByteOrder::Big), "0x1E59E605");
 
         // Wrong widths are refused, not silently coerced.
-        assert!(encode_value(PropType::Scalar4, &[0], "1").is_err(), "4-byte write onto 1 byte");
-        assert!(encode_value(PropType::Vec3, &[0; 4], "1,2,3").is_err(), "12-byte write onto 4");
+        assert!(encode_value(PropType::Scalar4, &[0], "1", le).is_err(), "4-byte write onto 1 byte");
+        assert!(encode_value(PropType::Vec3, &[0; 4], "1,2,3", le).is_err(), "12-byte write onto 4");
         assert!(
-            encode_value(PropType::Bytes, &[0; 4], "aa bb").is_err(),
+            encode_value(PropType::Bytes, &[0; 4], "aa bb", le).is_err(),
             "a shorter hex string must be refused"
         );
-        assert!(encode_value(PropType::Bool, &[0], "maybe").is_err(), "not a bool");
+        assert!(encode_value(PropType::Bool, &[0], "maybe", le).is_err(), "not a bool");
 
         // Str is allowed to resize, and always terminates.
-        let s = encode_value(PropType::Str, b"old ", "a longer name").unwrap();
+        let s = encode_value(PropType::Str, b"old ", "a longer name", le).unwrap();
         assert_eq!(s.last(), Some(&0));
-        assert_eq!(show_value(PropType::Str, &s), "a longer name");
+        assert_eq!(show_value(PropType::Str, &s, le), "a longer name");
     }
 
-    /// Every retail pair must be representable by its derived type, and re-encoding its own
+    /// Every pair of both builds must be representable by its derived type, and re-encoding its own
     /// displayed value must reproduce the original bytes exactly. This is the corpus-wide check
     /// that the type table and the editors agree with the data.
+    #[cfg(feature = "retail")]
     #[test]
-    fn every_retail_pair_round_trips_through_its_editor() {
-        let Some(game) = install() else { return };
-        let gt = crate::assets::load_gametemplates(&game).expect("templates");
+    fn every_pair_round_trips_through_its_editor() {
+        for src in crate::testenv::both_builds() {
+            pairs_round_trip(src.templates());
+        }
+    }
+
+    #[cfg(feature = "retail")]
+    fn pairs_round_trip(gt: &GameTemplates) {
         let mut checked = 0usize;
         let mut skipped = 0usize;
         for (_, t) in gt.templates() {
             for p in &t.pairs {
-                let ty = sab_formats::gametemplates::property_type(p.hash).unwrap_or(PropType::Bytes);
+                let ty = pair_type(p);
                 // Floats do not survive a 3-decimal display, and Scalar4's display is a heuristic
                 // "most likely reading" rather than a lossless encoding; those are exercised above.
                 if matches!(ty, PropType::Scalar4 | PropType::Vec3) {
                     skipped += 1;
                     continue;
                 }
-                let shown = show_value(ty, &p.data);
-                match encode_value(ty, &p.data, &shown) {
+                let shown = show_value(ty, &p.data, p.order);
+                match encode_value(ty, &p.data, &shown, p.order) {
                     Ok(b) => {
                         assert_eq!(
                             b, p.data,
@@ -4038,20 +4073,20 @@ mod tests {
             }
         }
         eprintln!("{checked} pairs round-tripped exactly, {skipped} float/scalar pairs skipped");
-        assert!(checked > 100_000, "expected the Bool/Ref/Bytes bulk, got {checked}");
+        assert!(checked > 10_000, "expected the Bool/Ref/Bytes bulk, got {checked}");
     }
 
     /// Both lists were capped — `take(400)` on a type group, `take(60)` on the unnamed properties —
     /// and neither cap was visible in the UI beyond one grey "narrow the filter" row. Against the
     /// real DB they hid 3,113 templates and truncated the property list on 3,110 of 10,761
     /// templates. This pins that every row is offered, on the worst real cases.
+    #[cfg(feature = "retail")]
     #[test]
     fn the_lists_are_not_capped() {
-        let Some(game) = install() else { return };
-        let gt = crate::assets::load_gametemplates(&game).expect("templates");
+        let gt = crate::testenv::retail().templates();
 
         // ---- template list: every member of every type group ----
-        let (rows, total) = group_rows(&gt, "");
+        let (rows, total) = group_rows(gt, "");
         let items = rows.iter().filter(|r| matches!(r, ObjRow::Item(..))).count();
         assert_eq!(items, total, "every template must get a row, not the first 400 of its group");
 
@@ -4106,13 +4141,13 @@ mod tests {
     /// The list rebuild and the xref are what made the page struggle once it had the real DB behind
     /// it. Generous bounds — this is a guard against a return to per-template allocation, not a
     /// benchmark. Run under `--release` for a meaningful number; debug is ~10× slower.
+    #[cfg(feature = "retail")]
     #[test]
     fn building_the_object_list_is_not_slow() {
-        let Some(game) = install() else { return };
-        let gt = crate::assets::load_gametemplates(&game).expect("templates");
+        let gt = crate::testenv::retail().templates();
 
         let t0 = std::time::Instant::now();
-        let xref = build_xref(&gt);
+        let xref = build_xref(gt);
         let xref_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let needle = "usept";

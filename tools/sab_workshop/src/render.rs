@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use bytemuck::Zeroable;
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -85,6 +86,8 @@ pub struct Renderer {
     /// Draw the 3D scene at all. False on the editor pages, which are not a 3D view.
     pub draw_scene: bool,
     pub show_textures: bool,
+    /// The damage state drawn: geometry tagged with another state is skipped (`SubMesh::damage`).
+    pub damage_state: i32,
 }
 
 impl Renderer {
@@ -412,6 +415,7 @@ impl Renderer {
             show_grid: true,
             draw_scene: true,
             show_textures: true,
+            damage_state: 0,
         })
     }
 
@@ -454,7 +458,10 @@ impl Renderer {
     /// rig has a different bone count — reallocates the joint storage buffer (which forces the scene
     /// bind group to be rebuilt, since it points at that buffer).
     pub fn set_mesh(&mut self, mesh: &Smsh, bone_count: usize) {
-        let verts = build_vertices(mesh);
+        // wgpu rejects zero-length buffers: a mesh with no geometry (a skeleton-only record) gets
+        // one-element buffers and no draw.
+        let verts = if mesh.positions.is_empty() { vec![Vertex::zeroed()] } else { build_vertices(mesh) };
+        let indices: &[u32] = if mesh.indices.is_empty() { &[0] } else { &mesh.indices };
         self.vbo = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh vbo"),
             contents: bytemuck::cast_slice(&verts),
@@ -462,7 +469,7 @@ impl Renderer {
         });
         self.ibo = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mesh ibo"),
-            contents: bytemuck::cast_slice(&mesh.indices),
+            contents: bytemuck::cast_slice(indices),
             usage: wgpu::BufferUsages::INDEX,
         });
         self.index_count = mesh.indices.len() as u32;
@@ -629,10 +636,12 @@ impl Renderer {
                 pass.set_index_buffer(self.ibo.slice(..), wgpu::IndexFormat::Uint32);
                 // One draw per submesh, each with its own diffuse (or the white fallback). When
                 // textures are toggled off, everything binds white → the original flat-lit look.
-                // Level 0 only: a character's LOD1 parts share the space LOD0 occupies, and drawing
-                // both stacks two bodies (they are exported as separate objects instead).
+                // The finest level the model has only: every level occupies the same space, and
+                // drawing two stacks two bodies (they are exported as separate objects instead).
+                // And of a model with damage states, the geometry of the state shown.
+                let finest = self.submeshes.iter().map(|s| s.lod).min().unwrap_or(0);
                 for (i, sm) in self.submeshes.iter().enumerate() {
-                    if sm.lod != 0 {
+                    if sm.lod != finest || sm.damage.is_some_and(|d| d != self.damage_state) {
                         continue;
                     }
                     let bg = if self.show_textures { &self.submesh_bg[i] } else { &self.fallback_bg };

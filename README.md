@@ -94,4 +94,7 @@ audio, carved assets) are gitignored; each doc says how to regenerate them from 
 ## License
 
 [MIT](LICENSE). Covers the notes and tooling in this repo only — not any game assets, which remain
-the property of their respective rights holders.
+the property of their respective rights holders. Exception: `tools/sab_formats/src/xma2/` is a port
+of FFmpeg's XMA2 decoder and is licensed under the GNU Lesser General Public License 2.1 or later
+([`tools/sab_formats/src/xma2/COPYING.LGPLv2.1`](tools/sab_formats/src/xma2/COPYING.LGPLv2.1);
+[`docs/formats/xma2_decoder.md`](docs/formats/xma2_decoder.md)).

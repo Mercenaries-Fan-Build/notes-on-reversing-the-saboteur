@@ -27,7 +27,7 @@ probe `sab_probe proto2008-audio` (Method).
 | Bank version (`BKHD`) | 44 | 29 |
 | Media container | `RIFF` `WAVE` | `RIFX` `WAVE` (size word little-endian, chunks big-endian) |
 | Codec | Wwise Vorbis (`fmt` 0xFFFF + `vorb`) | XMA2 (`XMA2` chunk, plugin id `0x00030001`) |
-| Decode | software: `ww2ogg` + `lewton`, PROVEN on all 24,268 | console hardware (`XMAPlayback*`); no software decoder in the exe |
+| Decode | software: `ww2ogg` + `lewton`, PROVEN on all 24,268; `sab_formats::wwise::decode_wem` | console hardware (`XMAPlayback*`); here `sab_formats::xma2`, a port of FFmpeg's decoder bit-identical to it ([`formats/xma2_decoder.md`](formats/xma2_decoder.md)) |
 | `WWiseIDTable.bin` | described as a string table (audio_1kcp.md; not re-checked here) | binary key → id tables (below) |
 
 **What carries over between the builds:** a voice line is still the event `Play_<key>`, hashed with
@@ -212,15 +212,27 @@ For each of the 3,903 keyed (non-UI) lines of `Cinematics/Dialog/English/GameTex
 * **2,054** have neither an event nor a table row; that these lines are simply not recorded in this
   build is INFERRED.
 
-## For the workshop's audio (decode, play, export)
+## Playing a line: `sound_voice` and the workshop — PROVEN
 
-* One resolver serves both builds down to the event: `Play_<key>` → FNV-1. Below it the per-build
-  readers differ: 2008 → `sound_bank` (event → Play action → sound, or container → children) →
-  `sound_pack` (a stream record, or a `DIDX` slice of the sound's own bank).
-* 2008 media are XMA2. The retail Vorbis path (`ww2ogg` + `lewton`) does not apply; 2008 playback
-  and export need a software XMA2 decoder. None exists in the game to port — choosing one is a
-  decision for the decode step.
-* Prefetch heads (7 `DIDX` entries) are a stream's first bytes; decode the package stream instead.
+[`sab_formats::proto2008::sound_voice`](../tools/sab_formats/src/proto2008/sound_voice.rs) holds the
+banks in memory and resolves a key down the chain above. Its rules, from the data:
+
+* **Objects are read inside one bank.** 357 ids are defined by more than one bank, and some
+  definitions differ: 139 sounds only in their source fields (an in-bank media offset is relative to
+  that bank's `DATA`), 68 actions only in their parameters (same type and target), 3
+  random/sequence containers and 58 actor-mixers in their children; no event differs (probe). So
+  an object the event's bank defines is taken from that bank, and one it does not define must be
+  defined alike everywhere (else an error).
+* **An event defined by several banks:** 37 voice lines. Each bank's chain reaches **byte-identical
+  media**, so which bank is read does not change the audio (game gate).
+* **A random/sequence container** plays its first playlist entry (the six crowd lines); the source
+  says "entry 1 of N".
+* **A prefetch sound** (stream type 2) plays the whole package stream, not the `DIDX` head.
+
+The workshop reaches this through `GameSource::voice_line` (`tools/sab_workshop/src/source.rs`):
+retail resolves through `wwise::SoundPack` and decodes with `wwise::decode_wem`, the 2008 build
+through `sound_voice` and `xma2`; both return `sab_formats::pcm::Pcm`, which the Strings page plays on
+the default output device (`rodio`) or writes as a 16-bit WAV. vgmstream is no longer used there.
 
 ## Unknowns
 
@@ -239,8 +251,13 @@ For each of the 3,903 keyed (non-UI) lines of `Cinematics/Dialog/English/GameTex
   — every count above: package, chunk tags, `HIRC` histogram, object parse totals, action classes,
   sound plugin/stream-type table, `DIDX` media, stream chunk sets and `XMA2` fields, `seek`/`data`
   checks, `X360/` comparison, both `WWiseIDTable.bin` files, and the voice-line resolution.
-* Game gate `every_2008_sound_package_record_parses` in
-  `tools/sab_formats/tests/proto2008_retail.rs` (`cargo test --features retail`).
+* Game gates in `tools/sab_formats/tests/proto2008_retail.rs` (`cargo test --release --features
+  retail`): `every_2008_sound_package_record_parses`, `every_2008_sound_media_decodes_to_its_declared_length`,
+  `every_2008_voice_line_resolves_and_decodes` (1,849 voiced, 6 through a container, 37 with the
+  event in several banks, 2,054 without an event).
+* The probe's "ids defined differently by two banks" lines — the counts in "Playing a line".
+* Workshop gate `voice_lines_play_from_both_builds` (`tools/sab_workshop/src/source.rs`,
+  `cargo test --release --features retail`).
 * Decomp: grep the function names above in
   `output/_ghidra_wildstar_p/wildstar_p_all_functions_decomp.txt`; vtable slots read from
   `WildStar_p.exe` at the `??_7…` addresses in `Bin360/WildStar_p.map`; strings read from the exe at

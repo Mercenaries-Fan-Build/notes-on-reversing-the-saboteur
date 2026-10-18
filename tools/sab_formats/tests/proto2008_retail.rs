@@ -10,7 +10,8 @@
 //! it; the pack reads to its end. `sound/Saboteur.pck`: every bank's chunks, `HIRC` objects, events,
 //! actions, sounds and random/sequence containers parse to their end, every bank media is a whole
 //! `RIFX` XMA2 file or the head of a pack stream, every stream is a `RIFX` XMA2 file with one seek
-//! entry per block, and every id `sound/WWiseIDTable.bin` posts is an event in the pack.
+//! entry per block, and every id `sound/WWiseIDTable.bin` posts is an event in the pack. Every media
+//! decodes with the XMA2 port; every keyed `GameText` line resolves to a decodable voice or to none.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -19,7 +20,7 @@ use std::path::{Path, PathBuf};
 use sab_formats::game_paths::local_config_proto2008_bin360;
 use sab_formats::proto2008::anim::{self, Codec};
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{anim_pack, material, mesh, mp00, shaders, slot_dir, sound_bank, sound_ids, sound_pack, texture};
+use sab_formats::proto2008::{anim_pack, material, mesh, mp00, shaders, slot_dir, sound_bank, sound_ids, sound_pack, sound_voice, texture};
 use sab_formats::{editnodes, gametemplates, gametext, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
@@ -471,6 +472,108 @@ fn every_2008_sound_package_record_parses() {
     assert_eq!([2, 3, 4, 5].map(k), [6036, 5329, 4813, 334]);
     assert_eq!((whole_media, head_media), (2764, 7));
     assert_eq!((ids.events.len(), posted.len(), missing), (4312, 4645, 0));
+}
+
+/// Every package stream and whole bank media decodes with `sound_pack::decode_media` (the XMA2 port,
+/// proven bit-identical to FFmpeg by `sab_probe xma2-oracle`) with the `XMA2` chunk's channel count
+/// and rate, to exactly its samples in source — except three media where FFmpeg's end trim
+/// (`trim_end + trim_start - 192`) stops short of it by less than a frame.
+#[test]
+fn every_2008_sound_media_decodes_to_its_declared_length() {
+    let root = bin360();
+    let path = root.join("sound/Saboteur.pck");
+    let b = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let p = sound_pack::parse(&b, b.len() as u64).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut media: Vec<(String, &[u8])> = p.streams.iter().map(|r| (format!("stream {:08X}", r.id), r.data(&b).expect("bounds checked"))).collect();
+    for r in &p.banks {
+        let d = r.data(&b).expect("bounds checked");
+        let cs = sound_pack::chunks(d).expect("bank chunks");
+        let body = |t: &[u8; 4]| cs.iter().find(|c| &c.tag == t).map(|c| &d[c.start..c.start + c.len]);
+        let (Some(idx), Some(data)) = (body(b"DIDX"), body(b"DATA")) else { continue };
+        for e in idx.chunks(12) {
+            let w = |i: usize| u32::from_be_bytes(e[4 * i..4 * i + 4].try_into().expect("4 bytes")) as usize;
+            let m = &data[w(1)..w(1) + w(2)];
+            if xma2_with_seek(m).is_ok() {
+                media.push((format!("bank {:08X} media {:08X}", r.id, w(0)), m));
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    let mut short = Vec::new();
+    let mut frames = 0usize;
+    for (at, m) in &media {
+        let x = xma2_with_seek(m).expect("filtered above");
+        match sound_pack::decode_media(m) {
+            Ok(pcm) => {
+                frames += pcm.frames();
+                let want = x.samples_in_source as usize;
+                let shortfall = want.checked_sub(pcm.frames()).filter(|&d| d > 0 && d < 512);
+                if pcm.channels == x.streams[0].0 as u16 && pcm.sample_rate == x.sample_rate && shortfall.is_some() {
+                    short.push(format!("{at}: {} short", shortfall.expect("checked")));
+                } else if pcm.frames() != want || pcm.channels != x.streams[0].0 as u16 || pcm.sample_rate != x.sample_rate {
+                    failures.push(format!(
+                        "{at}: {} frames x {} ch at {} Hz; XMA2 says {} in source, {} ch, {} Hz",
+                        pcm.frames(),
+                        pcm.channels,
+                        pcm.sample_rate,
+                        x.samples_in_source,
+                        x.streams[0].0,
+                        x.sample_rate
+                    ));
+                }
+            }
+            Err(e) => failures.push(format!("{at}: {e}")),
+        }
+    }
+    eprintln!("{} media decoded, {frames} frames; short of samples in source: {short:?}", media.len());
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    assert_eq!(media.len(), 2976 + 2764);
+    assert_eq!(short.len(), 3, "media short of their samples in source: {short:?}");
+}
+
+/// Every keyed `GameText` line resolves through `sound_voice` without error: 1,849 to a sound whose
+/// media decodes, the other 2,054 to no event at all. Where several banks define a line's event,
+/// each bank's chain reaches byte-identical media.
+#[test]
+fn every_2008_voice_line_resolves_and_decodes() {
+    let root = bin360();
+    let vp = sound_voice::VoicePack::open(root.join("sound/Saboteur.pck")).unwrap_or_else(|e| panic!("{e}"));
+    let path = root.join("Cinematics/Dialog/English/GameText.dlg");
+    let text = gametext::GameText::parse(&std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let (mut voiced, mut silent, mut via_container, mut multi_bank) = (0usize, 0usize, 0usize, 0usize);
+    let mut failures = Vec::new();
+    for r in text.records.iter().filter(|r| !r.is_ui()) {
+        let key = r.key_str();
+        match vp.resolve_in_each_bank(&key) {
+            Ok(all) if all.len() > 1 => {
+                multi_bank += 1;
+                let media: Result<Vec<Vec<u8>>, String> = all.iter().map(|v| vp.media(v.media)).collect();
+                match media {
+                    Ok(m) if m.iter().all(|x| x == &m[0]) => {}
+                    Ok(_) => failures.push(format!("{key}: banks {:08X?} reach different media", all.iter().map(|v| v.bank).collect::<Vec<_>>())),
+                    Err(e) => failures.push(format!("{key}: {e}")),
+                }
+            }
+            Ok(_) => {}
+            Err(e) => failures.push(format!("{key}: {e}")),
+        }
+        match vp.resolve(&key) {
+            Ok(None) => silent += 1,
+            Ok(Some(v)) => match vp.media(v.media).and_then(|m| sound_pack::decode_media(&m)) {
+                Ok(p) if p.frames() > 0 => {
+                    voiced += 1;
+                    via_container += v.container.is_some() as usize;
+                }
+                Ok(_) => failures.push(format!("{key}: decodes to nothing")),
+                Err(e) => failures.push(format!("{key}: {e}")),
+            },
+            Err(e) => failures.push(format!("{key}: {e}")),
+        }
+    }
+    eprintln!("voice lines: {voiced} decoded ({via_container} through a container, {multi_bank} with the event in several banks), {silent} without an event");
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    assert_eq!((voiced, via_container, silent), (1849, 6, 2054));
 }
 
 /// `GameTemplates.wsd` (`BLU2`) and `Cinematics/Dialog/English/GameText.dlg` (version 3) parse to their

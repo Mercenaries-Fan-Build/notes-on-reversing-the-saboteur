@@ -14,6 +14,11 @@
 //! * [`anim_pack`] — `Animations.pack`: animation records with their clips, sequences, transitions
 //!   and banks.
 //! * [`anim`] — an `ANM0` clip, loose or in a pack record: header, tracks' bone CRCs, decoded poses.
+//! * [`sound_pack`] — `sound/Saboteur.pck`: the `PCK0` Wwise package of banks and `RIFX` XMA2 streams.
+//! * [`sound_bank`] — a bank in that package: the `HIRC` objects and the event, action and sound
+//!   layouts.
+//! * [`sound_ids`] — `sound/WWiseIDTable.bin`: game-side keys to Wwise event, state, switch,
+//!   trigger and RTPC ids.
 
 pub mod anim;
 pub mod anim_pack;
@@ -25,4 +30,7 @@ pub mod sbl;
 pub mod shader_mapping;
 pub mod shaders;
 pub mod slot_dir;
+pub mod sound_bank;
+pub mod sound_ids;
+pub mod sound_pack;
 pub mod texture;

@@ -56,6 +56,12 @@ The same template system as retail. Counts from `sab_probe proto2008-templates`:
   `Global/`; 2,560 name a record only in world packs (`France/`). PROVEN.
 * **The player.** The one `Player` template, `Saboteur`, names `FxBodySetup` = `FBS_RS_Sean`, as the
   retail `Player` template does. PROVEN (both files).
+* **Combined models.** 45 of the 114 body setups name a `CombinedLODModel` themselves (retail: none
+  does); some, such as `FBS_CIVILIAN_FEMALE`, have every slot empty and that model as their only mesh.
+  The engine draws it as the figure's level 2 — [gametemplates.md](formats/gametemplates.md). PROVEN.
+* **Damage parts.** State the group state they draw in with `0xb7b68d44` instead of retail's
+  `Pristine`; without it a part draws in every state —
+  [damage_and_destruction.md](damage_and_destruction.md). PROVEN.
 * **Copies.** 137,861 `meshes` records hold 47,197 names; 46,802 names have byte-identical copies
   wherever they occur, 395 do not (world building pieces such as `BD_NOR_*`). Of the 1,199 names with a
   copy in `Global/`, 17 have differing `Global/` copies. PROVEN.
@@ -92,6 +98,7 @@ record_count × { "DTXT", u32 asset_id, u16 key_len (incl NUL), key, u16 str_len
 ```
 cargo test --release --features retail --test proto2008_retail     # tools/sab_formats
 cargo run --release -p sab_probe -- proto2008-templates <Bin360>
+cargo run --release -p sab_probe -- template-lod-damage <Bin360>/GameTemplates.wsd
 ```
 
 ## Unknowns

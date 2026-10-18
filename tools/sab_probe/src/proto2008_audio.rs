@@ -116,6 +116,60 @@ pub fn run(args: &[String]) {
     println!("HIRC chunks walking exactly: {hirc_ok}; failing: {hirc_bad:?}");
     let multi = objs.values().filter(|v| v.len() > 1).count();
     println!("HIRC object types: {types:?} ({} distinct ids, {multi} of them in more than one bank)", objs.len());
+    // Ids several banks define with different payloads: by type and bank pair, and what differs.
+    let mut differing: BTreeMap<String, usize> = BTreeMap::new();
+    let mut diff_fields: BTreeMap<String, usize> = BTreeMap::new();
+    for (id, defs) in &objs {
+        let pl = |(bi, o): &(usize, HircObject)| &bank_bytes[*bi][o.start..o.start + o.len];
+        for d in &defs[1..] {
+            let (a, b2) = (pl(&defs[0]), pl(d));
+            if a == b2 {
+                continue;
+            }
+            let kind = defs[0].1.kind;
+            bump(&mut differing, format!("type {kind}, banks {:08X} / {:08X}", p.banks[defs[0].0].id, p.banks[d.0].id));
+            let what = match kind {
+                sound_bank::HIRC_SOUND => match (sound_bank::parse_sound(a), sound_bank::parse_sound(b2)) {
+                    (Ok(x), Ok(y)) => {
+                        let mut f = Vec::new();
+                        if x.source != y.source {
+                            f.push("source");
+                        }
+                        if x.node.bus_id != y.node.bus_id {
+                            f.push("bus");
+                        }
+                        if x.node.parent_id != y.node.parent_id {
+                            f.push("parent");
+                        }
+                        if a[x.source.end..x.node.end] != b2[y.source.end..y.node.end] {
+                            f.push("node bytes");
+                        }
+                        if x.tail != y.tail {
+                            f.push("tail");
+                        }
+                        format!("sound: {}", f.join("+"))
+                    }
+                    _ => "sound: unparsed".into(),
+                },
+                sound_bank::HIRC_EVENT => "event".into(),
+                sound_bank::HIRC_ACTION => match (sound_bank::parse_action(a), sound_bank::parse_action(b2)) {
+                    (Ok(x), Ok(y)) if x.target == y.target && x.action_type == y.action_type => "action: same type and target".into(),
+                    _ => "action: type or target".into(),
+                },
+                sound_bank::HIRC_RAN_SEQ => match (sound_bank::parse_ran_seq(a), sound_bank::parse_ran_seq(b2)) {
+                    (Ok(x), Ok(y)) if x.children == y.children && x.playlist == y.playlist => "ran-seq: same children and playlist".into(),
+                    _ => "ran-seq: children or playlist".into(),
+                },
+                k => format!("type {k}"),
+            };
+            bump(&mut diff_fields, what);
+            if diff_fields.len() == 1 && differing.values().sum::<usize>() == 1 {
+                println!("  first differing id {id:08X}");
+            }
+        }
+    }
+    println!("ids defined differently by two banks: {differing:?}");
+    println!("what differs: {diff_fields:?}");
     println!("DIDX: {didx_entries} 12-byte entries, {} distinct first words", didx_media.len());
     let (mut in_data, mut media_riff, mut media_xma2) = (0usize, 0usize, 0usize);
     let mut media_bad = Vec::new();

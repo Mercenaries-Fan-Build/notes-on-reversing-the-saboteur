@@ -3939,16 +3939,19 @@ mod tests {
     /// The xref dedups by entry — a template naming the same hash in two pairs is listed once.
     #[test]
     fn xref_lists_each_template_once_per_value() {
-        let mut gt = GameTemplates { entries: Vec::new() };
-        gt.entries.push(Entry::Template(sab_formats::gametemplates::Template {
+        use sab_formats::gametemplates::{ByteOrder, Pair, Template};
+        let order = ByteOrder::Little;
+        let mut gt = GameTemplates { entries: Vec::new(), order };
+        gt.entries.push(Entry::Template(Template {
             unk1: 0,
             unk2: 1,
             name: "A".into(),
             ttype: "Prop".into(),
             pairs: vec![
-                sab_formats::gametemplates::Pair { hash: 1, data: 7u32.to_le_bytes().to_vec() },
-                sab_formats::gametemplates::Pair { hash: 2, data: 7u32.to_le_bytes().to_vec() },
+                Pair { hash: 1, data: 7u32.to_le_bytes().to_vec(), order },
+                Pair { hash: 2, data: 7u32.to_le_bytes().to_vec(), order },
             ],
+            order,
         }));
         assert_eq!(build_xref(&gt).get(&7), Some(&vec![0usize]));
     }

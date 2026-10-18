@@ -58,9 +58,14 @@ fn map() -> &'static HashMap<u32, String> {
     })
 }
 
-/// The bone's real name if the dictionary knows it, else its hash form (`bone_1A2B3C4D`).
+/// The bone's name from the dictionary, else from the hash → name table (`sab_formats::names`), else
+/// its hash form (`bone_1A2B3C4D`).
 pub fn name_for(hash: u32) -> String {
-    map().get(&hash).cloned().unwrap_or_else(|| format!("bone_{hash:08X}"))
+    map()
+        .get(&hash)
+        .cloned()
+        .or_else(|| sab_formats::names::name(hash).map(str::to_string))
+        .unwrap_or_else(|| format!("bone_{hash:08X}"))
 }
 
 #[cfg(test)]

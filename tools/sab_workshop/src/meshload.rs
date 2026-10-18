@@ -15,7 +15,7 @@
 
 use std::io::Read;
 
-use glam::{Mat4, Quat, Vec3};
+use glam::Mat4;
 
 use crate::formats::{Bone, Prim, Smsh};
 
@@ -79,22 +79,16 @@ pub struct LoadedMesh {
     /// (0,0,0), so the chain collapses that subtree onto one point and only these matrices know
     /// where the face really is. Pooled across parts during assembly (see `assemble`).
     pub stored_ibm: std::collections::HashMap<u32, [f32; 16]>,
-    /// `(part name, index_start, index_count, lod)` per source part, in merge order.
+    /// Per assembled part and level of detail, the index range it occupies, in buffer order; empty
+    /// for a mesh that was not assembled from a build's parts.
     ///
     /// Each part ships its OWN texture bundle, so a character cannot be textured from one pool —
-    /// this is what lets the resolver seed each part's submeshes from that part's own textures
-    /// instead of smearing the first bundle it found across the whole body. `lod` is the level the
-    /// part was assembled at (see [`PartPick`]); a part can appear twice, once per level, when its
-    /// template's `LowDetailModel` is the same mesh as its `HighDetailModel`.
-    pub part_ranges: Vec<(String, u32, u32, u8)>,
-}
-
-/// One mesh picked into an assembly, at a level of detail: `0` for a part template's
-/// `HighDetailModel`, `1` for its `LowDetailModel` (`assets::Asset::assembly`).
-#[derive(Clone)]
-pub struct PartPick {
-    pub entry: MeshEntry,
-    pub lod: u8,
+    /// this is what lets the resolver look in each part's own bundle first. A part can appear twice,
+    /// once per level, when its template's `LowDetailModel` is the same mesh as its
+    /// `HighDetailModel`, or when the mesh carries in-mesh levels.
+    pub part_ranges: Vec<crate::source::PartRange>,
+    /// Index ranges `(start, count)` drawn from geometry with no texture coordinates.
+    pub uvless: Vec<(u32, u32)>,
 }
 
 /// First offset of `needle` in `buf` at or after `from` (small linear scan — used only over a
@@ -210,24 +204,10 @@ pub fn raw_record<'a>(buf: &'a [u8], e: &MeshEntry) -> Option<&'a [u8]> {
 }
 
 pub fn load(buf: &[u8], e: &MeshEntry) -> Result<LoadedMesh, String> {
-    let start0 = e.file_off + 276;
-    let end0 = start0 + e.comp0 as usize;
-    if end0 > buf.len() {
-        return Err("MESH body blob out of range".into());
-    }
-    let body = zlib_inflate(&buf[start0..end0], e.unc0 as usize).ok_or("inflate MESH body failed")?;
-    if body.len() != e.unc0 as usize {
-        return Err(format!("MESH body {} != declared {}", body.len(), e.unc0));
-    }
-    // blob1 (.dat VB/IB) sits immediately after blob0.
-    let start1 = end0;
-    let dat = if e.comp1 > 0 && start1 + e.comp1 as usize <= buf.len() {
-        zlib_inflate(&buf[start1..start1 + e.comp1 as usize], e.unc1 as usize).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    if dat.is_empty() {
-        return Err("no .dat (VB/IB) blob".into());
+    let m = sab_formats::mesh::Msha { off: e.file_off, name: e.name.clone(), unc0: e.unc0, unc1: e.unc1, c0: e.comp0, c1: e.comp1 };
+    let (body, dat) = sab_formats::mesh::read_body_and_dat(buf, &m)?;
+    if dat.is_empty() && body.len() >= 244 && u16at(&body, 216) != 0 {
+        return Err(format!("{} streams but no .dat (VB/IB) blob", u16at(&body, 216)));
     }
     let tail = parse_mesh(&body)?;
     let mut mesh = decode_geometry(&tail, &dat)?;
@@ -235,8 +215,16 @@ pub fn load(buf: &[u8], e: &MeshEntry) -> Result<LoadedMesh, String> {
     let prim_parent_bone = tail.draws.iter().map(|d| d.parent_bone).collect();
     let bone_hashes = tail.bone_hashes.clone();
     let stored_ibm = tail.stored_ibm.clone();
-    let part_ranges = vec![(e.name.clone(), 0u32, mesh.indices.len() as u32, 0u8)];
-    Ok(LoadedMesh { name: e.name.clone(), mesh, bones: tail.bones, prim_parent_bone, bone_hashes, stored_ibm, part_ranges })
+    Ok(LoadedMesh {
+        name: e.name.clone(),
+        mesh,
+        bones: tail.bones,
+        prim_parent_bone,
+        bone_hashes,
+        stored_ibm,
+        part_ranges: Vec::new(),
+        uvless: Vec::new(),
+    })
 }
 
 struct Stream {
@@ -284,8 +272,15 @@ fn parse_mesh(body: &[u8]) -> Result<MeshTail, String> {
     let num_streams = u16at(body, 216) as usize;
     let num_primitives = u16at(body, 218) as usize;
     let num_draw_calls = u32at(body, 232) as usize;
+    let counts = TailCounts { remaps: num_bone_remaps, streams: num_streams, prims: num_primitives, draws: num_draw_calls };
+    // The skeleton block is present iff numBones0 > 1 (docs/formats/skeleton.md); without it the
+    // tail follows the 244-byte header and no drawcall is skinned (SaboteurToolset
+    // `mesh_to_gltf.cpp` `AppProcessFile`: no skeleton ⇒ `numBoneRemaps == 0`).
     if num_bones0 <= 1 {
-        return Err(format!("mesh not skinned (numBones0={num_bones0})"));
+        if num_bone_remaps != 0 {
+            return Err(format!("numBones0={num_bones0} (no skeleton block) with {num_bone_remaps} bone remaps"));
+        }
+        return parse_tail(body, 244, Rig::default(), counts);
     }
 
     // MESHSkeleton header @244 (11 u32)
@@ -405,10 +400,37 @@ fn parse_mesh(body: &[u8]) -> Result<MeshTail, String> {
         })
         .collect();
 
-    // ---- tail ----
+    parse_tail(body, p, Rig { bones, name_hashes, local_tms, bone_ids }, counts)
+}
+
+/// A MESH's skeleton block, decoded; empty for a mesh without one.
+#[derive(Default)]
+struct Rig {
+    bones: Vec<Bone>,
+    name_hashes: Vec<u32>,
+    local_tms: Vec<[f32; 16]>,
+    bone_ids: Vec<u8>,
+}
+
+/// The MESH header's counts of the tail's arrays.
+#[derive(Clone, Copy)]
+struct TailCounts {
+    remaps: usize,
+    streams: usize,
+    prims: usize,
+    draws: usize,
+}
+
+/// The MESH tail at `p` — bone remaps, streams, primitives, drawcalls — which must end exactly at the
+/// end of the body.
+fn parse_tail(body: &[u8], mut p: usize, rig: Rig, counts: TailCounts) -> Result<MeshTail, String> {
+    let Rig { bones, name_hashes, local_tms, bone_ids } = rig;
+    let TailCounts { remaps: num_bone_remaps, streams: num_streams, prims: num_primitives, draws: num_draw_calls } = counts;
+    let need = |p: usize, n: usize, what: &str| if p + n > body.len() { Err(format!("{what} at {p}+{n} past the {}-byte body", body.len())) } else { Ok(()) };
     let mut stored_ibm: std::collections::HashMap<u32, [f32; 16]> = Default::default();
     let mut remaps = Vec::with_capacity(num_bone_remaps);
     if num_bone_remaps > 0 {
+        need(p, 8 + 68 * num_bone_remaps, "bone remaps")?;
         let guard = u32at(body, p) as usize;
         if guard != num_bone_remaps {
             return Err(format!("boneRemap guard {guard} != {num_bone_remaps}"));
@@ -429,6 +451,7 @@ fn parse_mesh(body: &[u8]) -> Result<MeshTail, String> {
             p += 68;
         }
     }
+    need(p, 152 * num_streams + 100 * num_primitives + 16 * num_draw_calls, "streams, primitives and drawcalls")?;
     let mut streams = Vec::with_capacity(num_streams);
     for _ in 0..num_streams {
         streams.push(Stream {
@@ -464,6 +487,9 @@ fn parse_mesh(body: &[u8]) -> Result<MeshTail, String> {
             lod_flags: u16at(body, p + 14),
         });
         p += 16;
+    }
+    if p != body.len() {
+        return Err(format!("the MESH tail ends at byte {p} of {}", body.len()));
     }
 
     Ok(MeshTail { bones, bone_hashes: name_hashes, local_tms, stored_ibm, bone_ids, remaps, streams, prims, draws })
@@ -625,17 +651,8 @@ fn decode_geometry(tail: &MeshTail, dat: &[u8]) -> Result<Smsh, String> {
         let prim = tail
             .prims
             .get(d.primitive_index as usize)
-            .ok_or_else(|| format!("drawcall references primitive {}", d.primitive_index))?;
-        // A drawcall above in-mesh level 0 is refused: drawing it would stack a coarser copy of the
-        // mesh onto itself.
+            .ok_or_else(|| format!("drawcall {i} references primitive {}", d.primitive_index))?;
         let lod = (d.lod_flags & 7) as u8;
-        if lod != 0 {
-            return Err(format!(
-                "drawcall {i} is at in-mesh LOD level {lod} (+0xe = 0x{:04X}); skinned meshes with \
-                 in-mesh LOD levels are not supported",
-                d.lod_flags
-            ));
-        }
         let ibase = stream_ibase.get(prim.stream_index as usize).copied().unwrap_or(0);
         m.prims.push(Prim {
             index_start: ibase + prim.index_offset,
@@ -644,6 +661,7 @@ fn decode_geometry(tail: &MeshTail, dat: &[u8]) -> Result<Smsh, String> {
             flags: d.primitive_index,
             parent_bone: d.parent_bone,
             lod,
+            damage: None,
         });
     }
     Ok(m)
@@ -719,6 +737,7 @@ mod bbox_tests {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+    use glam::{Quat, Vec3};
 
     /// Open a megapack and hand back the raw MESH body of the first model matching `token`.
     fn a_real_mesh_body(token: &str) -> Option<Vec<u8>> {
@@ -947,31 +966,90 @@ mod hat_tests {
 ///    part ships correct matrices for the bones IT skins, so assembling — which loads every part —
 ///    is exactly when the union becomes available. We pool them and fix the canonical skeleton.
 ///
-/// Parts are merged **level by level** (a stable sort on `PartPick::lod`), so each level of detail
-/// is one contiguous span of the index buffer — what `formats::submesh_cover` builds its per-level
-/// draw lists from — and every prim and part range carries its pick's level.
-pub fn assemble(buf: &[u8], parts: &[PartPick]) -> Result<LoadedMesh, String> {
-    if parts.is_empty() {
+/// Each level of detail is laid out as one contiguous span of the index buffer — what
+/// `formats::submesh_cover` builds its per-level draw lists from. A prim's level is its part's
+/// assembly level (a part template's `HighDetailModel` is 0, its `LowDetailModel` 1), or for a level-0
+/// part, the prim's own in-mesh level.
+///
+/// `picks` are `(mesh item, assembly level)`; `load` decodes an item, `name` names it. Returns the
+/// model and one message per part that did not load; fails when none does.
+pub fn assemble_with(
+    picks: &[(usize, u8)],
+    load: impl Fn(usize) -> Result<LoadedMesh, String>,
+    name: impl Fn(usize) -> String,
+) -> Result<(LoadedMesh, Vec<String>), String> {
+    if picks.is_empty() {
         return Err("no parts".into());
     }
-    let mut ordered: Vec<&PartPick> = parts.iter().collect();
-    ordered.sort_by_key(|p| p.lod);
-    let mut loaded: Vec<LoadedMesh> = Vec::new();
-    let mut lods: Vec<u8> = Vec::new(); // parallel to `loaded`
+    let mut ordered: Vec<(usize, u8)> = picks.to_vec();
+    ordered.sort_by_key(|p| p.1);
+    let mut parts: Vec<(usize, LoadedMesh, u8)> = Vec::new();
     let mut errs: Vec<String> = Vec::new();
-    for p in ordered {
-        match load(buf, &p.entry) {
-            Ok(l) => {
-                loaded.push(l);
-                lods.push(p.lod);
-            }
-            // A part that fails is skipped, not fatal: a character with a missing hat is still worth
-            // looking at, and the status line reports what was dropped.
-            Err(err) => errs.push(format!("{} (LOD{}): {err}", p.entry.name, p.lod)),
+    for (i, lod) in ordered {
+        match load(i) {
+            Ok(l) => parts.push((i, l, lod)),
+            Err(err) => errs.push(format!("{} (LOD{lod}): {err}", name(i))),
         }
     }
-    if loaded.is_empty() {
+    if parts.is_empty() {
         return Err(errs.join("; "));
+    }
+    Ok((merge(parts)?, errs))
+}
+
+/// Give each prim the damage state it draws in. `parts` are a template's damage parts as
+/// `(bone name hash, state)`; a part owns its bone's subtree down to the bones another part names
+/// (2008 `WSDamageableGroup::ActivateBone` @0x82380810 recurses into child bones and skips those in
+/// another part; retail `FUN_0066b840` gathers the subtree skipping bones other groups own —
+/// docs/damage_and_destruction.md), so a prim belongs to the nearest part bone at or above its bone.
+/// A negative state draws in every state (2008 `ActivatePart` @0x823803c8).
+pub fn apply_damage(lm: &mut LoadedMesh, parts: &[(u32, i32)]) {
+    if parts.is_empty() {
+        return;
+    }
+    let state: std::collections::HashMap<u32, i32> = parts.iter().copied().collect();
+    let owner = |mut b: i32| -> Option<i32> {
+        let mut guard = 0;
+        while b >= 0 && (b as usize) < lm.bones.len() && guard <= lm.bones.len() {
+            if let Some(&s) = lm.bone_hashes.get(b as usize).and_then(|h| state.get(h)) {
+                return (s >= 0).then_some(s);
+            }
+            b = lm.bones[b as usize].parent;
+            guard += 1;
+        }
+        None
+    };
+    let damage: Vec<Option<i32>> = lm.mesh.prims.iter().map(|p| owner(p.parent_bone as i32)).collect();
+    for (p, d) in lm.mesh.prims.iter_mut().zip(damage) {
+        p.damage = d;
+    }
+}
+
+/// One part's prims of one level, gathered into the disjoint runs of its index buffer they cover:
+/// `(run start, run length)` in the part's own indices, ascending.
+fn runs_of(ranges: &mut Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    ranges.sort_unstable();
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for &(s, n) in ranges.iter() {
+        match runs.last_mut() {
+            Some((rs, rn)) if s <= *rs + *rn => *rn = (*rn).max(s + n - *rs),
+            _ => runs.push((s, n)),
+        }
+    }
+    runs
+}
+
+/// Merge decoded parts, each at its assembly level, onto one skeleton keyed by bone name-hash, with
+/// the bind pose corrected from the parts' stored inverse binds. `parts` are
+/// `(mesh item, part, assembly level)` in level order.
+pub fn merge(parts: Vec<(usize, LoadedMesh, u8)>) -> Result<LoadedMesh, String> {
+    let mut items: Vec<usize> = Vec::with_capacity(parts.len());
+    let mut loaded: Vec<LoadedMesh> = Vec::with_capacity(parts.len());
+    let mut lods: Vec<u8> = Vec::with_capacity(parts.len());
+    for (i, l, lod) in parts {
+        items.push(i);
+        loaded.push(l);
+        lods.push(lod);
     }
 
     // ---- one UNION skeleton, keyed by bone name-hash ----
@@ -1114,10 +1192,39 @@ pub fn assemble(buf: &[u8], parts: &[PartPick]) -> Result<LoadedMesh, String> {
     let mut prim_parent_bone: Vec<u16> = Vec::new();
     let mut dropped = 0usize;
 
-    let mut part_ranges: Vec<(String, u32, u32, u8)> = Vec::new();
+    // Each prim's level: its part's assembly level, or for a level-0 part its own in-mesh level. A
+    // part with no prims is drawn whole at its assembly level.
+    let mut prim_level: Vec<Vec<u8>> = Vec::with_capacity(loaded.len());
     for (l, &lod) in loaded.iter().zip(&lods) {
-        let base_v = out.positions.len() as u32;
-        let base_i = out.indices.len() as u32;
+        let mut levels = Vec::with_capacity(l.mesh.prims.len());
+        for p in &l.mesh.prims {
+            levels.push(match (lod, p.lod) {
+                (0, own) => own,
+                (asm, 0) => asm,
+                (asm, own) => {
+                    return Err(format!(
+                        "{}: assembled at level {asm} but a prim carries in-mesh level {own}; the two levels do not combine",
+                        l.name
+                    ))
+                }
+            });
+        }
+        prim_level.push(levels);
+    }
+    let mut all_levels: Vec<u8> = prim_level.iter().flatten().copied().collect();
+    for (l, &lod) in loaded.iter().zip(&lods) {
+        if l.mesh.prims.is_empty() {
+            all_levels.push(lod);
+        }
+    }
+    all_levels.sort_unstable();
+    all_levels.dedup();
+
+    // Vertices, part by part; the base vertex of each part.
+    let mut base_v: Vec<u32> = Vec::with_capacity(loaded.len());
+    let mut maps: Vec<Vec<Option<u16>>> = Vec::with_capacity(loaded.len());
+    for l in &loaded {
+        base_v.push(out.positions.len() as u32);
         // this part's local bone index -> canonical index, by name hash
         let map: Vec<Option<u16>> =
             l.bone_hashes.iter().map(|h| index_of.get(h).copied()).collect();
@@ -1141,23 +1248,72 @@ pub fn assemble(buf: &[u8], parts: &[PartPick]) -> Result<LoadedMesh, String> {
             }
             out.joints.push(o);
         }
-        out.indices.extend(l.mesh.indices.iter().map(|i| i + base_v));
-        for (pi, pr) in l.mesh.prims.iter().enumerate() {
-            let mut q = pr.clone();
-            q.index_start += base_i;
-            // the rigid-attachment bone has to travel through the same remap
-            q.parent_bone = l
-                .prim_parent_bone
-                .get(pi)
-                .and_then(|b| map.get(*b as usize).copied().flatten())
-                .unwrap_or(0);
-            // The part's level of detail: its own geometry is in-mesh level 0 (`load` refuses any
-            // other), and the assembly says which level this whole part stands for.
-            q.lod = lod;
-            prim_parent_bone.push(q.parent_bone);
-            out.prims.push(q);
+        maps.push(map);
+    }
+
+    // Indices, level by level: each part's prims of the level, as the disjoint runs of its index
+    // buffer they cover. Prims of one level keep their layout relative to each other; a run shared
+    // by two levels cannot be laid out in both.
+    let mut part_ranges: Vec<crate::source::PartRange> = Vec::new();
+    let mut uvless: Vec<(u32, u32)> = Vec::new();
+    for &level in &all_levels {
+        for (k, l) in loaded.iter().enumerate() {
+            let mut ranges: Vec<(u32, u32)> = if l.mesh.prims.is_empty() {
+                if lods[k] == level { vec![(0, l.mesh.indices.len() as u32)] } else { Vec::new() }
+            } else {
+                l.mesh.prims.iter().zip(&prim_level[k]).filter(|(_, e)| **e == level).map(|(p, _)| (p.index_start, p.index_count)).collect()
+            };
+            if ranges.is_empty() {
+                continue;
+            }
+            let runs = runs_of(&mut ranges);
+            for (p, &e) in l.mesh.prims.iter().zip(&prim_level[k]) {
+                if e != level && runs.iter().any(|&(s, n)| p.index_start < s + n && s < p.index_start + p.index_count) {
+                    return Err(format!("{}: in-mesh levels {e} and {level} share indices {}..{}", l.name, p.index_start, p.index_start + p.index_count));
+                }
+            }
+            let part_start = out.indices.len() as u32;
+            // part index position -> output position, per run
+            let mut moved: Vec<(u32, u32, u32)> = Vec::with_capacity(runs.len());
+            for &(s, n) in &runs {
+                let src = l.mesh.indices.get(s as usize..(s + n) as usize).ok_or_else(|| format!("{}: prim range {s}+{n} past {} indices", l.name, l.mesh.indices.len()))?;
+                moved.push((s, n, out.indices.len() as u32));
+                out.indices.extend(src.iter().map(|i| i + base_v[k]));
+            }
+            let at = |pos: u32| moved.iter().find(|&&(s, n, _)| pos >= s && pos < s + n).map(|&(s, _, d)| d + pos - s);
+            if l.mesh.prims.is_empty() && !l.mesh.indices.is_empty() {
+                out.prims.push(crate::formats::Prim { index_start: part_start, index_count: l.mesh.indices.len() as u32, material_hash: 0, flags: 0, parent_bone: 0, lod: level, damage: None });
+                prim_parent_bone.push(0);
+            }
+            for (pi, (pr, &e)) in l.mesh.prims.iter().zip(&prim_level[k]).enumerate() {
+                if e != level {
+                    continue;
+                }
+                let mut q = *pr;
+                q.index_start = at(pr.index_start).expect("a prim lies in one of its level's runs");
+                // the rigid-attachment bone has to travel through the same remap
+                q.parent_bone = l
+                    .prim_parent_bone
+                    .get(pi)
+                    .and_then(|b| maps[k].get(*b as usize).copied().flatten())
+                    .unwrap_or(0);
+                q.lod = level;
+                prim_parent_bone.push(q.parent_bone);
+                out.prims.push(q);
+            }
+            for &(s, n) in &l.uvless {
+                if let Some(d) = at(s) {
+                    uvless.push((d, n));
+                }
+            }
+            part_ranges.push(crate::source::PartRange {
+                mesh: items[k],
+                name: l.name.clone(),
+                index_start: part_start,
+                index_count: out.indices.len() as u32 - part_start,
+                lod: level,
+            });
         }
-        part_ranges.push((l.name.clone(), base_i, out.indices.len() as u32 - base_i, lod));
     }
 
     // The invariant that makes a bind pose correct: world · inv_bind == identity for every bone.
@@ -1225,8 +1381,5 @@ pub fn assemble(buf: &[u8], parts: &[PartPick]) -> Result<LoadedMesh, String> {
             "[sab_workshop]   WARNING bind pose is not identity: worst |world·invBind - I| = {worst_dev:.4} at bone {worst_bone}              — the TRS round-trip lost the transform; the mesh is deformed before any clip plays"
         );
     }
-    for e in &errs {
-        eprintln!("[sab_workshop]   skipped part {e}");
-    }
-    Ok(LoadedMesh { name, mesh: out, bones, prim_parent_bone, bone_hashes: hashes, stored_ibm: truth, part_ranges })
+    Ok(LoadedMesh { name, mesh: out, bones, prim_parent_bone, bone_hashes: hashes, stored_ibm: truth, part_ranges, uvless })
 }

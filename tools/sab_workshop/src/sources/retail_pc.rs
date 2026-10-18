@@ -12,13 +12,17 @@
 //! bound one is below the biped's bone count; they are turned into the biped's bone hashes so every
 //! clip binds to a loaded rig by hash. The biped is the rig of the build's player, assembled from its
 //! `Player` template.
+//!
+//! Voice: a language's lines play from its `Sound/<pack>.pck` (`sab_formats::wwise`), opened on first
+//! use and kept.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use sab_formats::gametemplates::GameTemplates;
 use sab_formats::pandemic_hash;
+use sab_formats::wwise::{decode_wem, SoundPack};
 
 use crate::anim_index::{self, ClipInfo, UNBOUND};
 use crate::clip::AnimClip;
@@ -28,11 +32,22 @@ use crate::havok::{self, Packfile, QsTransform, SplineAnim};
 use crate::meshload::{self, LoadedMesh, MeshEntry};
 use crate::pack::Megapack;
 use crate::resolve::{self, ModelTex, Prov, Role, SubmeshBinding, TexAsset};
-use crate::source::{ClipRow, GameSource, GameVersion, IconRow, MeshFind, MeshItem, Overrides, PartRange, RawRecord, SourceFingerprint};
+use crate::source::{ClipRow, GameSource, GameVersion, IconRow, MeshFind, MeshItem, Overrides, PartRange, RawRecord, SourceFingerprint, VoiceLine};
 use crate::wsao::Wsao;
 
 /// The game-text languages, as `Cinematics/Dialog/` names them.
 const LANGUAGES: [&str; 7] = ["English", "French", "German", "Italian", "Polish", "Russian", "Random"];
+
+/// The voice pack (`Sound/<name>.pck`) a game-text language plays from; only these four ship one.
+fn voice_pack_name(lang: &str) -> Option<&'static str> {
+    match lang {
+        "English" => Some("English(US)"),
+        "French" => Some("French(Canada)"),
+        "German" => Some("German"),
+        "Italian" => Some("Italian"),
+        _ => None,
+    }
+}
 
 /// `Animations.pack`: the bytes and the offset of each `hkaSplineCompressedAnimation`.
 struct PackData {
@@ -118,6 +133,8 @@ pub struct RetailPcSource {
     catalog: Vec<ClipInfo>,
     clips: Vec<ClipRow>,
     pack: Arc<PackData>,
+    /// Voice pack name → the pack opened, or why it could not be.
+    voice: Mutex<HashMap<&'static str, Result<Arc<SoundPack>, String>>>,
 }
 
 /// Find the main object DB: the `AULB` blob in `France/loosefiles_BinPC.pack` with the most templates.
@@ -199,9 +216,21 @@ impl RetailPcSource {
             catalog,
             clips: Vec::new(),
             pack,
+            voice: Mutex::new(HashMap::new()),
         };
         src.clips = src.clip_rows()?;
         Ok(src)
+    }
+
+    /// The voice pack of `lang`, opened on first use.
+    fn voice_pack(&self, lang: &str) -> Result<(&'static str, Arc<SoundPack>), String> {
+        let name = voice_pack_name(lang).ok_or_else(|| format!("{lang} ships no voice pack"))?;
+        let mut cache = self.voice.lock().map_err(|_| "the voice pack cache was poisoned by a panic".to_string())?;
+        let opened = cache.entry(name).or_insert_with(|| {
+            let path = self.root.join("Sound").join(format!("{name}.pck"));
+            SoundPack::open(&path).map(Arc::new).map_err(|e| format!("{}: {e}", path.display()))
+        });
+        opened.clone().map(|p| (name, p))
     }
 
     /// The catalog with every track's bone as a name hash.
@@ -403,6 +432,19 @@ impl GameSource for RetailPcSource {
             .map(|l| (l.to_string(), self.root.join("Cinematics").join("Dialog").join(l).join("GameText.dlg")))
             .filter(|(_, p)| p.is_file())
             .collect()
+    }
+
+    fn voice_source(&self, lang: &str, key: &str) -> Result<Option<String>, String> {
+        let (name, pack) = self.voice_pack(lang)?;
+        Ok(pack.wem_for_key(key).map(|w| format!("stream 0x{w:08X}.wem in {name}.pck")))
+    }
+
+    fn voice_line(&self, lang: &str, key: &str) -> Result<Option<VoiceLine>, String> {
+        let (name, pack) = self.voice_pack(lang)?;
+        let Some(w) = pack.wem_for_key(key) else { return Ok(None) };
+        let bytes = pack.wem_bytes(w).ok_or_else(|| format!("{name}.pck: stream 0x{w:08X} unreadable"))?;
+        let pcm = decode_wem(&bytes).map_err(|e| format!("{name}.pck stream 0x{w:08X}: {e}"))?;
+        Ok(Some(VoiceLine { source: format!("stream 0x{w:08X}.wem in {name}.pck"), pcm }))
     }
 
     fn icon_textures(&self, progress: &dyn Fn(usize, usize)) -> Result<Vec<IconRow>, String> {

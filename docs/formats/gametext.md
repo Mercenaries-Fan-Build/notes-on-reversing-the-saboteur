@@ -20,6 +20,9 @@ All six **parse with exact byte consumption and re-emit byte-identical** (round-
 [Validation](#validation)). There is also a sibling `Cinematics/Dialog/Random/RandomText.rnd`
 (random ambient barks) loaded by the same subsystem; not covered here.
 
+The 2008 Xbox 360 prototype's `GameText.dlg` is version 3 (big-endian, `DTXT` records, Windows-1252
+text, closed by `CEND`): [2008_templates_and_text.md](../2008_templates_and_text.md).
+
 ---
 
 ## Loader (decomp oracle)

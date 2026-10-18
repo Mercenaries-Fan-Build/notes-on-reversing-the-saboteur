@@ -181,6 +181,17 @@ always 0. A few `LowDetailModel`s name a `_LOD` mesh that is not shipped (e.g.
 `CH_NZ_Helmet_WM_GR_LOD`). `sab_workshop` assembles characters exactly this way —
 [`assets.rs`](../../tools/sab_workshop/src/assets.rs).
 
+**`CombinedLODModel` is level 2.** The body setup stores one too. PROVEN in the 2008 build
+(`WildStar_p.exe`): `WSFxHumanBodySetup::Render` @0x8227e020 calls `RenderCombinedLOD` when asked for
+level 2 and drops to level 1 when that draws nothing; `SetupCombinedLODModel` @0x8227dc00 takes the
+model from the first of slots 0–4 (UpperBody … GearC) whose current part has one, else from the
+setup's own (`WSFxHumanBodySetupBlueprint::SetProperty` stores it at `-8`, the body part's at `-0xc`).
+Counts (`sab_probe template-lod-damage`): retail — 5 of 690 body parts and 0 of 293 setups carrying
+the key are non-zero; 2008 — 6 of 221 parts and 45 of 114 setups (e.g. `FBS_CIVILIAN_FEMALE`, whose slots are all empty and whose only
+model is `CombinedLODModel` `CH_CF_Casual_LOD_01`). Retail's renderer for it is not traced (the
+retail SetProperty `0x514bd0` is absent from the Ghidra export), so level 2 for retail is INFERRED
+from the 2008 code; `sab_workshop` assembles it at level 2 in both builds.
+
 ---
 
 ## Damage groups (props, vehicles, weapons, …)

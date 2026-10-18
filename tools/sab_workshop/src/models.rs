@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Top-level browser categories, in display order. Assets are placed by their template kind; anything
-/// not referenced by a template is `Ungrouped` (never hidden — the user can group it by hand).
-pub const CATEGORIES: &[&str] = &["Characters", "Vehicles", "Weapons", "Props", "Ungrouped"];
+/// Top-level browser categories, in display order. Assets are placed by their template kind; a world
+/// block is `World`; anything not referenced by a template is `Ungrouped` (never hidden — the user can
+/// group it by hand).
+pub const CATEGORIES: &[&str] = &["Characters", "Vehicles", "Weapons", "Props", crate::assets::WORLD, "Ungrouped"];
 
 /// User overrides: asset name → category, saved as JSON next to the game so custom groupings persist.
 pub struct Groups {

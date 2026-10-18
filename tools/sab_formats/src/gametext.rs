@@ -20,12 +20,28 @@
 //!   order (== ascending offset). Fully parsed and editable here; the writer rebuilds the directory and
 //!   every absolute offset, so an unmodified file round-trips byte-identically and an edit anywhere just
 //!   re-derives the layout. Verified on all six retail languages.
+//!
+//! The 2008 Xbox 360 build's `GameText.dlg` is version 3, read by `WSTextManager::LoadTextFiles`
+//! (WildStar_d @0x82a3bfc8, WildStar_p @0x826350c0): every word big-endian, records tagged `DTXT`
+//! (`TXTD` read as a big-endian word), each text `str_len` **bytes** including its NUL, and the record
+//! list closed by `CEND` instead of a DNEC section.
+//!
+//! ```text
+//! Header (12 bytes, big-endian): u32 version=3, u32 record_count, u32 total_text_bytes
+//! record_count × { "DTXT", u32 asset_id, u16 key_len(incl NUL), key[key_len], u16 str_len(bytes),
+//!                  u8 str[str_len] (NUL-terminated) }
+//! "CEND"
+//! ```
 
 use crate::pandemic_hash;
 
 const MAGIC_REC: &[u8; 4] = b"TXTD";
 const MAGIC_DNEC: &[u8; 4] = b"DNEC";
 pub const VERSION: u32 = 5;
+/// The 2008 Xbox 360 build's revision.
+pub const VERSION_2008: u32 = 3;
+const MAGIC_REC_2008: &[u8; 4] = b"DTXT";
+const MAGIC_END_2008: &[u8; 4] = b"CEND";
 
 #[derive(Clone, Debug)]
 pub struct Record {
@@ -169,6 +185,8 @@ impl SubTable {
 pub enum Tail {
     Dnec(Vec<SubTable>),
     Opaque(Vec<u8>),
+    /// Version 3: the `CEND` that closes the record list.
+    End,
 }
 
 pub struct GameText {
@@ -252,11 +270,72 @@ fn parse_dnec(b: &[u8], mut o: usize) -> Result<Tail, String> {
     Ok(Tail::Dnec(subs))
 }
 
+/// Unicode for bytes 0x80..=0x9F of Windows-1252, the code page of version 3 text: the English file's
+/// `0x85` closes "I see you, Irish…", `0x92` is the apostrophe of "Chippin’", `0x93`/`0x94` quote
+/// "uncle" and `0x96` is a dash. Bytes 0xA0..=0xFF are the same code points (`0xE9` in "Résistants").
+/// The five bytes 1252 leaves undefined map to their C1 code points.
+const CP1252_80: [u16; 32] = [
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+];
+
+fn from_cp1252(c: u8) -> u16 {
+    match c {
+        0x80..=0x9F => CP1252_80[(c - 0x80) as usize],
+        _ => c as u16,
+    }
+}
+
+fn to_cp1252(u: u16) -> Option<u8> {
+    match u {
+        0..=0x7F | 0xA0..=0xFF => Some(u as u8),
+        _ => CP1252_80.iter().position(|&x| x == u).map(|i| 0x80 + i as u8),
+    }
+}
+
+/// Version 3: the big-endian header, `DTXT` records with Windows-1252 text, then `CEND`.
+fn parse_2008(b: &[u8]) -> Result<GameText, String> {
+    let be32 = |o: usize| b.get(o..o + 4).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]])).ok_or_else(|| format!("EOF u32 @{o}"));
+    let be16 = |o: usize| b.get(o..o + 2).map(|s| u16::from_be_bytes([s[0], s[1]])).ok_or_else(|| format!("EOF u16 @{o}"));
+    let count = be32(4)?;
+    let total = be32(8)?;
+    let mut o = 12;
+    let mut records = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        if b.get(o..o + 4) != Some(MAGIC_REC_2008.as_slice()) {
+            return Err(format!("record {i}: expected DTXT at {o}"));
+        }
+        let asset_id = be32(o + 4)?;
+        let key_len = be16(o + 8)? as usize;
+        let key = b.get(o + 10..o + 10 + key_len).ok_or_else(|| format!("record {i}: EOF key"))?.to_vec();
+        o += 10 + key_len;
+        let str_len = be16(o)? as usize;
+        let text = b.get(o + 2..o + 2 + str_len).ok_or_else(|| format!("record {i}: EOF text"))?.iter().map(|&c| from_cp1252(c)).collect();
+        o += 2 + str_len;
+        records.push(Record { asset_id, key, text });
+    }
+    if b.get(o..o + 4) != Some(MAGIC_END_2008.as_slice()) {
+        return Err(format!("expected CEND after {count} records at {o}"));
+    }
+    if o + 4 != b.len() {
+        return Err(format!("{} bytes after CEND", b.len() - o - 4));
+    }
+    let gt = GameText { version: VERSION_2008, records, tail: Tail::End };
+    if gt.total_code_units() != total {
+        return Err(format!("header says {total} text bytes, the records hold {}", gt.total_code_units()));
+    }
+    Ok(gt)
+}
+
 impl GameText {
+    /// Version 5 (retail PC) or version 3 (the 2008 Xbox 360 build), told apart by the first word.
     pub fn parse(b: &[u8]) -> Result<GameText, String> {
         let version = rd_u32(b, 0)?;
+        if b.get(0..4) == Some(VERSION_2008.to_be_bytes().as_slice()) {
+            return parse_2008(b);
+        }
         if version != VERSION {
-            return Err(format!("unexpected GameText version {version}, expected {VERSION}"));
+            return Err(format!("unexpected GameText version {version}, expected {VERSION} (or {VERSION_2008} big-endian)"));
         }
         let count = rd_u32(b, 4)?;
         let _total_cu = rd_u32(b, 8)?;
@@ -288,7 +367,7 @@ impl GameText {
     pub fn dnec_groups(&self) -> &[SubTable] {
         match &self.tail {
             Tail::Dnec(subs) => subs,
-            Tail::Opaque(_) => &[],
+            Tail::Opaque(_) | Tail::End => &[],
         }
     }
 
@@ -353,7 +432,7 @@ impl GameText {
     pub fn add_dnec(&mut self, scene_hash: u32, asset_id: u32, key: &str, text: &str) -> Result<(), String> {
         let subs = match &mut self.tail {
             Tail::Dnec(subs) => subs,
-            Tail::Opaque(_) => return Err("file has no DNEC section".into()),
+            Tail::Opaque(_) | Tail::End => return Err("file has no DNEC section".into()),
         };
         let s = subs
             .iter_mut()
@@ -387,7 +466,30 @@ impl GameText {
     /// Serialize back to bytes: header + base records, then the DNEC directory + sub-tables with
     /// every absolute offset and sub-table header recomputed. Unmodified input round-trips
     /// byte-identical; an edit anywhere re-derives the layout.
+    ///
+    /// A version 3 file is written in its own layout. Its text is Windows-1252, so a text holding a
+    /// character outside that code page cannot be written and panics naming the record.
     pub fn write(&self) -> Vec<u8> {
+        if matches!(self.tail, Tail::End) {
+            let mut out = Vec::new();
+            out.extend_from_slice(&VERSION_2008.to_be_bytes());
+            out.extend_from_slice(&(self.records.len() as u32).to_be_bytes());
+            out.extend_from_slice(&self.total_code_units().to_be_bytes());
+            for r in &self.records {
+                out.extend_from_slice(MAGIC_REC_2008);
+                out.extend_from_slice(&r.asset_id.to_be_bytes());
+                out.extend_from_slice(&(r.key.len() as u16).to_be_bytes());
+                out.extend_from_slice(&r.key);
+                out.extend_from_slice(&(r.text.len() as u16).to_be_bytes());
+                for &u in &r.text {
+                    let c = to_cp1252(u)
+                        .unwrap_or_else(|| panic!("record 0x{:08x}: U+{u:04X} is not in Windows-1252, the version 3 text code page", r.asset_id));
+                    out.push(c);
+                }
+            }
+            out.extend_from_slice(MAGIC_END_2008);
+            return out;
+        }
         let mut out = Vec::with_capacity(self.base_len());
         out.extend_from_slice(&self.version.to_le_bytes());
         out.extend_from_slice(&(self.records.len() as u32).to_le_bytes());
@@ -396,6 +498,7 @@ impl GameText {
             write_record(&mut out, rec);
         }
         match &self.tail {
+            Tail::End => unreachable!("version 3 is written above"),
             // Non-DNEC tail: append verbatim (no shipped file hits this path).
             Tail::Opaque(bytes) => out.extend_from_slice(bytes),
             Tail::Dnec(subs) => {
@@ -485,6 +588,35 @@ mod tests {
         let re = GameText::parse(&gt.write()).unwrap();
         assert_eq!(re.dnec_groups()[0].records.len(), 2);
         assert_eq!(re.find_any(0x3333_3333, None).unwrap().key_str(), "vo_b");
+    }
+
+    /// A version 3 file: big-endian header, `DTXT` records with byte text, `CEND`.
+    #[test]
+    fn version_3_parses_and_round_trips() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&3u32.to_be_bytes());
+        b.extend_from_slice(&2u32.to_be_bytes());
+        b.extend_from_slice(&(6u32 + 3).to_be_bytes());
+        for (id, key, text) in [(0x897A_3333u32, &b"vo_a\0"[..], &b"Hell\x92\0"[..]), (0x0000_0042, &b"\0"[..], &b"\xE9k\0"[..])] {
+            b.extend_from_slice(b"DTXT");
+            b.extend_from_slice(&id.to_be_bytes());
+            b.extend_from_slice(&(key.len() as u16).to_be_bytes());
+            b.extend_from_slice(key);
+            b.extend_from_slice(&(text.len() as u16).to_be_bytes());
+            b.extend_from_slice(text);
+        }
+        b.extend_from_slice(b"CEND");
+        let gt = GameText::parse(&b).unwrap();
+        assert_eq!(gt.version, VERSION_2008);
+        assert_eq!(gt.records.len(), 2);
+        assert_eq!((gt.records[0].key_str().as_str(), gt.records[0].text_string().as_str()), ("vo_a", "Hell\u{2019}"));
+        assert!(gt.records[1].is_ui());
+        assert_eq!(gt.records[1].text_string(), "\u{e9}k");
+        assert!(gt.dnec_groups().is_empty());
+        assert_eq!(gt.write(), b);
+        let mut short = b.clone();
+        short.truncate(b.len() - 1);
+        assert!(GameText::parse(&short).is_err());
     }
 
     #[test]

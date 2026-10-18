@@ -39,6 +39,10 @@ sab_probe proto2008-textures <Bin360>      every textures record and loose .dds;
 sab_probe proto2008-templates <Bin360>     GameTemplates.wsd (BLU2): types, body-setup streams, where
                                            each template's meshes are stored, record copies, the player;
                                            docs/2008_templates_and_text.md
+sab_probe template-lod-damage <templates>  retail loosefiles_BinPC.pack or 2008 GameTemplates.wsd:
+                                           CombinedLODModel keys by type, damage parts by how they state
+                                           their group state; docs/formats/gametemplates.md,
+                                           docs/damage_and_destruction.md
 sab_probe proto2008-anims <Bin360>         every ANM0 clip and Animations.pack, decoded; codecs, loader
                                            rejections, header values, rotation norms, pack sections;
                                            docs/2008_animations_format.md

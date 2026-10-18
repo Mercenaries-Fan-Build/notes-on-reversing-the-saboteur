@@ -76,9 +76,9 @@ replacement must differ here, loudly:
 | `sab_megapack_key` | exit 0 when every key is NOT FOUND | non-zero exit |
 | `sab_probe gametext get` (missing record), `sab_gametext` (no subcommand), `sab_poc inventory` (nothing found) | exit 0 | non-zero exit |
 | `sab_probe tex-*` | writes `./dtex_index.tsv` into the working directory | read-only, as documented |
-| `sab_formats` / `sab_workshop` tests | 5 + 2 tests print "skip" and pass | `retail` feature, fail naming what is missing |
-| `sab_workshop --selftest` | "OK" with 0/16 submeshes textured | fail |
-| `sab_workshop --anim-sweep` | 10/200 clips BAD, exit 0 | non-zero exit |
+| `sab_formats` / `sab_workshop` tests | 5 + 2 tests print "skip" and pass; the workshop's game-gated tests now use the `retail` feature (2026-10-17), except the four `meshload.rs` tests that still read `settings::detected_retail` | `retail` feature, fail naming what is missing |
+| `sab_workshop --selftest` | fails when the boot model binds no diffuse (2026-10-17) | fail |
+| `sab_workshop --anim-sweep` | 10/200 clips BAD, exit 1 (2026-10-17) | non-zero exit |
 
 Also noted, not yet judged: `sab_workshop --source-info` reports 0 textures on retail; some `--texcheck`
 slot labels look swapped (`spec=…_NM`); `sab_validator` reports 53 fatals on untouched

@@ -7,7 +7,10 @@
 //! variant bindings use; every `wsd` slot is a big-endian EditNodes entry; every `.shaders` file parses
 //! with a constant table in every variant; every `.xex` unwraps. Every `ANM0` clip, loose and in
 //! `Animations.pack`, parses to its end and decodes, and samples wherever the engine's sampler accepts
-//! it; the pack reads to its end.
+//! it; the pack reads to its end. `sound/Saboteur.pck`: every bank's chunks, `HIRC` objects, events,
+//! actions, sounds and random/sequence containers parse to their end, every bank media is a whole
+//! `RIFX` XMA2 file or the head of a pack stream, every stream is a `RIFX` XMA2 file with one seek
+//! entry per block, and every id `sound/WWiseIDTable.bin` posts is an event in the pack.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
@@ -16,7 +19,7 @@ use std::path::{Path, PathBuf};
 use sab_formats::game_paths::local_config_proto2008_bin360;
 use sab_formats::proto2008::anim::{self, Codec};
 use sab_formats::proto2008::sbl::{self, SlotKind};
-use sab_formats::proto2008::{anim_pack, material, mesh, mp00, shaders, slot_dir, texture};
+use sab_formats::proto2008::{anim_pack, material, mesh, mp00, shaders, slot_dir, sound_bank, sound_ids, sound_pack, texture};
 use sab_formats::{editnodes, gametemplates, gametext, pandemic_hash, xex, zlib};
 
 fn bin360() -> PathBuf {
@@ -366,6 +369,108 @@ fn every_2008_animation_parses_and_decodes() {
     assert_eq!([Codec::Wavelet, Codec::Delta, Codec::Uncompressed].map(|c| count("pack", c)), [1501, 6, 98]);
     assert_eq!(twins, 1601);
     assert_eq!((pack.intervals.len(), pack.sequences.len(), transitions, pack.banks.len()), (3, 1944, 286, 24));
+}
+
+/// A `RIFX` media file's `XMA2` format, when it has one and `seek` holds one u32 per block.
+fn xma2_with_seek(m: &[u8]) -> Result<sound_pack::Xma2Format, String> {
+    let cs = sound_pack::riff_chunks(m)?;
+    let find = |t: &[u8; 4]| cs.iter().find(|c| &c.tag == t).ok_or(format!("no {} chunk", String::from_utf8_lossy(t)));
+    let x2 = find(b"XMA2")?;
+    let x = sound_pack::parse_xma2(&m[x2.start..x2.start + x2.len])?;
+    let seek = find(b"seek")?;
+    if seek.len != 4 * x.block_count as usize {
+        return Err(format!("seek of {} bytes for {} blocks", seek.len, x.block_count));
+    }
+    find(b"data")?;
+    Ok(x)
+}
+
+#[test]
+fn every_2008_sound_package_record_parses() {
+    let root = bin360();
+    let path = root.join("sound/Saboteur.pck");
+    let b = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let p = sound_pack::parse(&b, b.len() as u64).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let streams: HashMap<u32, &sound_pack::Record> = p.streams.iter().map(|r| (r.id, r)).collect();
+    let mut failures = Vec::new();
+    let mut kinds: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut events = HashSet::new();
+    let (mut whole_media, mut head_media) = (0usize, 0usize);
+    for r in &p.banks {
+        let at = format!("bank {:08X}", r.id);
+        let d = r.data(&b).expect("bounds checked by parse");
+        let cs = match sound_pack::chunks(d) {
+            Ok(cs) => cs,
+            Err(e) => {
+                failures.push(format!("{at}: {e}"));
+                continue;
+            }
+        };
+        let body = |t: &[u8; 4]| cs.iter().find(|c| &c.tag == t).map(|c| &d[c.start..c.start + c.len]);
+        match body(b"BKHD") {
+            Some(h) if h.len() >= 8 && h[..4] == 29u32.to_be_bytes() && h[4..8] == r.id.to_be_bytes() => {}
+            _ => failures.push(format!("{at}: BKHD is not version 29 with the record's id")),
+        }
+        if let Some(h) = body(b"HIRC") {
+            let objs = match sound_bank::hirc_objects(h) {
+                Ok(o) => o,
+                Err(e) => {
+                    failures.push(format!("{at}: {e}"));
+                    continue;
+                }
+            };
+            for o in objs {
+                *kinds.entry(o.kind).or_default() += 1;
+                let pl = &h[o.start..o.start + o.len];
+                let parsed = match o.kind {
+                    sound_bank::HIRC_EVENT => sound_bank::parse_event(pl).map(|_| {
+                        events.insert(o.id);
+                    }),
+                    sound_bank::HIRC_ACTION => sound_bank::parse_action(pl).map(|_| ()),
+                    sound_bank::HIRC_SOUND => sound_bank::parse_sound(pl).map(|_| ()),
+                    sound_bank::HIRC_RAN_SEQ => sound_bank::parse_ran_seq(pl).map(|_| ()),
+                    _ => Ok(()),
+                };
+                if let Err(e) = parsed {
+                    failures.push(format!("{at}: {e}"));
+                }
+            }
+        }
+        if let (Some(idx), Some(data)) = (body(b"DIDX"), body(b"DATA")) {
+            for e in idx.chunks(12) {
+                let w = |i: usize| u32::from_be_bytes(e[4 * i..4 * i + 4].try_into().expect("4 bytes"));
+                let (id, off, size) = (w(0), w(1) as usize, w(2) as usize);
+                let Some(m) = data.get(off..off + size) else {
+                    failures.push(format!("{at}: media {id:08X} past DATA"));
+                    continue;
+                };
+                if xma2_with_seek(m).is_ok() {
+                    whole_media += 1;
+                } else if streams.get(&id).is_some_and(|s| s.data(&b).expect("bounds checked").starts_with(m)) {
+                    head_media += 1;
+                } else {
+                    failures.push(format!("{at}: media {id:08X} is neither a whole RIFX XMA2 nor a pack stream's head"));
+                }
+            }
+        }
+    }
+    for r in &p.streams {
+        if let Err(e) = xma2_with_seek(r.data(&b).expect("bounds checked by parse")) {
+            failures.push(format!("stream {:08X}: {e}", r.id));
+        }
+    }
+    let ids_path = root.join("sound/WWiseIDTable.bin");
+    let ids = sound_ids::parse(&std::fs::read(&ids_path).unwrap_or_else(|e| panic!("{}: {e}", ids_path.display())))
+        .unwrap_or_else(|e| panic!("{}: {e}", ids_path.display()));
+    let posted: Vec<u32> = ids.events.iter().flat_map(|e| [e.play, e.stop]).filter(|&i| i != sound_ids::NONE).collect();
+    let missing = posted.iter().filter(|i| !events.contains(i)).count();
+    eprintln!("HIRC kinds {kinds:?}; media whole {whole_media}, stream heads {head_media}; ID table posts {} ids", posted.len());
+    assert!(failures.is_empty(), "{} failures:\n{}", failures.len(), failures.join("\n"));
+    assert_eq!((p.banks.len(), p.streams.len()), (114, 2976));
+    let k = |t| kinds.get(&t).copied().unwrap_or(0);
+    assert_eq!([2, 3, 4, 5].map(k), [6036, 5329, 4813, 334]);
+    assert_eq!((whole_media, head_media), (2764, 7));
+    assert_eq!((ids.events.len(), posted.len(), missing), (4312, 4645, 0));
 }
 
 /// `GameTemplates.wsd` (`BLU2`) and `Cinematics/Dialog/English/GameText.dlg` (version 3) parse to their

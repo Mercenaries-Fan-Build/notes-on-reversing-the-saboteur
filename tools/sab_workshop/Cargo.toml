@@ -38,6 +38,9 @@ sab_formats = { path = "../sab_formats" }
 # Memory-map the megapacks so opening a 715 MB pack is instant (no eager read) and only the sub-pack
 # headers / bundles actually touched fault into RAM — the index is the earmark. See src/pack.rs.
 memmap2 = "0.9"
+# Plays a voice line's decoded PCM (sab_formats decodes both builds' codecs) on the default output
+# device. Playback only: no rodio decoders.
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
 
 [features]
 # Game-gated tests: they read the install paths from the repo-root `.sab-local.toml`.

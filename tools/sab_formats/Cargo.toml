@@ -9,7 +9,7 @@ license = "MIT AND LGPL-2.1-or-later"
 [dependencies]
 # SGES block decompression and SafeSlice (SGES is byte-identical between the two games,
 # docs/formats/archive_and_models.md).
-mercs2_formats = "4.0"
+mercs2_formats = "5.0"
 # zlib streams inside SBLA sub-packs (DTEX mip payloads, MSHA blobs: raw 78 01 zlib).
 flate2 = "1"
 # Retail `.wem` (Wwise Vorbis) to standard Ogg Vorbis, then to PCM; docs/formats/audio_1kcp.md.
